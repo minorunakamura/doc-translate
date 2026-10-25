@@ -1,6 +1,6 @@
 # 初期artifact／JSONL契約（schema version 1）
 
-Issue #1の実装済み境界を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。原資料・翻訳unit／訳文・policy／glossary／context snapshot、attempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeやhelper operationは定義しません。
+Issue #1／#2の実装済み境界を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。原資料・翻訳unit／訳文・policy／glossary／context snapshot、attempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeやgeneration／認証operationは定義しません。
 
 ## 原文snapshot
 
@@ -76,6 +76,31 @@ Python：`doc_translate.jsonl.JSONLRecord`／`encode_record`／`read_records`。
 - UTF-8、1recordにつき末尾LF（byte `0x0A`）必須。空行、壊れたJSON、不正UTF-8、未完了末尾を拒否します。U+2028／U+2029はrecord境界ではなく文字列dataです。
 - Python `read_records`は**binary file等の行iterable**を受け取ります。各要素がLFで終わる1recordであり、任意chunkの再構成はしません。
 - Node `readRecords`は同期／非同期の**任意binary chunk iterable**を受け取ります。UTF-8の途中やLF直前で分割されても再構成します。
-- encoderは検証後の1recordをUTF-8＋LFで返します。codecはoperation dispatch、認証、LLM成功判定を行いません。`type`のoperation語彙とpayload schemaは後続Issueで定義します。例のechoはproduction operationではありません。
+- encoderは検証後の1recordをUTF-8＋LFで返します。codecはoperation dispatch、認証、LLM成功判定を行いません。metadataのoperation語彙は以下で定義します。generation／認証は後続Issueです。例のechoはproduction operationではありません。
 
 `node ai/tests/jsonl-process.mjs --byte-chunks`は実際の公開codecをimportするテスト専用processです。Python processテストは日本語・U+2028／2029・分割byte・不正末尾を確認し、inlineの別codecで代用しません。実provider／model／credentialは使用しません。
+
+## metadata helper（Issue #2）
+
+compile済みESM `dist/main.js`をNodeで起動し、stdinへLF-terminated requestを渡します。stdoutは同じ`schema_version: 1`／`request_id`のresponseです。CLIは1 process／1 requestで、正常終了・responseが1件・request ID一致・result payload schemaとversion一致をすべて確認します。stderrや全model定義をそのまま利用者へ返しません。
+
+| request type | payload | 正常response type／payload |
+| --- | --- | --- |
+| `providers` | `{}` | `result`、`helper_version`、`library_version`、`providers: [{id,name}]` |
+| `models` | `{"provider":"anthropic"}` | `result`、`helper_version`、`library_version`、`provider`、`models: [{id,name,image_input,reasoning,thinking_levels}]` |
+
+`builtinModels()`で登録したcollectionの同期`getProviders()`／`getProvider()`／`getModels()`だけを読みます。対象はchat modelのbuilt-in catalogです。`image_input`は画像入力対応のbooleanであり画像生成ではありません。`thinking_levels`は`off/minimal/low/medium/high/xhigh/max`の順で、reasoning非対応なら`off`のみ。reasoning対応ではmapのnullを除き、省略された標準levelはprovider既定、`xhigh/max`は明示mapがある場合だけ対応として表示します。実requestのthinking実効値の保証ではありません。
+
+未知providerは`error`／`{"code":"unknown_provider"}`、未対応type・余分なpayload field・不足payloadは`error`／`{"code":"invalid_request"}`でexit 2です。不正envelope／不完全LFはstderrの固定エラーでexit 2、成功はexit 0です。認証store、refresh、generation、document送信のoperationはありません。
+
+例：
+
+```json
+{"schema_version":1,"request_id":"r1","type":"providers","payload":{}}
+```
+
+## アプリ所有runtimeの導入記録
+
+`setup-ai --package-manager npm|pnpm`はinstalled managerだけを起動し、選択lockとcompile済みresourceを新しいruntimeへコピーします。`~/.local/share/doc-translate/ai/`（`XDG_DATA_HOME`指定時はその下）の`MANAGER-LOCK_HASH_PREFIX-HELPER_VERSION-.../`ごとに別node_modulesを使います。runtimeごとの`runtime.json`は`package_manager`、`package_manager_version`、`lock_sha256`、`helper_version`、`helper_sha256`、`library_version`を記録します。helper hashはmanifestとdistのpath／byteを含みます。認証情報は含みません。
+
+依存導入・固定version検査・実helper catalog検査が成功してから`current` symlinkをatomic replaceします。通常参照は`current`の記録と同梱resource／選択lock／直接production依存versionを照合してからNodeを起動します。不足・不一致はsetup案内で停止し、自動installや実行時compileはしません。失敗したsetupは既存runtimeを変更せず、旧runtime・失敗directory・workspace・credentialを削除しません。推移依存tree全byteの改変検知までは行わず、helper import／process失敗も成功扱いしません。

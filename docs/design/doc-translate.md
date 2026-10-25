@@ -460,7 +460,7 @@ cacheRead／cacheWriteは0。合計参考USDは19.409459で、Piのcatalog換算
 | ノイズを含む実スキャン、多段組み・複数ページ表・長いunit | 一般的な成立性は未検証 | きれいな画像のみPDFの実績と区別し、対応不能部分を省略・推測補完せず保持する |
 | CLI・共通schema・保存・依存 | 初期package／help、PDF・EPUB位置union付き原文snapshot／OS lock、公開JSONL codecを実装。具体形はartifact契約と正式Planによる | kind別構造検証・入力adapter・unit／訳文・修正CLI等は後続。保持できることを意味検証済みとしない |
 | pi-ai直接接続・認証 | 接続責務・credential・terminal eventの契約は合意済み。公開codecのみ実装 | metadata／setup-ai／認証store／generationを実装し、実認証と小範囲送信は個別承認で検証。§18は直接経路の再実証ではない |
-| 初期CI・配布 | macOS ARM64の品質checks・offline codec／wheel導入検査を設定 | remote runは公開後にref／URLで確認。未公開／未実行を成功としない。PDF importをOCR変換成功としない |
+| 初期CI・配布 | macOS ARM64の品質checks・offline codec／wheel導入検査を設定 | 今回および後続Work Itemではremote CIの実行・成功確認・実行ref／run URLの取得・記録を受け入れ条件にせず、そのためのcommit／pushも必須にしない。既存CI設定・smoke検査と、各Work Itemの責務に対応するローカル正式チェック・build／別環境導入検証は維持する。remote CIの未実行だけでは未完了・blockedにせず、未公開／未実行をremote成功としない。PDF importをOCR変換成功としない |
 | 段階別の別model／低thinking最適化 | 未検証 | 中核方式と切り離して、必要になった時点で比較する |
 | PDF・EPUB出力 | 将来の拡張候補 | 今回は責務分離のみ。生成処理・依存・形式別QAを先行して作らない |
 

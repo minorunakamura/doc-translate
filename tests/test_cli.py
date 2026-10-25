@@ -2,30 +2,46 @@ import os
 import shutil
 import subprocess
 
+import pytest
 
-def test_cli_help_is_available_without_pdf_or_node(tmp_path):
+
+def cli(*arguments, env=None):
     executable = shutil.which("doc-translate")
     assert executable is not None
-    result = subprocess.run(
-        [executable, "--help"],
-        env={**os.environ, "PATH": str(tmp_path)},
+    return subprocess.run(
+        [executable, *arguments],
+        env=env,
         capture_output=True,
         text=True,
         check=False,
     )
+
+
+@pytest.mark.parametrize("command", [[], ["setup-ai"], ["providers"], ["models"]])
+def test_cli_help_is_available_without_pdf_or_node(tmp_path, command):
+    result = cli(*command, "--help", env={**os.environ, "PATH": str(tmp_path)})
     assert result.returncode == 0
     assert "usage: doc-translate" in result.stdout
-    assert "not implemented" in result.stdout
+    assert "setup-ai" in result.stdout
+    assert "JSON" in result.stdout
 
 
 def test_cli_workflow_does_not_pretend_to_succeed(tmp_path):
     workspace = tmp_path / "workspace"
-    result = subprocess.run(
-        ["doc-translate", "run", "artificial.epub", "--workspace", str(workspace)],
-        capture_output=True,
-        text=True,
-        check=False,
+    result = cli("run", "artificial.epub", "--workspace", str(workspace))
+    assert result.returncode == 2
+    assert not workspace.exists()
+
+
+def test_metadata_without_setup_stops_with_setup_guidance(tmp_path):
+    result = cli(
+        "providers",
+        env={
+            **os.environ,
+            "HOME": str(tmp_path),
+            "XDG_DATA_HOME": str(tmp_path / "data"),
+        },
     )
     assert result.returncode == 2
-    assert "not implemented" in result.stderr
-    assert not workspace.exists()
+    assert "setup-ai --package-manager" in result.stderr
+    assert not (tmp_path / "data").exists()

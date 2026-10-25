@@ -1,13 +1,13 @@
 # 開発ガイド
 
-対象はIssue #1の初期基盤です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+対象はIssue #1の初期基盤とIssue #2のsetup-ai／offline metadataです。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
 
 ## 構成・環境
 
-- `src/doc_translate/`：PythonのCLI、原文snapshot、workspace OS lock、JSONL codec。
-- `ai/src/`：TypeScriptのJSONL codec。`ai/tests/jsonl-process.mjs`は公開exportを使うテスト専用echo processであり、production推論helperではありません。
-- `tests/fixtures/`：自作JSON。入力adapter、setup-ai、metadata、認証、generation、翻訳・出力・再開操作は未実装です。
-- `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、およびwheelからの別clean npm／pnpm導入を検査します。runtime用installerではありません。
+- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、原文snapshot、workspace OS lock、JSONL codec。
+- `ai/src/`：TypeScriptのJSONL codecと非秘密metadata helper（`dist/main.js`）。`ai/tests/jsonl-process.mjs`は公開exportを使うテスト専用echo processです。production generation helperではありません。
+- `tests/fixtures/`：自作JSON。入力adapter、認証、generation、翻訳・出力・再開操作は未実装です。
+- `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、および別venvにinstallしたwheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
 
 実動基準：macOS 26.7.1 arm64、Python 3.14.9、Node 24.21.0、pnpm 12.10.1、npm 11.19.0。CIはGitHub-hosted macos-15 ARM64、Python 3.14／Node 24です。別OSやmacOSの最低versionは未保証です。
 
@@ -30,7 +30,9 @@ uv run pytest
 uv run doc-translate --help
 ```
 
-Python packageは`ai/dist`を同梱するため、fresh checkoutでは`uv sync`より先にhelperの明示buildが必要です。pytestのprocess契約もcompile済み公開`@doc-translate/ai/jsonl`を使います。Python側はbinary file行iterator、Node側は任意binary chunkのcodecです。警告をquiet／包括的disableで隠さず修正します。
+Python packageは`ai/dist`を同梱するため、fresh checkoutでは`uv sync`より先にhelperの明示buildが必要です。既存editable環境で同梱resourceを更新する場合はbuild後に`uv sync --locked --dev --reinstall-package doc-translate`を使います。pytestのprocess契約もcompile済み公開`@doc-translate/ai/jsonl`を使います。Python側はbinary file行iterator、Node側は任意binary chunkのcodecです。警告をquiet／包括的disableで隠さず修正します。
+
+`ai/tsconfig.build.json`の`skipLibCheck`はpi-ai 1.4.0配布declarationのJSON import属性欠落と、@google/genaiのoptional MCP SDK型参照不足に限定した互換性対応です。依存declaration自体の型検査は省きますが、自作sourceの型検査とoxlintのtype-aware／type-check／warning 0は維持します。実helperと両managerのclean installでruntime互換性を別途検査します。
 
 PDF extraはcore-onlyと区別して確認します。
 
@@ -50,12 +52,12 @@ uv build
 uv run python scripts/check_distribution.py dist/doc_translate-0.1.0-py3-none-any.whl
 ```
 
-この検査は一時directoryで再compileして`ai/dist`と比較し、wheel内のdist／manifest／両lockをbyte比較します。wheel resourceだけを取り出した別々のclean directoryで、次を実行します（依存packageのregistry取得あり）。
+この検査は一時directoryで再compileして`ai/dist`と比較し、wheel内のdist／manifest／両lockをbyte比較します。core-onlyの別venvへwheelをinstallし、workspace外の別々のclean data directoryで実CLI `setup-ai --package-manager MANAGER`を実行します（依存packageのregistry取得あり）。内部で使用する固定コマンドは次のとおりです。
 
 - npm：`ci --omit=dev --ignore-scripts --no-audit --no-fund`
 - pnpm：`install --prod --frozen-lockfile --ignore-scripts`
 
-続くoffline smokeはNodeだけをPATHに置き、source treeのnode_modules／Pi CLIなしで公開codecのUTF-8分割byte round-trip・末尾不正の拒否とpi-ai／proper-lockfileのimportを確認します。provider catalog呼出しや推論はしません。依存不足を自動取得するruntime hookはありません。wheelにはhelper sourceやnode_modulesを含めません。sdistは明示build済みdistと再build用source／manifest／lockを含みます。
+続くoffline smokeはNodeだけをPATHに置き、source treeのnode_modules／Pi CLI／managerなしで実CLI `providers`／`models --provider anthropic|google`、公開codecのUTF-8分割byte round-trip・末尾不正の拒否とpi-ai／proper-lockfileのimportを確認します。認証・refresh・推論はしません。Vitestの実helper processはnetwork transportを拒否した状態でもcatalogを参照します。pytestは公開CLI→runtimeとPython↔実Node helper境界を検査し、package manager／失敗process境界だけをfake化します。依存不足を自動取得するruntime hookはありません。wheelにはhelper sourceやnode_modulesを含めません。sdistは明示build済みdistと再build用source／manifest／lockを含みます。
 
 Python側の別環境確認（repository rootで実行、`TMP`は新規一時directory）：
 
@@ -83,4 +85,4 @@ Pythonは`pyproject.toml`変更後に`uv lock`、Nodeは共通`ai/package.json`�
 
 fixtureは自作の小文書／人工応答だけを使い、書籍の切出し、実credential、token、重みを追加しません。`sample/`はローカル資料としてignoreします。テストはofflineで、依存installだけをネットワーク処理と区別します。Hub／Transformersのoffline設定は他の全通信まで遮断するfirewallではありません。実provider送信・大型取得は別途個別承認が必要です。
 
-CIはpush／pull_requestで上記checksとwheel導入を実行する設定です。secrets、pull_request_target、continue-on-errorは使いません。workflowを公開して起動した後、実行refとrun URLを記録し、remote成功を確認してください。設定追加だけではremote CI受け入れ完了ではありません。§18の過去実験はpi-ai直接経路の検証実績ではありません。
+CIはpush／pull_requestで上記checksとwheel導入を実行する設定です。secrets、pull_request_target、continue-on-errorは使いません。今回および後続Work Itemではremote CIの実行・成功確認・実行ref／run URLの取得・記録を受け入れ条件にせず、そのためのcommit／pushも必須ではありません。既存CI設定・smoke検査と、各Work Itemの責務に対応するローカル正式チェック・build／別環境導入検証は維持します。remote CIの未実行だけでは未完了・blockedにせず、未実行をremote成功とも表示しません。§18の過去実験はpi-ai直接経路の検証実績ではありません。
