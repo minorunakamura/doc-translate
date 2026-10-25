@@ -108,6 +108,14 @@ def test_setup_installs_selected_locks_in_separate_runtimes_then_needs_only_node
         "anthropic",
         "google",
     }
+    catalog = json.loads(providers.stdout)["providers"]
+    assert next(p for p in catalog if p["id"] == "openai")["login_methods"] == [
+        "api_key",
+        "oauth",
+    ]
+    assert next(p for p in catalog if p["id"] == "google")["login_methods"] == [
+        "api_key"
+    ]
     models = run("models", "--provider", "anthropic")
     assert models.returncode == 0, models.stderr
     assert any(
@@ -204,7 +212,7 @@ def test_invalid_or_failed_helper_is_never_success(runtime_cli, failure):
         "    print('v24.21.0')\n"
         "    sys.exit(0)\n"
         "request = json.load(sys.stdin)\n"
-        "request.update(type='result', payload={'helper_version':'0.1.0', 'library_version':'1.4.0', 'providers': [{'id':'openai', 'name':'OpenAI'}]})\n"
+        "request.update(type='result', payload={'helper_version':'0.1.0', 'library_version':'1.4.0', 'providers': [{'id':'openai', 'name':'OpenAI', 'login_methods':['api_key','oauth']}]})\n"
         f"if {failure!r} == 'invalid-payload': request['payload']['providers'] = [42]\n"
         f"if {failure!r} == 'wrong-id': request['request_id'] = 'wrong'\n"
         f"print(json.dumps(request), end='' if {failure!r} == 'incomplete' else '\\n')\n"

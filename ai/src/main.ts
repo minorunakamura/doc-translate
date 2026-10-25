@@ -1,5 +1,8 @@
-import { readFileSync } from "node:fs";
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
+import { pathToFileURL } from "node:url";
+import { AuthDialog } from "./auth.js";
+import { FileCredentialStore } from "./credentials.js";
+import { readFileSync, realpathSync } from "node:fs";
+import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { encodeRecord, type JSONLRecord, readRecords } from "./jsonl.js";
 
@@ -25,15 +28,24 @@ const versions = {
   ),
 };
 
-function metadata(request: JSONLRecord): JSONLRecord["payload"] {
-  const models = builtinModels();
+function metadata(
+  request: JSONLRecord,
+  models: Models,
+): JSONLRecord["payload"] {
   if (
     request.type === "providers" &&
     Object.keys(request.payload).length === 0
   ) {
     return {
       ...versions,
-      providers: models.getProviders().map(({ id, name }) => ({ id, name })),
+      providers: models.getProviders().map(({ id, name, auth }) => ({
+        id,
+        name,
+        login_methods: [
+          ...(auth.apiKey?.login ? ["api_key"] : []),
+          ...(auth.oauth ? ["oauth"] : []),
+        ],
+      })),
     };
   }
   if (
@@ -58,28 +70,163 @@ function metadata(request: JSONLRecord): JSONLRecord["payload"] {
   throw new Error("invalid_request");
 }
 
-try {
-  for await (const request of readRecords(process.stdin)) {
+function send(
+  request: JSONLRecord,
+  type: string,
+  payload: JSONLRecord["payload"],
+): void {
+  if (!process.stdout.destroyed)
+    process.stdout.write(encodeRecord({ ...request, type, payload }));
+}
+
+export async function runHelper(
+  models: Models,
+  store: FileCredentialStore,
+): Promise<void> {
+  const controller = new AbortController();
+  let active: Promise<void> | undefined;
+  let dialog: AuthDialog | undefined;
+  let requestId: string | undefined;
+  const stop = () => {
+    controller.abort();
+    process.stdin.destroy();
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+  process.stdout.on("error", stop);
+  const authenticate = async (request: JSONLRecord) => {
+    let payload: JSONLRecord["payload"] = {};
+    let code: string | undefined;
     try {
-      process.stdout.write(
-        encodeRecord({
-          ...request,
-          type: "result",
-          payload: metadata(request),
-        }),
-      );
+      const { provider, method } = request.payload;
+      if (
+        typeof provider !== "string" ||
+        Object.keys(request.payload).length !==
+          (request.type === "login" ? 2 : 1)
+      )
+        throw new Error("invalid_request");
+      const selected = models.getProvider(provider);
+      if (!selected) throw new Error("unknown_provider");
+      if (request.type === "login") {
+        if (
+          (method !== "api_key" && method !== "oauth") ||
+          !(method === "oauth"
+            ? selected.auth.oauth
+            : typeof selected.auth.apiKey?.login === "function")
+        )
+          throw new Error("unsupported_method");
+        const interaction = new AuthDialog(controller.signal, (type, data) =>
+          send(request, type, data),
+        );
+        dialog = interaction;
+        const deviceId =
+          provider === "openai" && method === "oauth"
+            ? await store.getDeviceId()
+            : undefined;
+        await models.login(
+          provider,
+          method,
+          {
+            signal: controller.signal,
+            prompt: (prompt) => interaction.prompt(prompt),
+            notify: (event) => interaction.notify(event),
+          },
+          deviceId
+            ? { getDeviceId: () => deviceId, agentName: "doc-translate" }
+            : undefined,
+        );
+        payload = { operation: "login", provider, method };
+      } else {
+        await store.delete(provider, { signal: controller.signal });
+        payload = { operation: "logout", provider };
+      }
+      if (controller.signal.aborted) throw new Error("cancelled");
     } catch (error) {
-      const code =
-        error instanceof Error && error.message === "unknown_provider"
-          ? "unknown_provider"
-          : "invalid_request";
-      process.stdout.write(
-        encodeRecord({ ...request, type: "error", payload: { code } }),
-      );
-      process.exitCode = 2;
+      const message = error instanceof Error ? error.message : "";
+      code = [
+        "invalid_request",
+        "unknown_provider",
+        "unsupported_method",
+      ].includes(message)
+        ? message
+        : controller.signal.aborted
+          ? "cancelled"
+          : "auth_failed";
+    } finally {
+      try {
+        await store.drain();
+      } catch {
+        code = "storage_failed";
+      }
     }
+    if (code) {
+      process.exitCode = [
+        "invalid_request",
+        "unknown_provider",
+        "unsupported_method",
+      ].includes(code)
+        ? 2
+        : 1;
+      send(request, "error", { code });
+    } else send(request, "result", payload);
+  };
+  try {
+    for await (const request of readRecords(process.stdin)) {
+      if (controller.signal.aborted) break;
+      if (request.type === "response") {
+        if (request.request_id !== requestId || !dialog?.respond(request))
+          stop();
+        continue;
+      }
+      if (active) {
+        send(request, "error", { code: "invalid_request" });
+        process.exitCode = 2;
+        stop();
+        break;
+      }
+      if (request.type === "login" || request.type === "logout") {
+        requestId = request.request_id;
+        active = authenticate(request).finally(() => {
+          active = undefined;
+        });
+      } else {
+        try {
+          send(request, "result", metadata(request, models));
+        } catch (error) {
+          send(request, "error", {
+            code:
+              error instanceof Error && error.message === "unknown_provider"
+                ? "unknown_provider"
+                : "invalid_request",
+          });
+          process.exitCode = 2;
+        }
+      }
+    }
+    if (active) controller.abort();
+  } catch {
+    const wasAborted = controller.signal.aborted;
+    controller.abort();
+    if (!active && !wasAborted) {
+      process.stderr.write("Invalid metadata JSONL input\n");
+      process.exitCode = 2;
+    } else process.exitCode ??= 1;
+  } finally {
+    await active;
+    try {
+      await store.drain();
+    } catch {
+      process.exitCode = 1;
+    }
+    process.removeListener("SIGINT", stop);
+    process.removeListener("SIGTERM", stop);
   }
-} catch {
-  process.stderr.write("Invalid metadata JSONL input\n");
-  process.exitCode = 2;
+}
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+) {
+  const store = new FileCredentialStore();
+  await runHelper(builtinModels({ credentials: store }), store);
 }

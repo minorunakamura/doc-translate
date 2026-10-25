@@ -28,9 +28,13 @@ class ProviderMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     id: str
     name: str
+    login_methods: list[Literal["api_key", "oauth"]]
 
 
-class ModelMetadata(ProviderMetadata):
+class ModelMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    id: str
+    name: str
     image_input: bool
     reasoning: bool
     thinking_levels: list[
@@ -261,7 +265,7 @@ def setup(manager: str) -> dict:
     return {**record, "runtime": str(runtime)}
 
 
-def metadata(operation: str, provider: str | None = None) -> dict:
+def installed_runtime() -> tuple[str, Path]:
     runtime = _home() / "current"
     try:
         record = json.loads((runtime / "runtime.json").read_text())
@@ -270,4 +274,9 @@ def metadata(operation: str, provider: str | None = None) -> dict:
         raise RuntimeUnavailable(
             f"AI runtime is missing or mismatched. {SETUP}"
         ) from None
-    return _request(_node(), runtime, operation, provider)
+    return _node(), runtime
+
+
+def metadata(operation: str, provider: str | None = None) -> dict:
+    node, runtime = installed_runtime()
+    return _request(node, runtime, operation, provider)
