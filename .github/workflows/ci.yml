@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  foundation:
+  checks:
     runs-on: macos-15
     env:
       HF_HUB_OFFLINE: "1"
