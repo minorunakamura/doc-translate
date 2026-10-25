@@ -1,12 +1,12 @@
 # 開発ガイド
 
-対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logoutです。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapterです。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
 
 ## 構成・環境
 
-- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、原文snapshot、workspace OS lock、JSONL codec。
-- `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`。generationは未実装です。`ai/tests/jsonl-process.mjs`は公開exportを使うテスト専用echo processです。
-- `tests/fixtures/`：自作JSONと外部認証fake／PTY process。入力adapter、generation、翻訳・出力・再開操作は未実装です。
+- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、原文snapshot、workspace OS lock、JSONL codec。
+- `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証／generation helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`、独立推論のpreflight／stream接続（`generation.ts`）。`ai/tests/`の`.mjs`は公開APIとcompile済みhelperを使うテスト専用processです。
+- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。入力adapter、文書pipeline、翻訳・出力・再開のCLI操作は未実装です。
 - `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、および別venvにinstallしたwheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
 
 実動基準：macOS 26.7.1 arm64、Python 3.14.9、Node 24.21.0、pnpm 12.10.1、npm 11.19.0。CIはGitHub-hosted macos-15 ARM64、Python 3.14／Node 24です。別OSやmacOSの最低versionは未保証です。
@@ -67,7 +67,7 @@ WHEEL="$PWD/dist/doc_translate-0.1.0-py3-none-any.whl"
 uv venv --python 3.14 "$TMP/core"
 uv pip install --python "$TMP/core/bin/python" "$WHEEL"
 (cd "$TMP" && core/bin/doc-translate --help)
-(cd "$TMP" && core/bin/python -c 'import importlib.util; import doc_translate.snapshot, doc_translate.jsonl; assert importlib.util.find_spec("docling") is None')
+(cd "$TMP" && core/bin/python -c 'import importlib.util; import doc_translate.snapshot, doc_translate.jsonl, doc_translate.inference; assert importlib.util.find_spec("docling") is None')
 uv venv --python 3.14 "$TMP/pdf"
 uv pip install --python "$TMP/pdf/bin/python" "$WHEEL[pdf]"
 (cd "$TMP" && pdf/bin/python -c 'from docling.document_converter import DocumentConverter; from docling.datamodel.pipeline_options import OcrMacOptions; from docling_core.types.doc import DoclingDocument; from ocrmac import ocrmac')
@@ -84,6 +84,16 @@ login／refresh／TTL判定・認証変換はpi-ai 1.4.0の公開APIに任せま
 Pythonの`authenticate`はCLIから実helperへJSONLを送り、controlling TTYだけで非echo入力し、認証URL・device codeをterminalへ表示します。認証record／入力／URL・code／raw stderrやprovider例外をログへ残しません。SIGINT／SIGTERM／EOFで取消し、prompt取消・終了で入力queueをflushしてechoを復元します。進行中のstore callback／保存は取消から保護し`drain`、Pythonは強制kill前に30秒待ってchildを回収します。取消後の`storage_failed`も非秘密の保存エラーと再login案内を表示します。SIGKILL／disk障害時の保存・TTY復元は保証できません。
 
 承認済みの公開seamでTDDを行います。`ai/tests/credentials.test.ts`は実storeと公開`createModels/createProvider/getAuth`で同時refresh・失敗時のno fallback・保存維持を検査し、Nodeの実processでも排他・heartbeat・UUID・drainを確認します。`ai/tests/auth.test.ts`は公開provider／実helper境界、`tests/test_auth_cli.py`は公開CLI・実helper／外部fake・PTYで非echo、callbackによるprompt取消、SIGINT／SIGTERM／EOF、未送信secretの破棄、取消中の保存失敗とchild回収を検査します。実credentialを読み込まず、人工credentialとnetwork拒否で検証します。実認証・実token refresh・推論・文書送信は未検証で、別途個別承認が必要です。
+
+## 推論adapterの実装・検証境界
+
+`doc_translate.inference.generate`は文書workflowとは独立したPython APIです。段階指定→共通指定→`PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL`で設定を解決し、文書を含まないpreflightで正確なmodel／thinking・画像能力・認証sourceを確認してから、明示policy／text／context／glossaryと必要なPNGだけを送ります。各試行は新しいNode processで、Pi CLI設定・履歴・tools・探索・agent loopを使いません。`run/resume`等のCLIは追加していません。APIの型・固定code・JSONLは[artifact契約](docs/reference/artifacts.md)を参照してください。
+
+Pythonは回答JSONを別に解析してcallerのPydantic model（domain validatorを含む）で検証します。ID／根拠・送信許可範囲・座標説明の意味検証、artifact保存・採用は後続の文書callerが所有します。画像は完全decode・実寸・hash等を検証して元byte列と順序を保持し、縮小・再encode・保存しません。公表入力上限超過は`input_limit`で停止します。`inputLimits.images.resize.maxBytes`はraw PNGではなくcanonical base64 payloadのASCII byte量に適用します。
+
+成功にはNode terminal／stop reason・送信先・toolCallなし・Python schema検証・正常process終了がすべて必要です。workflow retryは最終`generation_failed`のlibrary heuristicによるretryableなerrorだけに初回込み最大3試行・待機3／6秒です。schema／認証／保存／timeout／取消はretryしません。libraryへ`maxRetries:0`を渡しますが、内部retryは観測できないため不明のままです。未観測usageも0ではなく不明とします。timeout／取消はchildへ伝え、stream終了を最大30秒待ち、協調的providerのterminal／最終message／usageを失敗のまま保持します。終了すれば直ちに待機を終え、credential refresh／保存のdrainも維持します。親は原則30秒のgraceでchildを回収し、非協調providerのterminal／usageは保証しません。drainで上書きされた失敗は、保持されたretry metadataだけを理由に再試行しません。
+
+`ai/tests/generation.test.ts`と`generation-process.mjs`は公開fauxProvider／createProviderと実HTTP adapter＋injected fetchで実効入力・terminal・usage・retry設定・取消／refresh drainを検査します。`tests/test_inference.py`は実helperを使ってPython側の独立validation・domain validator・有限retry・画像保持・timeout／signal取消を検査し、`ai/tests/inference-provider.mjs`は人工認証／取消process、`tests/fixtures/inference_process.py`はprotocol故障注入だけを担当します。全Node fixtureは上記Biome／oxlintの対象です。実provider通信・実credential・実token refresh・account利用権・課金・翻訳品質・全adapterの内部retry回数は未検証です。offlineテストやwheelのimport成功をこれらの成功と扱いません。
 
 ## lock・依存更新とlicense
 

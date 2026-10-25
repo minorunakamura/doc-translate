@@ -59,7 +59,7 @@ doc-translate logout --provider anthropic
 
 保存先は`$XDG_CONFIG_HOME/doc-translate/`、変数が未設定または空なら`~/.config/doc-translate/`です。directoryは0700、`credentials.json`は0600で、文書workspaceやexport、Pi CLIのauth.jsonとは別です。OpenAI OAuthの初回loginで安定したinstallation UUIDを`installation-id`（0600）に作成・再利用します。logoutはこのUUIDや別providerのcredentialを消しません。これらのファイルを共有・repositoryへ追加しないでください。
 
-OAuth tokenのTTL判定・refresh・認証変換はpi-ai／providerに任せ、通常は保存credentialを再利用します。refresh失敗時にambient API keyや別の認証modeへ自動fallbackしません。ただし文書generation自体は未実装で、実tokenのrefresh・利用権・推論の成功は未確認です。ChatGPTサブスクリプションは共有利用枠であり、API課金や全modelの利用権、無制限利用を保証しません。
+OAuth tokenのTTL判定・refresh・認証変換はpi-ai／providerに任せ、通常は保存credentialを再利用します。refresh失敗時にambient API keyや別の認証modeへ自動fallbackしません。ただし文書の翻訳操作は未実装で、実tokenのrefresh・利用権・推論の成功は未確認です。ChatGPTサブスクリプションは共有利用枠であり、API課金や全modelの利用権、無制限利用を保証しません。
 
 認証の入力・選択はcontrolling TTYで非echoにし、pipeからの秘密入力やechoへのfallbackは受け付けません。認証URL・device codeはterminalにのみ表示し、stdoutの成功JSONは`operation`・`provider`・login時の`method`だけです。URL・code・token・入力内容をログやterminal録画へ保存したり、Issueへ添付したりしないでください。helperのraw stderr／provider例外も出力しません。
 
