@@ -1,0 +1,22 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.2/schema.json",
+  "formatter": { "indentStyle": "space" },
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true,
+    "root": ".."
+  },
+  "files": {
+    "ignoreUnknown": false,
+    "includes": [
+      "**",
+      "!!node_modules",
+      "!!dist",
+      "!!pnpm-lock.yaml",
+      "!!package-lock.json"
+    ]
+  },
+  "linter": { "enabled": false },
+  "assist": { "enabled": false }
+}

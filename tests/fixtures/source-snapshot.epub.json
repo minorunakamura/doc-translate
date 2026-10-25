@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "source-epub-1",
+  "document": {
+    "format": "epub",
+    "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    "artifact": "originals/artificial.epub"
+  },
+  "blocks": [
+    {
+      "block_id": "block-a",
+      "kind": "paragraph",
+      "text": "A small example with emphasis.",
+      "locations": [
+        {"format": "epub", "resource_path": "EPUB/chapter.xhtml", "element_id": "intro"}
+      ],
+      "structure": {
+        "heading_path": ["Introduction"],
+        "inline": [{"kind": "emphasis", "text": "small"}]
+      }
+    },
+    {
+      "block_id": "block-b",
+      "kind": "code",
+      "text": "if ready:\n    print('hello')\n",
+      "locations": [
+        {
+          "format": "epub", "resource_path": "EPUB/chapter.xhtml",
+          "node_path": "/html/body/pre[1]", "node_snapshot": "xhtml-tree-1"
+        }
+      ],
+      "structure": {"language": "python"}
+    }
+  ],
+  "uncertainties": [
+    {
+      "reason": "The original example is incomplete.",
+      "target_ids": ["block-b"], "stage": "acquisition", "origin": "original",
+      "locations": [
+        {
+          "format": "epub", "resource_path": "EPUB/chapter.xhtml",
+          "node_path": "/html/body/pre[1]", "node_snapshot": "xhtml-tree-1"
+        }
+      ]
+    }
+  ],
+  "processing": {"stage": "acquisition", "status": "completed"},
+  "checks": [{"name": "node coverage", "target_ids": ["block-a", "block-b"], "passed": true}],
+  "content_reviews": []
+}

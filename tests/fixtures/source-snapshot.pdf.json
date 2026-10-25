@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "source-pdf-1",
+  "document": {
+    "format": "pdf",
+    "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    "artifact": "originals/artificial.pdf"
+  },
+  "blocks": [
+    {
+      "block_id": "table-a",
+      "kind": "table",
+      "text": "",
+      "locations": [
+        {
+          "format": "pdf", "page": 1,
+          "extraction_ref": "#/tables/0", "extraction_snapshot": "docling-extract-1",
+          "bbox": {
+            "left": 10, "top": 20, "right": 200, "bottom": 120,
+            "origin": "top-left", "unit": "px", "reference_image": "images/page-1.png",
+            "rendering": {"width": 600, "height": 800, "scale": 1}
+          }
+        }
+      ],
+      "structure": {
+        "rows": 2, "columns": 2,
+        "cells": [
+          {"cell_id": "cell-a", "row": 0, "column": 0, "row_span": 1, "column_span": 2, "text": "Heading"},
+          {"cell_id": "cell-b", "row": 1, "column": 0, "row_span": 1, "column_span": 1, "text": ""},
+          {"cell_id": "cell-c", "row": 1, "column": 1, "row_span": 1, "column_span": 1, "text": "Value"}
+        ],
+        "caption_id": "caption-a"
+      }
+    },
+    {
+      "block_id": "caption-a", "kind": "caption", "text": "Example table.",
+      "locations": [{"format": "pdf", "page": 1, "evidence": "Visible below the table; absent from extraction."}],
+      "structure": {"target_id": "table-a"}
+    }
+  ],
+  "uncertainties": [],
+  "processing": {"stage": "correction", "status": "completed"},
+  "checks": [{"name": "page coverage", "target_ids": ["table-a", "caption-a"], "passed": true}],
+  "content_reviews": [
+    {"reviewer": "artificial-reviewer", "method": "image comparison", "target_ids": ["caption-a"], "details": "Caption only, not the table cells."}
+  ]
+}

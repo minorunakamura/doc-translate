@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "doc-translate"
+version = "0.1.0"
+description = "Traceable PDF and EPUB translation workspace"
+requires-python = ">=3.14"
+dependencies = [
+    "pydantic>=2.12,<3",
+    "defusedxml==0.7.1",
+    "Pillow",
+]
+
+[project.optional-dependencies]
+pdf = [
+    "docling[ocrmac]==2.142.1",
+    "docling-core==2.104.0",
+    "ocrmac==1.0.1",
+]
+
+[project.scripts]
+doc-translate = "doc_translate.cli:main"
+
+[dependency-groups]
+dev = ["pytest", "ruff", "ty"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/doc_translate"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"ai/dist" = "doc_translate/ai/dist"
+"ai/package.json" = "doc_translate/ai/package.json"
+"ai/pnpm-lock.yaml" = "doc_translate/ai/pnpm-lock.yaml"
+"ai/package-lock.json" = "doc_translate/ai/package-lock.json"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/doc_translate",
+    "ai/src",
+    "ai/dist",
+    "ai/package.json",
+    "ai/pnpm-lock.yaml",
+    "ai/package-lock.json",
+    "ai/tsconfig.json",
+    "ai/tsconfig.build.json",
+    "pyproject.toml",
+    "README.md",
+]
+
+[tool.hatch.build.targets.sdist.force-include]
+"ai/dist" = "ai/dist"
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

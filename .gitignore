@@ -1,0 +1,20 @@
+# Local documents and credentials must never become fixtures.
+/sample/
+.env
+.env.*
+*.pem
+*.key
+/workspaces/
+/runtime/
+/credentials/
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+/dist/
+*.egg-info/
+ai/node_modules/
+ai/dist/
+.DS_Store

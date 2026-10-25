@@ -1,0 +1,38 @@
+{
+  "name": "@doc-translate/ai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.21.0"
+  },
+  "packageManager": "pnpm@12.10.1",
+  "exports": {
+    "./jsonl": {
+      "types": "./dist/jsonl.d.ts",
+      "import": "./dist/jsonl.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "format": "biome format . --error-on-warnings",
+    "lint": "oxlint --type-aware --type-check --deny-warnings .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.4.0",
+    "proper-lockfile": "4.1.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.2",
+    "@types/node": "24.19.2",
+    "@types/proper-lockfile": "4.1.4",
+    "oxlint": "1.89.0",
+    "oxlint-tsgolint": "7.0.2005",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5"
+  }
+}
