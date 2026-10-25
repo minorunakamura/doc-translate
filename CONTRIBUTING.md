@@ -17,12 +17,12 @@
 
 ```sh
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-uv sync --locked --dev
 pnpm --dir ai install --frozen-lockfile --ignore-scripts
+pnpm --dir ai build
+uv sync --locked --dev
 pnpm --dir ai exec biome format . --error-on-warnings
 pnpm --dir ai exec oxlint --type-aware --type-check --deny-warnings .
 pnpm --dir ai exec vitest run
-pnpm --dir ai build
 uv run ruff check .
 uv run ruff format --check .
 uv run ty check
@@ -30,7 +30,7 @@ uv run pytest
 uv run doc-translate --help
 ```
 
-pytestのprocess契約はcompile済み公開`@doc-translate/ai/jsonl`を使うため、先にbuildが必要です。Python側はbinary file行iterator、Node側は任意binary chunkのcodecです。警告をquiet／包括的disableで隠さず修正します。
+Python packageは`ai/dist`を同梱するため、fresh checkoutでは`uv sync`より先にhelperの明示buildが必要です。pytestのprocess契約もcompile済み公開`@doc-translate/ai/jsonl`を使います。Python側はbinary file行iterator、Node側は任意binary chunkのcodecです。警告をquiet／包括的disableで隠さず修正します。
 
 PDF extraはcore-onlyと区別して確認します。
 
