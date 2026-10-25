@@ -26,8 +26,17 @@
 4. Python 3.14を開発・検証基準とし、linter／formatterはRuff、静的型checkerはty、test frameworkはpytestを使用する。以前の3.12案は既存実験に合わせたものであり、3.14非対応を確認した判断ではない。依存解決・import・OCRを最初に確認し、不成立でも無断で3.12へ戻さない。
 5. 推論は `@earendil-works/pi-ai@1.4.0` の直接利用へ変更し、利用者にPi CLI／coding agentを要求しない。provider選択と補正／翻訳の段階別model・thinkingは維持する。OpenAI固定にはせず、ChatGPTサブスクリプションOAuthを必須の実動確認対象とする。
 6. 開発はNode＋pnpmを標準とし、初回helper依存導入はnpm／pnpmの両方をサポートする。通常実行は導入済みhelperをNodeで起動するだけとし、実行のたびにpackage managerを起動／installしない。
-7. Node側のformatterはBiome、linterはoxlint＋正式package名 `oxlint-tsgolint`、test frameworkはVitestを使用する。type-aware／type-checkを有効にし、lint警告も解消してCIを通す。
+7. Node側のformatterはBiome、linterはoxlint＋正式package名 `oxlint-tsgolint`、test frameworkはVitestを使用する。type-aware／type-checkを有効にし、lint警告を解消してローカル正式チェックを通す。remote CIの実行・成功確認は受け入れ条件にしない。
 8. GitHub ActionsによるCIを追加する。READMEは利用者向けドキュメントに限定し、設計・実装構成・開発手順は別文書へ分ける。
+
+### remote CI受け入れ要件の改訂（Issue #2の再計画）
+
+- 再計画対象は https://github.com/minorunakamura/doc-translate/issues/2 。ユーザー指定「CIの実行は要件にしなくて良い。今後も」に基づき、remote CIの実行・成功確認を今回および後続Work Itemの受け入れ条件から外す。実行ref／run URLの取得・記録、remote CIの起動・完了待ち、そのためのcommit／pushも必須にしない。
+- GitHub Actions workflowの設定、既存および本Planで要求するsmoke検査、ローカル正式チェック・build／別環境導入検証は維持する。remote CIの未実行だけを理由にWork Itemを未完了・blockedにしない。設定済み／ローカル検証済みとremote実行済みを区別し、未実行をremote成功とは表示しない。remote実行結果によらず、必要なローカル検証で確認した不具合は修正する。
+- 小範囲実LLM検証と個別の送信・取得承認、安全境界、lint警告0件等の他の要件は変更しない。
+- 関連文書の整合修正は、Issue #2のImplementation再開時に `CONTRIBUTING.md` の「fixture・CIの境界」と基本設計§19の「初期CI・配布」のremote必須記述だけを対象に行う。CI設定・smoke検査・過去実験の記録は削除しない。更新完了までは、この節の方針を両文書の変更前のremote必須記述より優先する。
+- 既存Work Itemの分割・依存関係・種別を維持し、Issue #2および後続のopen Work Itemは本改訂Planを参照する。Issue #18のremote CI実行・成功確認要件も除外する。完了済みIssue #1の過去の受け入れ記録は書き換えず、再openしない。
+- この再計画では正式Planと確認済みWork Itemの更新のみを行い、既存の未コミット変更・部分実装はそのまま保持する。Implementationは別の新しいRootセッションで再開し、過去のチェック・Review・Code Review Approveを変更後の検証や承認として流用しない。
 
 ### 入力設計との差分と更新の合意
 
@@ -229,7 +238,7 @@ workspaceは原資料、取得下書き、ページ画像／assets、snapshots�
 - actionsは公式setup／checkoutを使用し、導入時に対応versionと固定refを確認する。pnpm setupは指定version・install自動実行なしとし、lock付きinstallを別stepで明示する。
 - `permissions: contents: read`、checkoutの `persist-credentials: false` を基本とし、provider secretsは登録・参照しない。privilegedなpull_request_targetでPR codeを実行しない。実認証や有料検証をPR CIの必須stepにしない。
 - workflowとローカル正式チェックを揃え、lint警告は抑制して合格にせず解消する。チェックをskip／continue-on-errorで見かけ上greenにしない。
-- private repositoryでのmacOS runner利用は利用枠・課金条件に従う。CI実行のためにこのPlanningでpush／releaseを行わない。repositoryへ公開されてCIが起動した時点の結果は、Implementationで実行ref／run URLとともに確認する。設定だけを作ってremote CI成功とは扱わない。
+- private repositoryでのmacOS runner利用は利用枠・課金条件に従う。remote CIの実行・成功確認・実行ref／run URLの記録は、今回および後続Work Itemの受け入れ条件にしない。CI実行のためのcommit／push／releaseを要求せず、このPlanningでも行わない。設定済み・ローカル検証済み・remote実行済みを区別し、設定だけを作ってremote CI成功とは扱わない。
 
 ## 完了条件
 
@@ -240,7 +249,7 @@ workspaceは原資料、取得下書き、ページ画像／assets、snapshots�
 5. SIGINT／強制終了・保存途中・provider失敗後も旧成果物を失わず、検証済み結果を再送せず再開できる。重複writerを拒否し、未完了結果やhash不一致を無条件採用しない。
 6. glossary／policy／source／訳文の局所変更を履歴付きで扱い、stale patchを拒否する。取得・補正を不要に再実行しない。renderはLLMを呼ばない。
 7. 指定範囲の処理到達・機械検査と内容品質の確認範囲を分けて報告し、部分出力や要確認を隠さない。
-8. GitHub Actionsに下記のoffline正式チェック・build／導入検証（Python: Ruff／ty／pytest、Node: Biome／oxlint／oxlint-tsgolint／Vitest）を設定し、公開後のremote runで全必須checkの成功を確認する。未公開／未実行ならCI受け入れは未完了と報告する。lint警告は0件とする。
+8. GitHub Actionsに下記のoffline正式チェック・build／導入検証（Python: Ruff／ty／pytest、Node: Biome／oxlint／oxlint-tsgolint／Vitest）を設定し、対応するローカル正式チェック・build／導入検証を完了する。lint警告は0件とする。remote CIの実行・成功確認・実行ref／run URLの記録は今回および後続Work Itemの受け入れ条件ではなく、未公開／未実行だけでは未完了としない。CI workflow・smoke検査は維持する。
 9. 下記の正式チェックと、実行時に別途承認された小範囲実LLM検証（OpenAIのChatGPT subscription OAuthを含む）を完了し、条件・観測・限界を記録する。有料検証が未承認／未実行なら、その受け入れ条件を未完了と報告する。
 
 ## 動作確認方法
@@ -274,6 +283,8 @@ Implementationでは `tdd` Skillを読み、1つの振る舞いのred→greenを
 - 各確定前後でprocessを止めて再開し、正常artifactの保持、未確定の非採用、hash不一致、stale修正、同時writer拒否を確認する。採用済み工程の再送がないことは外部fake processの入力記録で確認する。
 
 ### 正式チェック
+
+以下の正式チェック・build／導入検証はローカルで実行する。remote CIでの再実行・成功確認・実行ref／run URLの記録は受け入れに必須ではない。各Work Itemはその責務に対応する検証を行い、統合検証で本Plan全体を確認する。
 
 実装後の基本コマンド：
 

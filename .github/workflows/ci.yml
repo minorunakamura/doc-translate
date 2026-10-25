@@ -64,7 +64,7 @@ jobs:
           uv sync --locked --dev --extra pdf
           uv run python -c 'from docling.document_converter import DocumentConverter; from docling.datamodel.pipeline_options import OcrMacOptions; from docling_core.types.doc import DoclingDocument; from ocrmac import ocrmac; print(OcrMacOptions(lang=["en-US"], framework="vision", recognition="accurate"))'
           uv run pytest
-      - name: Build wheel and clean npm/pnpm runtimes (registry install, offline smoke)
+      - name: Wheel CLI setup-ai with npm/pnpm, Node-only providers/models and codec smoke
         run: |
           uv build
           uv run python scripts/check_distribution.py dist/doc_translate-0.1.0-py3-none-any.whl

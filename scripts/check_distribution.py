@@ -1,7 +1,7 @@
 """Check explicit helper build freshness and wheel resources, then clean installs.
 
 Run after pnpm --dir ai build && uv build. Registry access is only for the
-explicit npm/pnpm installs; the codec/dependency smoke sends no requests.
+explicit npm/pnpm installs; CLI catalog and codec smoke send no requests.
 """
 
 import json
@@ -84,29 +84,89 @@ def main() -> None:
         binaries = temporary / "bin"
         binaries.mkdir()
         (binaries / "node").symlink_to(node)
-        for manager, arguments in (
-            (
-                "npm",
-                ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
-            ),
-            ("pnpm", ["install", "--prod", "--frozen-lockfile", "--ignore-scripts"]),
-        ):
-            runtime = temporary / manager
-            runtime.mkdir()
-            for name, data in resources.items():
-                path = runtime / name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(data)
-            subprocess.run([manager, *arguments], cwd=runtime, check=True)
-            (runtime / "smoke.mjs").write_text(SMOKE, encoding="utf-8")
-            environment = {**os.environ, "PATH": str(binaries)}
+        core = temporary / "core"
+        subprocess.run(
+            ["uv", "venv", "--python", sys.executable, str(core)], check=True
+        )
+        python = core / "bin/python"
+        cli = core / "bin/doc-translate"
+        subprocess.run(
+            ["uv", "pip", "install", "--python", str(python), str(wheel)], check=True
+        )
+        subprocess.run(
+            [
+                str(python),
+                "-c",
+                "import importlib.util; assert importlib.util.find_spec('docling') is None",
+            ],
+            cwd=temporary,
+            check=True,
+        )
+        for manager in ("npm", "pnpm"):
+            home = temporary / manager
+            home.mkdir()
+            environment = {
+                **os.environ,
+                "HOME": str(home),
+                "XDG_DATA_HOME": str(home / "data"),
+            }
             environment.pop("NODE_PATH", None)
             environment.pop("NODE_OPTIONS", None)
+            installed = subprocess.run(
+                [str(cli), "setup-ai", "--package-manager", manager],
+                cwd=temporary,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            record = json.loads(installed.stdout)
+            assert record["package_manager"] == manager
+            assert record["library_version"] == "1.4.0"
+            runtime = Path(record["runtime"])
+            assert runtime.is_relative_to(home / "data/doc-translate/ai")
+            assert (
+                json.loads((runtime / "runtime.json").read_text())["lock_sha256"]
+                == record["lock_sha256"]
+            )
+            environment["PATH"] = str(binaries)
+            subprocess.run(
+                [str(cli), "--help"], cwd=temporary, env=environment, check=True
+            )
+            for arguments, key in (
+                (["providers"], "providers"),
+                (["models", "--provider", "anthropic"], "models"),
+                (["models", "--provider", "google"], "models"),
+            ):
+                result = subprocess.run(
+                    [str(cli), *arguments],
+                    cwd=temporary,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                payload = json.loads(result.stdout)
+                assert payload[key]
+                if key == "providers":
+                    assert {provider["id"] for provider in payload[key]} >= {
+                        "openai",
+                        "anthropic",
+                        "google",
+                    }
+                else:
+                    assert any(
+                        model["image_input"] and model["reasoning"]
+                        for model in payload[key]
+                    )
+            (runtime / "smoke.mjs").write_text(SMOKE, encoding="utf-8")
             subprocess.run(
                 [node, "smoke.mjs"], cwd=runtime, env=environment, check=True
             )
-            package = json.loads((runtime / "package.json").read_text())
-            print(f"{manager}: clean wheel runtime {package['version']} OK", flush=True)
+            print(
+                f"{manager}: wheel CLI setup + Node-only catalog + offline codec/imports OK ({record['runtime']})",
+                flush=True,
+            )
 
 
 if __name__ == "__main__":
