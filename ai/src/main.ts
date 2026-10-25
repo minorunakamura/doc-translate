@@ -2,9 +2,20 @@ import { pathToFileURL } from "node:url";
 import { AuthDialog } from "./auth.js";
 import { FileCredentialStore } from "./credentials.js";
 import { readFileSync, realpathSync } from "node:fs";
-import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai";
+import {
+  getSupportedThinkingLevels,
+  ModelsError,
+  type Models,
+} from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { encodeRecord, type JSONLRecord, readRecords } from "./jsonl.js";
+import {
+  generate,
+  generationConfig,
+  generationError,
+  preflight,
+  type GenerationConfig,
+} from "./generation.js";
 
 function version(url: URL): string {
   const manifest: unknown = JSON.parse(readFileSync(url, "utf8"));
@@ -87,6 +98,8 @@ export async function runHelper(
   let active: Promise<void> | undefined;
   let dialog: AuthDialog | undefined;
   let requestId: string | undefined;
+  let config: GenerationConfig | undefined;
+  let generationStarted = false;
   const stop = () => {
     controller.abort();
     process.stdin.destroy();
@@ -94,6 +107,62 @@ export async function runHelper(
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   process.stdout.on("error", stop);
+  const generation = async (request: JSONLRecord) => {
+    let result: JSONLRecord["payload"] = {};
+    let code: string | undefined;
+    try {
+      if (request.type === "preflight") {
+        if (config) throw new Error("invalid_request");
+        const selected = generationConfig(request.payload, models);
+        result = {
+          ...versions,
+          ...(await preflight(selected, models, controller.signal)),
+        };
+        config = selected;
+        requestId = request.request_id;
+      } else {
+        if (!config || request.request_id !== requestId || generationStarted)
+          throw new Error("invalid_request");
+        generationStarted = true;
+        result = {
+          ...versions,
+          ...(await generate(
+            request.payload,
+            config,
+            models,
+            controller.signal,
+          )),
+        };
+        if (typeof result.code === "string") code = result.code;
+      }
+      if (controller.signal.aborted) code ??= "cancelled";
+    } catch (error) {
+      code = generationError(error, controller.signal);
+    } finally {
+      try {
+        await store.drain();
+      } catch (error) {
+        code =
+          error instanceof ModelsError && error.code === "oauth"
+            ? "auth_failed"
+            : "storage_failed";
+      }
+    }
+    if (code) {
+      process.exitCode = [
+        "invalid_request",
+        "unknown_provider",
+        "unknown_model",
+        "unsupported_thinking",
+        "unsupported_image",
+        "invalid_image",
+        "input_limit",
+      ].includes(code)
+        ? 2
+        : 1;
+      send(request, "error", { ...result, code });
+    } else send(request, "result", result);
+  };
   const authenticate = async (request: JSONLRecord) => {
     let payload: JSONLRecord["payload"] = {};
     let code: string | undefined;
@@ -178,13 +247,21 @@ export async function runHelper(
           stop();
         continue;
       }
-      if (active) {
+      if (
+        active ||
+        generationStarted ||
+        (config && request.type !== "generate")
+      ) {
         send(request, "error", { code: "invalid_request" });
         process.exitCode = 2;
         stop();
         break;
       }
-      if (request.type === "login" || request.type === "logout") {
+      if (request.type === "preflight" || request.type === "generate") {
+        active = generation(request).finally(() => {
+          active = undefined;
+        });
+      } else if (request.type === "login" || request.type === "logout") {
         requestId = request.request_id;
         active = authenticate(request).finally(() => {
           active = undefined;
