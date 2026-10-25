@@ -31,9 +31,17 @@ describe("offline metadata helper protocol", () => {
     });
     expect(response.payload.providers).toEqual(
       expect.arrayContaining([
-        { id: "openai", name: expect.any(String) },
-        { id: "anthropic", name: expect.any(String) },
-        { id: "google", name: expect.any(String) },
+        {
+          id: "openai",
+          name: expect.any(String),
+          login_methods: ["api_key", "oauth"],
+        },
+        {
+          id: "anthropic",
+          name: expect.any(String),
+          login_methods: ["api_key", "oauth"],
+        },
+        { id: "google", name: expect.any(String), login_methods: ["api_key"] },
       ]),
     );
     expect(response.payload.library_version).toBe("1.4.0");

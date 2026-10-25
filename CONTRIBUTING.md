@@ -1,12 +1,12 @@
 # 開発ガイド
 
-対象はIssue #1の初期基盤とIssue #2のsetup-ai／offline metadataです。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logoutです。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
 
 ## 構成・環境
 
-- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、原文snapshot、workspace OS lock、JSONL codec。
-- `ai/src/`：TypeScriptのJSONL codecと非秘密metadata helper（`dist/main.js`）。`ai/tests/jsonl-process.mjs`は公開exportを使うテスト専用echo processです。production generation helperではありません。
-- `tests/fixtures/`：自作JSON。入力adapter、認証、generation、翻訳・出力・再開操作は未実装です。
+- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、原文snapshot、workspace OS lock、JSONL codec。
+- `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`。generationは未実装です。`ai/tests/jsonl-process.mjs`は公開exportを使うテスト専用echo processです。
+- `tests/fixtures/`：自作JSONと外部認証fake／PTY process。入力adapter、generation、翻訳・出力・再開操作は未実装です。
 - `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、および別venvにinstallしたwheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
 
 実動基準：macOS 26.7.1 arm64、Python 3.14.9、Node 24.21.0、pnpm 12.10.1、npm 11.19.0。CIはGitHub-hosted macos-15 ARM64、Python 3.14／Node 24です。別OSやmacOSの最低versionは未保証です。
@@ -74,6 +74,16 @@ uv pip install --python "$TMP/pdf/bin/python" "$WHEEL[pdf]"
 ```
 
 core-onlyでEPUB用位置のsnapshot保存・読込みはpytestで確認しています。EPUB取得経路はまだありません。PDF extraの別環境importはmodel実行ではありません。
+
+## 認証の実装・検証境界
+
+公開storeは`FileCredentialStore(directory?)`の`read/list/modify/delete/getDeviceId/drain`です。既定directoryは`$XDG_CONFIG_HOME/doc-translate`（未設定・空なら`~/.config/doc-translate`）。directoryは0700、credential JSON／installation UUIDは0600です。proper-lockfileの共通identityでファイル全体のread→callback→atomic保存／deleteとUUID初回作成を排他します。`modify`のundefinedは変更なし、OAuthの追加fieldは保持、`list`はprovider／typeだけです。壊れたJSON・保存失敗を空扱いしません。
+
+login／refresh／TTL判定・認証変換はpi-ai 1.4.0の公開APIに任せます。OpenAI OAuthは安定UUIDと`agentName: "doc-translate"`を渡します。`providers[].login_methods`は公開interactive loginの有無だけを示し、ambient-onlyにlogin methodを作りません。OAuth refresh失敗後のAPI key fallback／request overrideは追加しません。
+
+Pythonの`authenticate`はCLIから実helperへJSONLを送り、controlling TTYだけで非echo入力し、認証URL・device codeをterminalへ表示します。認証record／入力／URL・code／raw stderrやprovider例外をログへ残しません。SIGINT／SIGTERM／EOFで取消し、prompt取消・終了で入力queueをflushしてechoを復元します。進行中のstore callback／保存は取消から保護し`drain`、Pythonは強制kill前に30秒待ってchildを回収します。取消後の`storage_failed`も非秘密の保存エラーと再login案内を表示します。SIGKILL／disk障害時の保存・TTY復元は保証できません。
+
+承認済みの公開seamでTDDを行います。`ai/tests/credentials.test.ts`は実storeと公開`createModels/createProvider/getAuth`で同時refresh・失敗時のno fallback・保存維持を検査し、Nodeの実processでも排他・heartbeat・UUID・drainを確認します。`ai/tests/auth.test.ts`は公開provider／実helper境界、`tests/test_auth_cli.py`は公開CLI・実helper／外部fake・PTYで非echo、callbackによるprompt取消、SIGINT／SIGTERM／EOF、未送信secretの破棄、取消中の保存失敗とchild回収を検査します。実credentialを読み込まず、人工credentialとnetwork拒否で検証します。実認証・実token refresh・推論・文書送信は未検証で、別途個別承認が必要です。
 
 ## lock・依存更新とlicense
 
