@@ -1,6 +1,6 @@
 # 初期artifact／JSONL契約（schema version 1）
 
-Issue #1／#2／#3とIssue #4のNode generation境界・Python推論adapterを記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。原資料・翻訳unit／訳文・policy／glossary／context snapshot、attempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
+Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。原資料・翻訳unit／訳文・policy／glossary／context snapshot、attempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
 
 ## 原文snapshot
 
@@ -61,6 +61,55 @@ WORKSPACE/
 保存はmodel再検証→UTF-8 JSON byte列のhash→OS lock取得→同filesystemの一時fileにwrite／flush／fsync→atomic replace／directory fsync→採用参照のatomic更新の順です。artifact確定後に参照を切り替え、旧版を削除しません。既存digestはhashとschemaを検査します。loadもhashとschemaを検査し、不一致を採用しません。原資料本体の取得・コピー・hash照合は本APIの責務ではありません。
 
 `doc_translate.workspace.workspace_lock(Path)`は非blockingのPOSIX flockでwriter重複を拒否します（`WorkspaceLockedError`）。`save_source_snapshot`は自身でlockを取るため、その外側から同じlockを二重取得しません。lock fileの残存は所有を意味せず、process終了でOS lockが解放されます。参照切替前に中断したartifactが残っても、自動で採用しません。一般的なworkflowのresume／attempt復旧は未実装です。
+
+## EPUB安全読込み（Issue #5）
+
+公開APIは`doc_translate.epub.read_epub(path: Path) -> EPUB`です。core依存の`defusedxml==0.7.1`と標準`zipfile`／`zlib`／`struct`を使い、Node／Docling／OCR・認証・network接続は不要です。入力archiveを書換えず、展開file・snapshotも生成しません。原資料のコピー・hash記録・workspace保存、本文block／inline抽出・翻訳・CLI接続は後続Issueです。
+
+返り値はfrozen dataclassと読取り専用mapping／tupleです。
+
+| field | 契約 |
+| --- | --- |
+| `package_path` | containerから選んだ唯一のpackageのarchive内path |
+| `resources` | archive内の通常fileのpath→元の展開後`bytes`。package／XHTML／spine外notes／未知形式／fontも保持。空directory entryは返さず、非空directoryはデータを黙って捨てず拒否 |
+| `manifest` | 元ID→`ManifestItem(id, href, resource_path, fragment, media_type, fallback, properties)`。manifest順を保持。`href`は原表記、localは存在確認済みpath、外部は`resource_path=None`で未取得（`resources`に架空byteを作らない） |
+| `spine` | 元spine順の`SpineItem(idref, resolved_id, fallback_chain, linear, properties)`。`idref`は元ID、`resolved_id`は取得できるlocal XHTML採用先、`fallback_chain`は元IDから採用先まで（直接採用も1要素）。`linear=no`も`False`として順序内に残す |
+| `encryption` | font難読化の対象path→algorithm。解除せず元byteを保持 |
+
+`book.resolve(base_path, uri) -> ResourceReference`は後続のpackage／XHTML参照解決用です。`base_path`は`resources`中の**元resourceの正規path**（URI表記ではない）であり、そのdirectoryを基点にURIを解決します。`resource_path`、`fragment`、`query`、`external_uri`を返します。percent encodingはUTF-8として1回だけdecodeし、dot segmentをarchive内で解決、fragmentをpathから分離します。`#id`は同じresourceを指します。queryは原表記で保持します。localの欠落／root逸脱／不正percent encoding・UTF-8／NUL等／backslashは`EPUBError`です。外部scheme／authorityは`resource_path=None`と原URIの`external_uri`で返すだけで、file URIを含め取得・実行しません。fragmentの要素ID存在確認やXHTML node位置は抽出側の責務です。
+
+ZIP member名はURIでなくarchive内の実名として扱い、percent文字を勝手にdecodeしません。絶対／drive／traversal／dot・空segment／backslash／制御文字path、同一名・Unicode NFC同値名の衝突、file/directory衝突、symlinkを拒否します。file/directoryの祖先衝突は区切り境界を含めた正規化pathのsortで検査し、深いpathの全prefixを再構築しません。大文字小文字はZIP同様区別し、OS filesystemへ展開しません。URI側の相対`..`はrootを越えない限り許容します。
+
+### 読込み上限・XML
+
+すべて固定の有限上限です。上限と等しい値は許容し、超過は`EPUBError`で停止します。API／CLIの上限設定optionはありません。
+
+| 公開定数 | 上限 |
+| --- | --- |
+| `MAX_ARCHIVE_BYTES` | archive file 128 MiB（`zipfile`に渡す前に開いたfile descriptorのsizeを検査） |
+| `MAX_MEMBERS` | 4,096 entry（空directoryを含む） |
+| `MAX_MEMBER_BYTES` | 1 entryの展開後32 MiB |
+| `MAX_TOTAL_BYTES` | 全entryの展開後合計256 MiB |
+| `MAX_XML_DEPTH` | XML resourceごとに128（rootを1とする） |
+| `MAX_XML_NODES` | XML resourceごとに100,000 element（rootを含む） |
+| `MAX_XML_NAME_CHARS` | 1つの未展開／展開後の要素・属性名、namespace prefix／URIごとに4,096文字 |
+| `MAX_XML_TOTAL_NAME_CHARS` | XML resourceごとに開始要素名・属性名（namespace展開後）とnamespace宣言prefix／URIの累積8 Mi文字（出現ごとに加算、終了tagは加算しない） |
+| `MAX_XML_ATTRIBUTES` | 1要素ごとに1,024属性（namespace宣言を含む） |
+| `MAX_SPINE_FALLBACK_IDS` | 全spineの`fallback_chain`に追跡・保持するID総数100,000（元ID・採用先も含み、直接採用は1、`linear=no`も数える） |
+
+ZIPの申告展開量を先に検査し、`ZipFile.open`から最大64 KiBずつ読み、実読込みbyte量も個別／合計で検査します。`ZipExtFile`は申告展開量で切り詰めてからCRCを検査するため、それだけに頼りません。storedは圧縮sizeと展開sizeの一致を検査し、deflateは`ZipInfo.header_offset`とlocal header長から圧縮領域を読み、標準`zlib`で入力／出力各最大64 KiBずつの追加検査を行います。申告展開量を超えた時点で停止し、実量不足・圧縮stream終端欠落・余分な圧縮byteも拒否します。CRCと通常のZIP整合性は引き続き`zipfile`で検査し、正常なdata descriptor／空memberを許容します。ZIP暗号化、OCF非対応の圧縮方式（stored／deflate以外）を拒否し、`extractall`や`zipfile`のprivate内部APIは使いません。
+
+container→単一package→manifest／spineを検査します。XMLは`defusedxml`のnamespace処理を無効にしたSAX preflightで深さ／node数・未展開名／namespace宣言長と1要素の属性数を検査してから、`DefusedXMLParser`の同期`TreeBuilder` callbackで深さ／node数・展開後名長／累積量をDOM追加前に検査します。長いnamespace URIと多数の異なる名前は小さい入力からGiB級の展開名を作れるため、名前と累積量にも固定上限を設けています。属性数上限はtarget callback前に起こる単一開始tagの一括属性名展開も制限します（未展開名とURIが各4,096文字以内なので一時的な展開名は最大約8 Mi文字分、parserの複製／DOM等のoverheadは別）。両段でentity宣言を禁止し、SAX段は外部entity読込みを無効化、DOM段は外部XML参照を禁止します。DOCTYPEそのものは拒否せず、標準XHTMLのPUBLIC／SYSTEM識別子も外部DTDを取得せず不活性なまま扱います。非整形式XMLの修復はしません。container／package／encryptionに加え、`.xml/.opf/.xhtml/.html/.ncx/.svg`のresourceと、manifestで`+xml`／`application/xml`／`text/xml`と宣言されたlocal resourceを検査します。非本文のDOMを累積保持せず、元byteを返します。XML安全読込みは表示用markupの無害化ではありません。script／event属性／CSS／SVG・外部参照は不活性な原資料として保持するだけで、実行／fetchしません。安全な出力生成は後続工程です。
+
+### Package・受理範囲・暗号化
+
+EPUB 2.0／3.0 package、単一manifest／spine、IDの一意性、全fallback連鎖の存在／非循環、全spine idref・linearを検査します。fallback graphの検査済みIDは再走査せず、spine追跡ID総数は各IDをchainへ追加する前に検査し、多数のitemref×長い連鎖によるCPU／返却情報の増幅を上限で止めます。同じXHTMLを参照するitemref／manifest aliasの本文text・画像判定はresourceごとに一度だけ計算して再利用し、navかどうかの適用は各manifest itemで区別します。標準spine順でlocal XHTMLを採用し、非XHTMLやremote本文はfallbackを辿ります。採用可能なXHTMLへ到達しなければ、DTBook専用／画像／未知形式／外部本文等の理由付きで停止し、`linear=no`を含め本文を黙ってskipしません。spine外resourceも元byte／manifest情報を保持しますが、参照notes等の本文抽出・coverageは未実装です。
+
+複数rootfile（rendition）の自動選択、全体`rendition:layout=pre-paginated`、itemrefの`rendition:layout-pre-paginated`、EPUB 2系の明示`fixed-layout=true` metadata／Apple display optionsを拒否します。packageのrendition語彙prefix aliasも解釈します。画像だけのcover／図版を含むtext出版物は許容します。**spineの取得対象bodyに取得可能textがなく、画像だけの出版物は停止**します。head／title／script／style／SVG内text、nav resource／tocは本文textの根拠にしません。画像比率・文字数の独自閾値はなく、少量のtextが混在する画像主体publicationの一般判定・意味品質・抽出coverageは保証しません。
+
+`META-INF/encryption.xml`の存在だけでDRMとは断定しません。manifest構築時にresource pathごとのmedia-type集合を一度集計し、各recordでmanifest全件を再走査せずにarchive基点target path／存在とalgorithmを検査し、IDPF `http://www.idpf.org/2008/embedding` またはAdobe `http://ns.adobe.com/pdf/enc#RC`とmanifestのfont media-type（`font/*`、標準／従来font型）の組合せだけを難読化fontとして保持します。未使用fontの併存は本文読込みを禁止しません。本文／画像へfont例外を流用せず、未知algorithmも一律DRMと断定せず「未対応の暗号化algorithm/resource」と対象／algorithmを示して停止します。暗号解除／font復号はしません。
+
+受理範囲／入力不整合／ZIP・XML安全違反は理由付きの`EPUBError(ValueError)`です。filesystemのopen／read失敗は元の`OSError`です。原資料は成功時・失敗時とも変更／破棄しません。
 
 ## Python↔Node JSONLの公開codec
 

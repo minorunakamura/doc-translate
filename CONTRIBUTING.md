@@ -1,12 +1,12 @@
 # 開発ガイド
 
-対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapterです。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
 
 ## 構成・環境
 
-- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、原文snapshot、workspace OS lock、JSONL codec。
+- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）、原文snapshot、workspace OS lock、JSONL codec。
 - `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証／generation helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`、独立推論のpreflight／stream接続（`generation.ts`）。`ai/tests/`の`.mjs`は公開APIとcompile済みhelperを使うテスト専用processです。
-- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。入力adapter、文書pipeline、翻訳・出力・再開のCLI操作は未実装です。
+- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUB readerの人工ZIPは`tests/test_epub.py`で生成します。本文block抽出、PDF入力adapter、文書pipeline、翻訳・出力・再開のCLI操作は未実装です。
 - `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、および別venvにinstallしたwheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
 
 実動基準：macOS 26.7.1 arm64、Python 3.14.9、Node 24.21.0、pnpm 12.10.1、npm 11.19.0。CIはGitHub-hosted macos-15 ARM64、Python 3.14／Node 24です。別OSやmacOSの最低versionは未保証です。
@@ -67,13 +67,13 @@ WHEEL="$PWD/dist/doc_translate-0.1.0-py3-none-any.whl"
 uv venv --python 3.14 "$TMP/core"
 uv pip install --python "$TMP/core/bin/python" "$WHEEL"
 (cd "$TMP" && core/bin/doc-translate --help)
-(cd "$TMP" && core/bin/python -c 'import importlib.util; import doc_translate.snapshot, doc_translate.jsonl, doc_translate.inference; assert importlib.util.find_spec("docling") is None')
+(cd "$TMP" && core/bin/python -c 'import importlib.util; import doc_translate.snapshot, doc_translate.jsonl, doc_translate.inference, doc_translate.epub; assert importlib.util.find_spec("docling") is None')
 uv venv --python 3.14 "$TMP/pdf"
 uv pip install --python "$TMP/pdf/bin/python" "$WHEEL[pdf]"
 (cd "$TMP" && pdf/bin/python -c 'from docling.document_converter import DocumentConverter; from docling.datamodel.pipeline_options import OcrMacOptions; from docling_core.types.doc import DoclingDocument; from ocrmac import ocrmac')
 ```
 
-core-onlyでEPUB用位置のsnapshot保存・読込みはpytestで確認しています。EPUB取得経路はまだありません。PDF extraの別環境importはmodel実行ではありません。
+core-onlyでEPUB用位置のsnapshot保存・読込みと、`read_epub(Path)`による安全読込み・package／spine／fallback／URI解決をpytestで確認しています。`uv run pytest tests/test_epub.py`は人工ZIPでpath・ZIP／XML／fallback上限・entity／DOCTYPE・固定layout・暗号化／font難読化・対象外本文の受理／拒否を検証します。namespace展開名の長さ／累積量・単一tagの属性数、深いpathと祖先衝突の区切り、申告size＋prefix CRCによるstored／deflate切捨て・deflate終端・data descriptor／空member、複数font／manifest alias／暗号化recordも公開`read_epub`経由で検査します。性能回帰は固定の時間閾値やprivate helper mockを使わず、祖先prefix再構築と暗号化recordごとのmanifest全走査を避ける実装と公開受理／拒否の回帰で確認します。原byteを保持するreaderまでで、本文block抽出・snapshot生成・CLI接続は未実装です。Node／Docling／OCR・外部取得は不要です。画像主体の一般判定は保証せず、本文textがなく画像のみのspineを停止する範囲です。APIと固定上限は[artifact契約](docs/reference/artifacts.md)を参照してください。PDF extraの別環境importはmodel実行ではありません。
 
 ## 認証の実装・検証境界
 
