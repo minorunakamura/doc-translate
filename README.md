@@ -22,7 +22,7 @@ doc-translate setup-ai --package-manager pnpm
 
 runtimeは文書workspaceではなく、`~/.local/share/doc-translate/ai/`（`XDG_DATA_HOME`指定時はその下の`doc-translate/ai/`）に保存します。setupのたびにmanager・固定lock・helperに対応する新しいdirectoryを作り、導入と検査に成功したものだけを次回利用対象にします。別managerで既存node_modulesを上書きせず、旧runtime、文書、credentialは削除しません。失敗した導入directoryも残ります。成功時は利用先とmanager／lock hash／helper・library versionをJSONで表示します。
 
-Pythonのcore導入にDoclingやOCR modelは不要です。PDF用依存は別extra `pdf`ですが、依存を入れただけでは文書処理はできません。
+Pythonのcore導入にDoclingやOCR modelは不要です。PDF用依存は別extra `pdf`です。PDF取得のPython APIは使えますが、翻訳・補正や文書処理CLIにはまだ接続していません。
 
 ## provider／modelを調べる（任意）
 
@@ -83,7 +83,52 @@ doc-translate revise DIR --source FILE --reason TEXT
 
 providerはOpenAI固定ではなく、pi-aiを直接利用します。ChatGPTサブスクリプションOAuthも実動検証対象ですが、実認証・利用権・翻訳品質は未確認です。
 
-PDFのmodel重みは同梱せず、将来明示的なローカル準備手順を提供します。現在は取得不要です。EPUBにPDF依存・OCR modelを要求しない設計です。
+EPUBにPDF依存・OCR modelは不要です。PDF取得だけを使う場合の準備は次節を参照してください。
+
+## PDF取得だけを使う場合のローカル準備
+
+PDFの取得は公開Python APIから利用できます（[引数・保存契約](docs/reference/artifacts.md#pdf抽出下書きissue-7)）。Node／provider認証／LLMは不要です。抽出下書きは正しい原文や補正済み原文ではありません。翻訳や補正を行いたいだけなら、未実装の文書CLIのために重みを取得する必要はありません。
+
+PDF依存を含むwheelを明示導入します。
+
+```sh
+uv tool install '/path/to/FILE.whl[pdf]'
+```
+
+固定依存はDocling 2.142.1／docling-core 2.104.0／OCRMac 1.0.1です。CPU、Apple Vision OCR（`en-US`／`vision`／`accurate`）で動作し、別OCRへのfallbackはありません。現在の実動確認はmacOS 26.7.1 arm64／Python 3.14のみです。
+
+重みは同梱せず、次の**固定revisionの必要ファイルだけ**を利用者が準備します。packageのMIT licenseを重みやAppleのOS frameworkへ一括適用しません。
+
+| 用途 | repo／revision | 必要ファイル | 条件 |
+| --- | --- | --- | --- |
+| Heron layout | `docling-project/docling-layout-heron` / `8f39ad3c0b4c58e9c2d2c84a38465abf757272d8` | `config.json`, `preprocessor_config.json`, `model.safetensors` | [Apache-2.0 model card](https://huggingface.co/docling-project/docling-layout-heron/blob/8f39ad3c0b4c58e9c2d2c84a38465abf757272d8/README.md) |
+| TableFormer V1 accurate（v2.3.0） | `docling-project/docling-models` / `fc0f2d45e2218ea24bce5045f58a389aed16dc23` | `model_artifacts/tableformer/accurate/tm_config.json`, `model_artifacts/tableformer/accurate/tableformer_accurate.safetensors` | [CDLA-Permissive-2.0 model card](https://huggingface.co/docling-project/docling-models/blob/fc0f2d45e2218ea24bce5045f58a389aed16dc23/README.md) |
+| OCRMac／Apple Vision | OCRMac codeはMIT、認識はmacOSのVision framework | 別のOCR重み取得なし | AppleのOS利用条件。VisionをMITとは扱いません |
+
+`MODELS`には利用者指定のlocal artifact directoryを指定します。既存の該当snapshotがあれば、cacheを改変せず次の構造のsymlinkで用意できます。`HERON_SNAPSHOT`／`TABLE_SNAPSHOT`は上表revisionのsnapshot directoryに置換してください。
+
+```sh
+MODELS=/absolute/path/to/local-models
+mkdir -p "$MODELS"
+ln -s "$HERON_SNAPSHOT" "$MODELS/docling-project--docling-layout-heron"
+ln -s "$TABLE_SNAPSHOT" "$MODELS/docling-project--docling-models"
+```
+
+未準備で、modelの利用条件・取得量を確認して**明示取得する場合だけ**、PDF環境の`hf`で以下を実行できます。これはネットワークから重みを取得する操作です。変換中には実行されません。`main`や全model downloaderは使用しません。
+
+```sh
+hf download docling-project/docling-layout-heron \
+  --revision 8f39ad3c0b4c58e9c2d2c84a38465abf757272d8 \
+  --include config.json preprocessor_config.json model.safetensors \
+  --local-dir "$MODELS/docling-project--docling-layout-heron"
+hf download docling-project/docling-models \
+  --revision fc0f2d45e2218ea24bce5045f58a389aed16dc23 \
+  --include 'model_artifacts/tableformer/accurate/tm_config.json' \
+  'model_artifacts/tableformer/accurate/tableformer_accurate.safetensors' \
+  --local-dir "$MODELS/docling-project--docling-models"
+```
+
+変換時はHub／Transformersをofflineにし、明示local pathのみを使います。不足ファイルは必要pathを示して停止し、自動download・remote services・external pluginsを使いません。固定repo／revisionと実ファイルhashを保存しますが、任意に差し替えたlocalファイルがupstream revisionと一致することを自動認証するものではありません。取得失敗やページ画像欠落は保存済み下書きへのdigest付きエラー、charspan不一致はclipしない要確認checkとして残ります。実行成功も原文品質の承認ではありません。
 
 ## 成果物とエラーの読み方
 
