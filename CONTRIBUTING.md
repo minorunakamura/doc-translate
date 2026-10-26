@@ -1,12 +1,12 @@
 # 開発ガイド
 
-対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
 
 ## 構成・環境
 
-- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）、原文snapshot、workspace OS lock、JSONL codec。
+- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）、原文snapshot、workspace OS lock、JSONL codec。
 - `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証／generation helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`、独立推論のpreflight／stream接続（`generation.ts`）。`ai/tests/`の`.mjs`は公開APIとcompile済みhelperを使うテスト専用processです。
-- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。文書pipeline、翻訳・出力・再開のCLI操作は未実装です。
+- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。文書pipeline、翻訳・出力・再開のCLI操作は未実装です。
 - `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、および別venvにinstallしたwheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
 
 実動基準：macOS 26.7.1 arm64、Python 3.14.9、Node 24.21.0、pnpm 12.10.1、npm 11.19.0。CIはGitHub-hosted macos-15 ARM64、Python 3.14／Node 24です。別OSやmacOSの最低versionは未保証です。
@@ -65,6 +65,24 @@ PY
 
 Issue #7ではmacOS 26.7.1 arm64／Python 3.14.9、承認済み固定revisionのHeron／TableFormer cache、CPU／Visionで自作文字PDF 2ページと画像のみPDF 1ページを実行し、いずれもsuccess／errorsなし、全対象PNG 1800×1350、取得textと保存hash照合を確認しました。画像のみPDFの自作2行をOCRMacが取得しました。公開page backendで400×300 pointからscale 4.5で直接再描画し、既存rasterのupscaleではありません。通信socketを拒否して実行し、同じAPIで不足model／不正PDFの失敗も確認しました。実LLM／補正／翻訳・既存書籍・一般的スキャン品質・他OSは未検証です。Torch由来のmacOS multiprocessing redirect未対応NOTEは観測しましたが変換は成功しています。
 
+### PDF補正chunkの検証境界
+
+Issue #8の公開seamは`correct_pdf(... draft_sha256, owned_pages, reference_pages, policy, config ...) -> digest`→`load_pdf_correction(workspace, digest)`です。取得draftの所有は送信許可ではありません。明示許可範囲だけのraw text／provenance／table cell投影と全所有PNGを、既存`generate(stage="correction")`へ渡します。回答はkind別の型と実raw provenanceで検証し、図の内部block／cellを採用本文から分離して保持します。`SourceBlock.structure`へ任意JSONを保存するだけで受理しません。API・回答schema・内部保持領域の利用禁止・保存物は[artifact契約](docs/reference/artifacts.md#pdf補正chunkissue-8)を参照してください。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/pytest tests/test_pdf_correction.py tests/test_pdf.py tests/test_inference.py
+```
+
+`tests/test_pdf_correction.py`は自作の小さなraw JSON／PNG／PDFDraftをworkspaceへ保存し、public loadでhash検証したdraftから補正します。`ai/tests/pdf-correction-process.mjs`はnetwork拒否下の公開`fauxProvider`と実`runHelper`を使い、人工回答と実際のrequestを記録する外部processです。`generate`やprivate collaboratorのmockで代用しません。実credential・model重みは使いません。全`.mjs`と同じBiome／oxlint／Vitestチェック対象です。
+
+- `test_correct_pdf_saves_only_owned_content_and_sends_only_authorized_input`で所有1／参照2／未許可3のliteral期待値、画像順、refなし画像復元、raw回答記録を検査します。
+- `test_form_image_keeps_membership_without_adopting_internal_text_or_cells`で「form画像がlogo＋text＋tableに分かれた」人工形状を処理します。実際の保存結果は採用IDが`outside/caption/ambiguous/partial/fields/form`、内部保持IDが`logo/internal`、採用table cellが`value`、内部保持cellが`name`です。曖昧／部分所属の原textと図領域／原ページPNG・要確認を残します。
+- 全content kind、見出し／list階層、code改行／callout、空cell／span、除外理由・原本欠損、不正ref／wrong-page ref／cell／span、所有外出力、owned画像欠落、rawの安全なspan投影とclipしない省略、bbox重なりだけで本文を消さないことを検査します。
+- raw itemの部分所属／共有ref／不確実cellと全table所属の矛盾で外側を削除しないこと、旧chunk保持・chunk保存失敗前のattempt保存、各artifactのhash不正、load時のdomain／送信許可再検証、writer排他を検査します。save障害注入はOSの`replace`境界だけです。
+
+再現用の公開API例はartifact契約を参照してください。offlineの実process検証は補正の構造・範囲・保存に限定され、実LLMの読取り／図分類品質・全文翻訳の成立は示しません。chunkは別artifactに確定するだけで、`source-snapshot.json`を切り替えません。CLI・ページ接続・unit生成・翻訳・resume engine・全chunk所有割当は対象外です。
+
 ## wheelの明示buildと導入検査
 
 ```sh
@@ -110,7 +128,7 @@ Pythonの`authenticate`はCLIから実helperへJSONLを送り、controlling TTY�
 
 `doc_translate.inference.generate`は文書workflowとは独立したPython APIです。段階指定→共通指定→`PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL`で設定を解決し、文書を含まないpreflightで正確なmodel／thinking・画像能力・認証sourceを確認してから、明示policy／text／context／glossaryと必要なPNGだけを送ります。各試行は新しいNode processで、Pi CLI設定・履歴・tools・探索・agent loopを使いません。`run/resume`等のCLIは追加していません。APIの型・固定code・JSONLは[artifact契約](docs/reference/artifacts.md)を参照してください。
 
-Pythonは回答JSONを別に解析してcallerのPydantic model（domain validatorを含む）で検証します。ID／根拠・送信許可範囲・座標説明の意味検証、artifact保存・採用は後続の文書callerが所有します。画像は完全decode・実寸・hash等を検証して元byte列と順序を保持し、縮小・再encode・保存しません。公表入力上限超過は`input_limit`で停止します。`inputLimits.images.resize.maxBytes`はraw PNGではなくcanonical base64 payloadのASCII byte量に適用します。
+Pythonは回答JSONを別に解析してcallerのPydantic model（domain validatorを含む）で検証します。ID／根拠・送信許可範囲・座標説明の意味検証、artifact保存・採用は文書callerが所有します。PDFの補正chunk callerはIssue #8で追加済みですが、文書全体のsource採用や翻訳callerは後続です。画像は完全decode・実寸・hash等を検証して元byte列と順序を保持し、縮小・再encode・保存しません。公表入力上限超過は`input_limit`で停止します。`inputLimits.images.resize.maxBytes`はraw PNGではなくcanonical base64 payloadのASCII byte量に適用します。
 
 成功にはNode terminal／stop reason・送信先・toolCallなし・Python schema検証・正常process終了がすべて必要です。workflow retryは最終`generation_failed`のlibrary heuristicによるretryableなerrorだけに初回込み最大3試行・待機3／6秒です。schema／認証／保存／timeout／取消はretryしません。libraryへ`maxRetries:0`を渡しますが、内部retryは観測できないため不明のままです。未観測usageも0ではなく不明とします。timeout／取消はchildへ伝え、stream終了を最大30秒待ち、協調的providerのterminal／最終message／usageを失敗のまま保持します。終了すれば直ちに待機を終え、credential refresh／保存のdrainも維持します。親は原則30秒のgraceでchildを回収し、非協調providerのterminal／usageは保証しません。drainで上書きされた失敗は、保持されたretry metadataだけを理由に再試行しません。
 
