@@ -1,12 +1,12 @@
 # 開発ガイド
 
-対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
 
 ## 構成・環境
 
-- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、原文snapshot、workspace OS lock、JSONL codec。
+- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）、原文snapshot、workspace OS lock、JSONL codec。
 - `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証／generation helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`、独立推論のpreflight／stream接続（`generation.ts`）。`ai/tests/`の`.mjs`は公開APIとcompile済みhelperを使うテスト専用processです。
-- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。PDF入力adapter、文書pipeline、翻訳・出力・再開のCLI操作は未実装です。
+- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。文書pipeline、翻訳・出力・再開のCLI操作は未実装です。
 - `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、および別venvにinstallしたwheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
 
 実動基準：macOS 26.7.1 arm64、Python 3.14.9、Node 24.21.0、pnpm 12.10.1、npm 11.19.0。CIはGitHub-hosted macos-15 ARM64、Python 3.14／Node 24です。別OSやmacOSの最低versionは未保証です。
@@ -38,11 +38,32 @@ PDF extraはcore-onlyと区別して確認します。
 
 ```sh
 uv sync --locked --dev --extra pdf
-uv run python -c 'from docling.document_converter import DocumentConverter; from docling.datamodel.pipeline_options import OcrMacOptions; from docling_core.types.doc import DoclingDocument; from ocrmac import ocrmac; print(OcrMacOptions(lang=["en-US"], framework="vision", recognition="accurate"))'
-uv run pytest
+uv run --locked --extra pdf python -c 'from docling.document_converter import DocumentConverter; from docling.datamodel.pipeline_options import OcrMacOptions; from docling_core.types.doc import DoclingDocument; from ocrmac import ocrmac; print(OcrMacOptions(lang=["en-US"], framework="vision", recognition="accurate"))'
+uv run --locked --extra pdf pytest
 ```
 
-これは依存解決・import確認であり、実Docling変換、Apple Vision OCR、重みを使うlayout／table処理の成功を意味しません。実OCR／LLM検証は後続Issueで明示承認・local model準備後に行い、未実行を成功にしません。
+extraを保持するには`uv run --locked --extra pdf ...`（pytestは`uv run --locked --extra pdf pytest`を推奨）、またはsync済みの`.venv/bin/pytest`／`.venv/bin/ruff`／`.venv/bin/ty`を使い、`.venv/bin/pytest`を直接使う場合はvenvのactivateまたは`.venv/bin`のPATH追加が必要です。これは依存解決・importと人工fixture検証であり、それだけを実Docling変換、Apple Vision OCR、重みを使うlayout／table処理の成功と表示しません。
+
+### PDF取得の検証境界
+
+`acquire_pdf`→`load_pdf_draft`の公開seamで、不足model・不正入力／range、raw item／ref／table cell／provenance、clipしないcharspan不一致、conversion status／errors、全対象ページ／PNG、直接描画scale／unload、artifact hash不一致、writer排他、参照replace失敗時の旧版保持を検査します。Doclingの外部公開`DocumentConverter.convert`と公開page backend境界だけを人工fixtureに置換し、保存・load・workspaceは実物を使います。private helper mockや未依頼CLIは追加しません。core-onlyでのPDF／EPUB API importも検査します。
+
+実変換は人工fixtureテストとは別に、明示承認済みの既存local modelだけを使い、自作PDFで公開APIを呼びます。重みをテストやCIが取得することはありません。準備は[README](README.md#pdf取得だけを使う場合のローカル準備)、APIと保存物は[artifact契約](docs/reference/artifacts.md#pdf抽出下書きissue-7)を参照してください。再確認は自作の小さな文字付きPDFと画像のみPDFについて、それぞれ次を実行します（`OWN.pdf`／`MODELS`／workspaceは置換）。
+
+```sh
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run --locked --extra pdf python - <<'PY'
+from pathlib import Path
+from doc_translate.pdf import acquire_pdf, load_pdf_draft
+workspace = Path('/tmp/own-pdf-workspace')
+digest = acquire_pdf(Path('OWN.pdf'), workspace=workspace, artifacts_path=Path('MODELS'))
+draft = load_pdf_draft(workspace, digest)
+print(draft.document.sha256, draft.target_pages, draft.conversion_status)
+print([check.model_dump() for check in draft.checks])
+print([(page.page, page.width_pixels, page.height_pixels) for page in draft.pages])
+PY
+```
+
+Issue #7ではmacOS 26.7.1 arm64／Python 3.14.9、承認済み固定revisionのHeron／TableFormer cache、CPU／Visionで自作文字PDF 2ページと画像のみPDF 1ページを実行し、いずれもsuccess／errorsなし、全対象PNG 1800×1350、取得textと保存hash照合を確認しました。画像のみPDFの自作2行をOCRMacが取得しました。公開page backendで400×300 pointからscale 4.5で直接再描画し、既存rasterのupscaleではありません。通信socketを拒否して実行し、同じAPIで不足model／不正PDFの失敗も確認しました。実LLM／補正／翻訳・既存書籍・一般的スキャン品質・他OSは未検証です。Torch由来のmacOS multiprocessing redirect未対応NOTEは観測しましたが変換は成功しています。
 
 ## wheelの明示buildと導入検査
 
@@ -99,7 +120,7 @@ Pythonは回答JSONを別に解析してcallerのPydantic model（domain validat
 
 Pythonは`pyproject.toml`変更後に`uv lock`、Nodeは共通`ai/package.json`を変更して`pnpm --dir ai install --lockfile-only --ignore-scripts`と`npm --prefix ai install --package-lock-only --ignore-scripts --no-audit --no-fund`で両lockを更新します。依存更新はregistry取得の許可範囲内で行います。既存node_modulesへ別managerを上書きせず、上のwheel clean install検査を両managerで再実行してください。両managerの推移依存が完全一致するとは仮定しません。
 
-現在の主依存：Pydantic／Docling／OCRMac／pi-ai／proper-lockfileはMIT、PillowはMIT-CMU。推移依存にはcertifiのMPL-2.0、Torchの複合license、Node側のMIT／Apache-2.0／BSD等があります。lockは解決versionの記録でありlicense承認の代替ではありません。今回のnative tool確認はmacOS arm64に限定しています。更新時は実際の配布物のlicense／NOTICEとnative条件を再確認します。Apple VisionのOS条件やmodel重みをpackageのMITに含めません。重みは未取得・未同梱です。project全体のlicense宣言・releaseは今回の対象外です。
+現在の主依存：Pydantic／Docling／OCRMac／pi-ai／proper-lockfileはMIT、PillowはMIT-CMU。推移依存にはcertifiのMPL-2.0、Torchの複合license、Node側のMIT／Apache-2.0／BSD等があります。lockは解決versionの記録でありlicense承認の代替ではありません。今回のnative tool確認はmacOS arm64に限定しています。更新時は実際の配布物のlicense／NOTICEとnative条件を再確認します。Apple VisionのOS条件やmodel重みをpackageのMITに含めません。Heron重みはApache-2.0、TableFormer重みはCDLA-Permissive-2.0です。Issue #7の実動検証は承認済みの既存local cacheを使い、新規取得・同梱はしていません。project全体のlicense宣言・releaseは今回の対象外です。
 
 ## fixture・CIの境界
 

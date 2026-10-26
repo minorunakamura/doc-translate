@@ -1,6 +1,6 @@
 # 初期artifact／JSONL契約（schema version 1）
 
-Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。原資料・翻訳unit／訳文・policy／glossary／context snapshot、attempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
+Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。EPUB原資料のコピー・翻訳unit／訳文・policy／glossary／context snapshot、attempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
 
 ## 原文snapshot
 
@@ -61,6 +61,65 @@ WORKSPACE/
 保存はmodel再検証→UTF-8 JSON byte列のhash→OS lock取得→同filesystemの一時fileにwrite／flush／fsync→atomic replace／directory fsync→採用参照のatomic更新の順です。artifact確定後に参照を切り替え、旧版を削除しません。既存digestはhashとschemaを検査します。loadもhashとschemaを検査し、不一致を採用しません。原資料本体の取得・コピー・hash照合は本APIの責務ではありません。
 
 `doc_translate.workspace.workspace_lock(Path)`は非blockingのPOSIX flockでwriter重複を拒否します（`WorkspaceLockedError`）。`save_source_snapshot`は自身でlockを取るため、その外側から同じlockを二重取得しません。lock fileの残存は所有を意味せず、process終了でOS lockが解放されます。参照切替前に中断したartifactが残っても、自動で採用しません。一般的なworkflowのresume／attempt復旧は未実装です。
+
+## PDF抽出下書き（Issue #7）
+
+公開APIは`doc_translate.pdf.acquire_pdf(source: Path, *, workspace: Path, artifacts_path: Path, pages: tuple[int, int] | None = None, image_long_edge: int = 1800) -> str`、`load_pdf_draft(workspace: Path, sha256: str | None = None) -> PDFDraft`です。`acquire_pdf`はlocal PDFのみを読み、原資料をbyte単位で保存し、その同じbyte列をDoclingへ渡します。URLを取得しません。`pages`は元PDFの1始まり・両端含む連続範囲、`None`は全ページです。正の整数・昇順・原PDFのページ数以内を検査します。参照ページ・補正chunk・翻訳所有や送信許可範囲への接続は未実装です。
+
+```python
+from pathlib import Path
+from doc_translate.pdf import acquire_pdf, load_pdf_draft
+
+workspace = Path("workspace")
+digest = acquire_pdf(
+    Path("own-document.pdf"),
+    workspace=workspace,
+    artifacts_path=Path("/absolute/path/to/local-models"),
+    pages=(1, 2),  # 省略すると全ページ
+)
+draft = load_pdf_draft(workspace, digest)
+for check in draft.checks:
+    print(check.name, check.passed, check.details)
+```
+
+Docling／OCRMacは取得時のみimportし、core-onlyのimportやEPUBに要求しません。固定version、CPU、OCRMacの`OcrMacOptions(lang=["en-US"], framework="vision", recognition="accurate")`、HeronとTableFormer V1 accurateを使用します。modelの固定repo／revision／必要ファイル／licenseと準備手順は[README](../../README.md#pdf取得だけを使う場合のローカル準備)を参照してください。local directoryは`docling-project--docling-layout-heron/`と`docling-project--docling-models/model_artifacts/tableformer/accurate/`を持つ構造で、既存snapshotへのsymlinkも利用できます。各ファイルの絶対local pathとSHA-256を記録します。重みをworkspaceへコピーしません。
+
+`enable_remote_services=False`／`allow_external_plugins=False`、明示local path、`HF_HUB_OFFLINE=1`／`TRANSFORMERS_OFFLINE=1`を強制します。呼出し前にHubがimport済みでもHubのoffline flagを有効にし、呼出し後もprocessのoffline設定を維持します。これは全通信を遮断するfirewallではありません。code／formula enrichment・picture classification／descriptionやVLMは有効にせず、別model／OCRへのfallbackや変換中のdownloadはありません。不足localファイルは必要pathを示す`FileNotFoundError`、PDF extra不足／固定version不一致は`RuntimeError`、不正range／描画設定は`ValueError`です。
+
+### 保存物と検査
+
+```text
+WORKSPACE/
+  .writer.lock
+  originals/<sha256>.pdf
+  pdf-draft.json                     # 最後に保存したdraftへの参照、原文採用ではない
+  drafts/pdf/<sha256>.json            # PDFDraft（schema_version=1）
+  drafts/pdf/raw/<sha256>.json        # DoclingDocument.export_to_dict()の完全なJSON
+  drafts/pdf/images/<sha256>.png      # 原本ページの直接描画
+```
+
+| PDFDraft field | 契約 |
+| --- | --- |
+| `schema_version`／`kind` | `1`／`pdf-extraction-draft`。`SourceSnapshot`ではなく、正しい原文・補正済み原文・内容確認済みとは認定しない |
+| `document`／`source_name` | `format=pdf`、原PDFのSHA-256とworkspace内artifact、入力file名 |
+| `target_pages` | 対象の元PDFページ番号。無効PDFでページ数が得られない失敗下書きでは空 |
+| `versions` | Docling／docling-core／OCRMacに加え、docling-parse／docling-ibm-models／Torch／Transformers／Hub／Pillow、PythonとOS |
+| `settings` | 実効pipeline options（deprecated computed fieldを除く）、offline flag、要求page range（nullは全ページ）と画像長辺 |
+| `models` | 固定repo／revision、必要ファイルのlocal path／SHA-256。任意localファイルのupstream一致を認証するものではない |
+| `raw` | raw JSONのartifact／SHA-256。item・ref・table cell／span・provenance・元charspan等を削除しない |
+| `pages` | `PDFPageImage`配列。元ページ番号、PNG artifact／hash、元寸法`width_points/height_points`（72-DPI point）、画像実寸pixel、`image_origin=top-left`、`page_unit=pt`、`scale_x/scale_y`、描画条件 |
+| `conversion_status`／`conversion_errors` | Docling status生値とErrorItemのJSON全field（category／page_noを含む） |
+| `checks` | 共通`MachineCheck`。`conversion_status`／`conversion_errors`／`page_coverage`／`page_images`／`charspans` |
+
+rawはMarkdownや独自blockへ変換せず、公開`DoclingDocument.export_to_dict()`の全内容を保存します。画像はDoclingの公開`ThreadedDoclingParseDocumentBackend.iter_pages()`→`PdfPageBackend.get_size()`／`get_page_image(scale=...)`で同じ原PDF byte列から直接描画します。scaleは要求長辺／point長辺で、固定docling-parseはscale差時にnative decoderで再描画します。既存rasterの単純upscaleやPopplerではありません。対象外ページの画像は保存せず、各page／document backendはunloadします。描画backend options・要求scale・cropbox・resizeなし・要求長辺と実寸を保存します。raw抽出ページとの寸法不一致も画像checkの失敗です。
+
+bboxの原点はraw provenanceの`coord_origin`を保持します。DoclingのTOPLEFT座標から画像pixelへは`(x*scale_x, y*scale_y)`、BOTTOMLEFTからは`(x*scale_x, (height_points-y)*scale_y)`です。最終PNGの実寸から求めるため描画の丸めを含み、元point座標をpixel座標と混同しません。任意PDFの読取り完全性や可読性全体を保証しません。
+
+charspanは各provenanceの非負・順序、textがあるitemでは保存textの長さ以内かを検査します。不一致はrawの全文・ref・provenance・画像を保持し、`charspans.passed=False`、`target_ids`に該当ref、`details`にprovenance index／span／text長・要確認理由を記録します。clipせず返却可能で、文字単位の位置精度を認定しません。Docling diagnosticsも生値を残し`conversion_errors` checkを失敗にしますが、successの非fatal diagnosticだけで一律例外停止はしません。callerはdigestを得たことを全check合格と扱わず結果を確認します。
+
+conversionがsuccess以外、全対象ページのraw被覆不足、必須PNG欠落／描画失敗は、rawと得られたPNGを保存した後に`PDFExtractionError`を送出します。`error.draft_sha256`でその失敗下書きをloadできます。Doclingが結果を返す前に例外となった場合は原PDFのみ保存され、`draft_sha256=None`です。保存失敗はOSエラーを伝播し、保存成功や原文採用とは表示しません。
+
+取得全体は既存のworkspace OS lockを自分で取るため、callerが同じlockを二重取得しません。各artifactを同filesystemの一時file／flush／fsync／atomic replaceで確定してから`pdf-draft.json`をatomic更新します。既存の同digest byte列が壊れていれば上書きしません。旧版・途中artifactは削除せず、参照切替前の残存物を自動採用しません。`load_pdf_draft`はmanifest hash／schemaと原PDF・raw JSON・全PNGのhash、PNG形式／decode・実寸を検証し、workspace外参照を拒否します。モデル重みはload時には要求しません。`source-snapshot.json`を作成／変更せず、補正・unit生成・翻訳・再開契約やCLIは追加していません。
 
 ## EPUB安全読込み（Issue #5）
 
