@@ -1,6 +1,6 @@
 # 初期artifact／JSONL契約（schema version 1）
 
-Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。原資料・翻訳unit／訳文・policy／glossary／context snapshot、attempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
+Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。原資料・翻訳unit／訳文・policy／glossary／context snapshot、attempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
 
 ## 原文snapshot
 
@@ -21,7 +21,7 @@ Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Is
 | `checks` | 機械検査結果配列（既定空） |
 | `content_reviews` | 内容確認者・方法・範囲の配列（既定空）。処理完了と別 |
 
-blockは`block_id`／`kind`（非空）、`text`、1件以上の`locations`、`structure`（JSON object、既定空）を持ちます。`structure`は見出し／list階層、table cell／span、caption／脚注／注釈、assets、数式、inline等を保持するためのJSONです。**現在はkindごとの意味、参照先の存在、構造の整合性を検査しません。** adapter実装とともに具体化します。構造objectを保存できたことを抽出・補正・coverage検査の成功にしません。
+blockは`block_id`／`kind`（非空）、`text`、1件以上の`locations`、`structure`（JSON object、既定空）を持ちます。`structure`は見出し／list階層、table cell／span、caption／脚注／注釈、assets、数式、inline等を保持するためのJSONです。共通model自体はkindごとの意味、参照先の存在、構造の整合性を検査しません。EPUB adapterが生成・検査する具体的な構造は下記「EPUB原文snapshot抽出」に記述します。構造objectを保存できたことを抽出・補正・coverage検査の成功にしません。
 
 `uncertainties`の要素は`reason`（非空）、`target_ids`（非空文字列の配列）、`locations`、`stage`（非空）、`origin: original | processing | undetermined`です。`checks`は`name`（非空）／`target_ids`／`passed`（bool）／`details`（既定空文字列）、`content_reviews`は`reviewer`／`method`／`details`（いずれも非空）と`target_ids`です。対象IDの意味検証・内容品質認定はまだ行いません。
 
@@ -64,7 +64,7 @@ WORKSPACE/
 
 ## EPUB安全読込み（Issue #5）
 
-公開APIは`doc_translate.epub.read_epub(path: Path) -> EPUB`です。core依存の`defusedxml==0.7.1`と標準`zipfile`／`zlib`／`struct`を使い、Node／Docling／OCR・認証・network接続は不要です。入力archiveを書換えず、展開file・snapshotも生成しません。原資料のコピー・hash記録・workspace保存、本文block／inline抽出・翻訳・CLI接続は後続Issueです。
+公開APIは`doc_translate.epub.read_epub(path: Path) -> EPUB`です。core依存の`defusedxml==0.7.1`と標準`zipfile`／`zlib`／`struct`を使い、Node／Docling／OCR・認証・network接続は不要です。入力archiveを書換えず、展開file・snapshotも生成しません。原資料のコピー・archive hash記録・workspace保存、翻訳・CLI接続は後続Issueです。本文block／inline抽出は下記の独立adapterが担当します。
 
 返り値はfrozen dataclassと読取り専用mapping／tupleです。
 
@@ -103,13 +103,55 @@ container→単一package→manifest／spineを検査します。XMLは`defusedx
 
 ### Package・受理範囲・暗号化
 
-EPUB 2.0／3.0 package、単一manifest／spine、IDの一意性、全fallback連鎖の存在／非循環、全spine idref・linearを検査します。fallback graphの検査済みIDは再走査せず、spine追跡ID総数は各IDをchainへ追加する前に検査し、多数のitemref×長い連鎖によるCPU／返却情報の増幅を上限で止めます。同じXHTMLを参照するitemref／manifest aliasの本文text・画像判定はresourceごとに一度だけ計算して再利用し、navかどうかの適用は各manifest itemで区別します。標準spine順でlocal XHTMLを採用し、非XHTMLやremote本文はfallbackを辿ります。採用可能なXHTMLへ到達しなければ、DTBook専用／画像／未知形式／外部本文等の理由付きで停止し、`linear=no`を含め本文を黙ってskipしません。spine外resourceも元byte／manifest情報を保持しますが、参照notes等の本文抽出・coverageは未実装です。
+EPUB 2.0／3.0 package、単一manifest／spine、IDの一意性、全fallback連鎖の存在／非循環、全spine idref・linearを検査します。fallback graphの検査済みIDは再走査せず、spine追跡ID総数は各IDをchainへ追加する前に検査し、多数のitemref×長い連鎖によるCPU／返却情報の増幅を上限で止めます。同じXHTMLを参照するitemref／manifest aliasの本文text・画像判定はresourceごとに一度だけ計算して再利用し、navかどうかの適用は各manifest itemで区別します。標準spine順でlocal XHTMLを採用し、非XHTMLやremote本文はfallbackを辿ります。採用可能なXHTMLへ到達しなければ、DTBook専用／画像／未知形式／外部本文等の理由付きで停止し、`linear=no`を含め本文を黙ってskipしません。spine外resourceも元byte／manifest情報を保持します。参照notes等の本文抽出・coverageは下記adapterが担当します。
 
 複数rootfile（rendition）の自動選択、全体`rendition:layout=pre-paginated`、itemrefの`rendition:layout-pre-paginated`、EPUB 2系の明示`fixed-layout=true` metadata／Apple display optionsを拒否します。packageのrendition語彙prefix aliasも解釈します。画像だけのcover／図版を含むtext出版物は許容します。**spineの取得対象bodyに取得可能textがなく、画像だけの出版物は停止**します。head／title／script／style／SVG内text、nav resource／tocは本文textの根拠にしません。画像比率・文字数の独自閾値はなく、少量のtextが混在する画像主体publicationの一般判定・意味品質・抽出coverageは保証しません。
 
 `META-INF/encryption.xml`の存在だけでDRMとは断定しません。manifest構築時にresource pathごとのmedia-type集合を一度集計し、各recordでmanifest全件を再走査せずにarchive基点target path／存在とalgorithmを検査し、IDPF `http://www.idpf.org/2008/embedding` またはAdobe `http://ns.adobe.com/pdf/enc#RC`とmanifestのfont media-type（`font/*`、標準／従来font型）の組合せだけを難読化fontとして保持します。未使用fontの併存は本文読込みを禁止しません。本文／画像へfont例外を流用せず、未知algorithmも一律DRMと断定せず「未対応の暗号化algorithm/resource」と対象／algorithmを示して停止します。暗号解除／font復号はしません。
 
 受理範囲／入力不整合／ZIP・XML安全違反は理由付きの`EPUBError(ValueError)`です。filesystemのopen／read失敗は元の`OSError`です。原資料は成功時・失敗時とも変更／破棄しません。
+
+## EPUB原文snapshot抽出（Issue #6）
+
+公開APIは`doc_translate.epub_source.extract_epub_source(book: EPUB, *, document: SourceDocument, snapshot_id: str) -> SourceSnapshot`です。`read_epub`で受理した`EPUB`と、呼出し側が記録した`format="epub"`の原本文書provenance・snapshot識別子を明示入力します。`document.sha256`は**元archiveのhash**です。adapterは元ZIP byte列を持たないためhashを捏造・package hashで代用せず、artifactのコピー／存在確認・hash照合もしません。呼出し側が原資料を保持します。reader、原資料、workspaceを書き換えず、保存は既存`save_source_snapshot`を別途呼びます（外側にworkspace lockを重ねません）。Node／Docling／OCR／LLM／networkは不要です。
+
+### 読み順・原文block
+
+- 採用XHTMLをspine順に訪問し、同じcanonical resource pathのalias／fallbackは一度だけ抽出します。`linear=no`も残します。その後は保持するnodeの参照から見つかったlocal XHTML（manifestのmedia type、または`.xhtml/.html`拡張子、大文字小文字を区別しない）を発見順に訪問し、循環を再訪しません。manifest順を本文順にしません。
+- 1 resourceを1つの`kind="section"`原文blockにします。`block_id`は訪問順の`epub-1`等で、原本IDとは別です。段落・見出し・list／table等はその内側のtreeに保持します。これはresource大の原文sectionであり、翻訳unitの生成・分割ではありません。
+- `text`は構造化したbody text／child／tailを順に連結した検索・照合用projectionです。新しい空白や段落区切りは補いません。構造の正本は`structure.tree`です。`pre/code`を含めXML parserが返す空白・改行を保持します（XML標準の改行／entity処理後でありbyte offsetではありません）。headやinert subtreeのtextはprojectionへ入れません。
+- `structure.spine`はそのresourceに対応する全itemrefの`index`（1始まり）、`idref`、`resolved_id`、`fallback_chain`、`linear`、`properties`です。aliasを重複出力せず元spine位置を照合できます。spine外では空配列です。
+
+### tree・位置・coverage
+
+`structure.tree`は`{"root":"/1","nodes":{"/1":{...},"/1/1":{...}}}`のflat node tableです。各nodeは以下のJSONを持ちます。これは**表示用HTML／無害化済みmarkupではありません**。rendererはtagや属性をそのまま実行可能なmarkupにしてはいけません。
+
+| field | 意味 |
+| --- | --- |
+| `tag` | namespace展開後の元XML要素名。見出しlevel、list親子、table行／cell、caption、inline強調、code等をtreeのまま区別 |
+| `location` | `EPUBLocation`。常にresource path＋`node_path`＋`node_snapshot`。非空の実在`id`（なければ`xml:id`）も`element_id`へ保持 |
+| `original_ids` | `id/xml:id`がある場合だけ元の属性名→値（空値や異なる2つのIDも保持）。架空IDを補わない |
+| `role` | `body / toc / supplement`。nav manifest／`epub:type=toc`はtoc、non-linear／spine外resourceと`epub:type`のfootnote／footnotes／endnote／endnotes／rearnote／rearnotes subtreeはsupplement。それ以外のlinear resourceはbody。明示roleは子孫へ継承し、同じnodeのtocはnotesより優先 |
+| `disposition` | `structured / excluded / inert`。head等のbody外はexcluded（rootはtreeのcontainerとしてstructured）。script／style／埋込・form等のactive要素、MathML／SVG等の非XHTML namespaceとその子孫はinert |
+| `attributes` | bodyのstructured nodeから選んだ意味属性だけ：`alt/title`、`rowspan/colspan/scope/headers`、listの`start/value/type/reversed`、`role/lang/xml:lang/epub:type`。値は原表記で、spanの数値解釈や表の矩形化は行わない。event／style／任意CSSは継承しない |
+| `content` | 元のtext、child参照`{"node_path":"/1/2/1"}`、tailの順の配列。childは同じ`tree.nodes`へ対応する。空cell・空要素もnodeとして残す。excluded／inertのtextは入れず、子nodeの処置・位置は残す |
+| `references` | 選択したURI属性がある場合の参照配列（次節） |
+
+nodeをJSONへ再帰的に埋め込まずtableと参照で表すため、readerが受理するXML最大深さ128でも共通`JsonValue`の再帰上限を超えず公開save/loadできます。node位置は、既存bounded defusedxml readerのelement treeでrootを`/1`、各elementの子をtag名によらない1始まりordinalで`/1/2/1`等と表します。コメント／processing instructionはそのtreeのelementに含まれません。`node_snapshot`は入力`snapshot_id`で、そのsnapshot・resource tree専用の位置です。違うsnapshotへのstable XPathや文字位置とは表示しません。duplicate IDも各node位置で区別し、全候補位置と原本由来のuncertaintyを記録します。
+
+全訪問resourceには`structure.coverage`のdisposition別件数と`checks[name="epub_node_coverage"]`を残し、元のelement数と対応させます。空bodyでもroot／bodyの処置を残します。参照先がXHTMLのhtml/bodyでない場合は新しい入力拒否にせず、tree全体をinertにして要確認を残します。MathML等の元データ・script／CSSを含む原byteは`document.artifact`内のresourceに保持し、raw markupを安全表示用と認定しません。coverageの成功は意味品質・内容review済みの認定ではありません。`processing`は`epub_extraction/completed`、`content_reviews`は空です。
+
+### links・notes・assetsと原資料参照
+
+`references`は`href/src/data/poster/longdesc/cite/xlink:href`の元`attribute/uri`、`EPUB.resolve`による`resource_path/fragment/query/external_uri`、`status`、`targets`を持ちます。外部URI（active schemeも含む）は`external`としてdata保持するだけで、取得・実行・安全な出力URLとしての承認はしません。script等のinert／excluded nodeの参照からXHTMLを自動追加しません。
+
+- local XHTMLのfragmentは元IDへ対応し、1候補なら`resolved`と`targets: [{location, disposition}]`です。fragmentなし／空はresource rootを指します。targetの`location`は`format/resource_path/node_path/node_snapshot`による座標参照で、元IDをincoming linkごとに複製しません。実在IDは参照先の`tree.nodes[node_path]`の`location.element_id`／`original_ids`で照合できます。対象がexcluded／inertでもその処置を記録します。
+- IDの欠落は`missing_fragment`、重複は`ambiguous_fragment`で、どちらも元URI・位置・要確認を残します。重複候補も座標参照の`location`と`disposition`として参照先blockの`structure.target_index[元ID]`へ一度だけ保存し、各参照の`target_index: {resource_path, element_id}`から辿ります（`targets`は空）。多数のincoming linkごとに全候補を複製しません。
+- 解決不能／unsafe URIは`unresolved`と元URI・要確認を残します。非XHTML asset等は`inert_resource`と原資料参照・要確認で保持し、XML/SVGや不明形式を勝手に表示・実行したり、入力全体を新たに拒否したりしません。
+
+最初のblockに`structure.package_path`と`structure.resources`を置きます。後者は全archive fileをcanonical path順で列挙し、`resource_path/byte_length/manifest/encryption/disposition`を持ちます。`manifest`はlocal resourceに結び付く元itemの`id/href/media_type/fragment/fallback/properties`配列、`encryption`はreaderが保持したalgorithmまたはnullです。resourceの処置は訪問済みrootの`structured/inert`、参照のみの`inert`、未訪問`unvisited`です。未訪問／空fileを処理済み本文と見せません。全byteの保管先は引き続き原archiveであり、snapshotにraw byte列やactive assetの表示命令をコピーしません。
+
+`tests/test_epub_source.py`は人工EPUB 2／3を公開reader→adapter→公開save/loadへ通し、独立したliteral期待値でmixed order、階層／span／caption／alt／code空白、MathML等のinert保持、位置・duplicate／missing ID、長い元IDへの繰返し参照の座標と保存量、spine／non-linear／alias／fallback、off-spine notes／循環、単数／複数notes roleの継承とtoc優先、空resource、unsafe／external URI、XML最大深さ128での保存を検査します。翻訳／unit生成・PDF変換・renderer・CLI・原資料コピーpipelineはこのAPIに含みません。
 
 ## Python↔Node JSONLの公開codec
 
