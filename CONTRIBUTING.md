@@ -25,7 +25,6 @@ pnpm --dir ai exec oxlint --type-aware --type-check --deny-warnings .
 pnpm --dir ai exec vitest run
 uv run ruff check .
 uv run ruff format --check .
-uv run ty check
 uv run pytest
 uv run doc-translate --help
 ```
@@ -34,10 +33,11 @@ Python packageは`ai/dist`を同梱するため、fresh checkoutでは`uv sync`�
 
 `ai/tsconfig.build.json`の`skipLibCheck`はpi-ai 1.4.0配布declarationのJSON import属性欠落と、@google/genaiのoptional MCP SDK型参照不足に限定した互換性対応です。依存declaration自体の型検査は省きますが、自作sourceの型検査とoxlintのtype-aware／type-check／warning 0は維持します。実helperと両managerのclean installでruntime互換性を別途検査します。
 
-PDF extraはcore-onlyと区別して確認します。
+上記はcore-onlyのruntime／テスト検証です。全Python sourceの型検査は、PDF adapterとテストのimportも解決できるPDF extra付き環境で行います。
 
 ```sh
 uv sync --locked --dev --extra pdf
+uv run --locked --extra pdf ty check
 uv run --locked --extra pdf python -c 'from docling.document_converter import DocumentConverter; from docling.datamodel.pipeline_options import OcrMacOptions; from docling_core.types.doc import DoclingDocument; from ocrmac import ocrmac; print(OcrMacOptions(lang=["en-US"], framework="vision", recognition="accurate"))'
 uv run --locked --extra pdf pytest
 ```
