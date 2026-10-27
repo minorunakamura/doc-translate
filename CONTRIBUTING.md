@@ -1,12 +1,12 @@
 # 開発ガイド
 
-対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshotです。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
 
 ## 構成・環境
 
-- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）・原文組立adapter（`pdf_source.py`）、共通unit生成・inline保護・workflow分割（`units.py`）、固定context／glossary準備と根拠・実行記録（`preparation.py`）、原文snapshot、workspace OS lock、JSONL codec。
+- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）・原文組立adapter（`pdf_source.py`）、共通unit生成・inline保護・workflow分割（`units.py`）、固定context／glossary準備と根拠・実行記録（`preparation.py`）、翻訳chunk・検証・部分採用と再利用（`translation.py`）、原文snapshot、workspace OS lock、JSONL codec。
 - `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証／generation helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`、独立推論のpreflight／stream接続（`generation.ts`）。`ai/tests/`の`.mjs`は公開APIとcompile済みhelperを使うテスト専用processです。
-- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。`tests/test_preparation.py`は保存原文→実helper／faux→固定準備artifactの公開prepare/loadを検査します。文書pipeline、翻訳・出力・再開のCLI操作は未実装です。
+- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。`tests/test_preparation.py`は保存原文→実helper／faux→固定準備artifactの公開prepare/loadを検査します。`tests/test_translation.py`は保存原文／固定準備→実helper／faux→翻訳の公開translate/loadを検査します。文書pipeline、翻訳・出力・再開のCLI操作は未実装です。
 - `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、および別venvにinstallしたwheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
 
 実動基準：macOS 26.7.1 arm64、Python 3.14.9、Node 24.21.0、pnpm 12.10.1、npm 11.19.0。CIはGitHub-hosted macos-15 ARM64、Python 3.14／Node 24です。別OSやmacOSの最低versionは未保証です。
@@ -124,6 +124,22 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 - 同じ固定版の無送信再利用、準備方式metadataだけの変更で固定翻訳入力hashが変わらないこと、policy／利用者terms改版、全artifactのhash不正、hashを再計算した捏造根拠・採用内容差替え、採用参照replace失敗、writer排他を検査します。
 
 実LLM・実credential・model重み・既存書籍を使いません。この機械検証は候補網羅性・定義の意味や訳語品質の確認ではなく、全文翻訳snapshot／CLI統合の成立も示しません。実送信や取得は別途承認が必要です。
+
+### 翻訳・採用snapshotの検証境界
+
+Issue #12は`doc_translate.translation.translate_document`→`load_translation`の公開seamです。API、回答schema、部分失敗・分割履歴・再利用と保存形は[artifact契約](docs/reference/artifacts.md#翻訳採用snapshotissue-12)を参照してください。保存済みPDF型snapshotと実EPUB readerからの自作原文、固定準備版を使い、`ai/tests/translation-process.mjs`のnetwork拒否下の実`runHelper`／公開faux provider（取消は公開stream provider）を通します。内部generate／validator／saveはmockせず、保存故障注入はOSのreplace境界だけです。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/pytest tests/test_translation.py tests/test_preparation.py tests/test_units.py tests/test_inference.py
+```
+
+- 既定約12,000原文文字・concurrency 2、章節境界、ID全種の不正／空訳／marker inventory・構造の拒否、原位置付き要確認と品質未承認を検査します。
+- lengthと公開input上限によるchunk縮小／lossless unit分割・不可分spanの失敗、正常採用を残した部分失敗／再開、有限retryと失敗usage／不明usage生値の保持を検査します。
+- marker入力が同じcode変更・準備metadataだけの変更の無送信再利用、原文／context／glossary／policy／実設定改版、artifact破損・再hashした不正attempt、artifact先／採用参照最後のreplace故障と旧版保持、writer排他を検査します。
+- main-thread SIGINT／SIGTERMを実processへ送り、2つのchildが取消・usage保持・drain／回収を終えるまで戻らず、未開始chunkを新規送信しないことを検査します。
+
+CLI・renderer・汎用復旧管理・依存は追加しません。実credential・実provider通信・実LLM／意味品質・既存書籍は未検証です。Node fixtureも通常のBiome／type-aware oxlint／Vitest対象で、helper source変更がないためこの変更にbuildは不要です。
 
 ## wheelの明示buildと導入検査
 

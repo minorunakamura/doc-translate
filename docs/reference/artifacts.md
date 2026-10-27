@@ -1,6 +1,6 @@
 # 初期artifact／JSONL契約（schema version 1）
 
-Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。EPUB原資料のコピー・unitの永続保存／訳文snapshot、文書全体のattempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
+Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshotを記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。EPUB原資料のコピー、文書全体のattempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
 
 ## 原文snapshot
 
@@ -178,6 +178,64 @@ WORKSPACE/
 保存は同filesystemのfsync／atomic replace、参照切替は全artifact確定後です。schema・根拠拒否でも得られた全attemptを記録してから例外を返し、旧採用参照を維持します。採用参照更新失敗でも実行記録と旧版を保持します。未確定artifactを自動採用する復旧engineは追加しません。
 
 `load_preparation`はNode・認証・通信を使わず、指定digest（省略時は採用参照）のbyte hash／schema、原文snapshot・根拠・全runのhash、元unit／位置・引用の対応、収集範囲と整理語、raw回答・実requestとの対応、採用glossary／style／context／固定入力hashを再検証します。hashだけ正しい捏造根拠や採用内容の差替えを無条件に受理しません。機械的な整合検査であり、実LLMの候補網羅性や文脈・訳語の品質を保証するものではありません。
+
+## 翻訳・採用snapshot（Issue #12）
+
+公開APIは`doc_translate.translation.translate_document(*, workspace: Path, config: GenerationConfig, source_sha256: str | None = None, preparation_sha256: str | None = None, max_source_chars: int = 12_000, concurrency: int = 2, process_command: Sequence[str] | None = None, cancel: threading.Event | None = None) -> str`と`load_translation(workspace: Path, sha256: str | None = None) -> TranslationSnapshot`です。保存済み原文と固定準備版を読み、workspace lockを自分で取得します。callerは外側から同じlockを取りません。digest省略時は各採用参照を使い、明示時は指定の保存版を使います。準備版の出典と翻訳する原文版は別々に保持し、再利用判定は現在unitとの対応と実際の翻訳入力で行います。取得・準備の採用参照は変更しません。
+
+```python
+from pathlib import Path
+from doc_translate.inference import Selection, resolve_config
+from doc_translate.translation import translate_document, load_translation
+
+workspace = Path("workspace")  # 自作文書のsourceとpreparationを保存済み
+config = resolve_config(
+    stage=Selection(provider="PROVIDER", model="MODEL", thinking="off")
+)
+digest = translate_document(workspace=workspace, config=config)
+translated = load_translation(workspace, digest)
+print(translated.processing.status)  # completed または failed（部分失敗を含む）
+print([(item.unit_id, item.text) for item in translated.translations])
+print([item.model_dump() for item in translated.uncertainties])
+```
+
+実推論には個別送信承認・導入済みhelper・認証が必要です。`process_command`は既存adapterと同じ外部processテストseamだけです。段階別設定は既存`GenerationConfig/resolve_config`を使い、provider／model／thinkingを自動選択しません。CLI・renderer・内容reviewは追加しません。
+
+### 翻訳入力・回答と検証境界
+
+見出しとEPUB resource境界を越えず、unitを読み順に約12,000原文文字で束ねます。大きすぎるunitは既存`split_translation_units`でmarkerを壊さず分割します。翻訳にはunitの`unit_id/kind/source_text/context`、固定文書context、採用glossary、文体policy、回答schemaと明示翻訳指示だけを渡します。`tokens.value`、code本体、数式、原資料／画像／XHTML全文は送りません。
+
+回答schemaは`TranslationAnswer.model_json_schema()`で取得できます。必須fieldと例は次の通りです（未知fieldは禁止）。
+
+```json
+{"translations":[{"unit_id":"unit-1","text":"訳文です。","uncertainties":[{"reason":"原文の意味が曖昧です。","origin":"undetermined"}]}]}
+```
+
+- `translations`の全IDが入力順に1回ずつ必要です。欠落・重複・未知・順序違い、空白だけの訳文、不正schema、marker inventory／釣合い／包含構造の変更を拒否します。完全なspanの日本語語順への並替えは既存unit validatorが許容します。
+- `uncertainties`は必須配列で、なしなら`[]`。`reason`は空白だけを認めず、`origin`は`original/processing/undetermined`です。modelに元位置を創作させず、Pythonが対応unitの元位置・対象ID・`stage: translation`へ関連付けます。chunk失敗理由にも対応unitと元位置が残ります。
+- `processing.status: completed`は全unitの機械的受理であり、内容品質承認ではありません。`translations`は受理済みunitだけを入力順に返すproperty、`uncertainties`は元位置付きのproperty、`content_reviews`は常に空のpropertyです。要確認があっても機械検証を満たせば受理します。
+- 独立推論の有限retry（初回込み3試行、3／6秒）をそのまま使い、同じ対象に追加retryを重ねません。`length/input_limit`だけは要約を要求せず、複数unitならchunkを分け、単一unitなら文字上限を半減して再分割します。対象は必ず小さくし、不可分inline spanや1文字まで縮めても不成立なら理由を残して失敗とします。
+- 並列処理は既定2。main-threadのSIGINT／SIGTERMを共有cancelへ伝え、新規送信を止め、実adapterのchild取消／最大30秒のgraceとcredential drainを待ってから戻ります。
+
+### 保存・部分失敗と再利用
+
+```text
+WORKSPACE/
+  translation-snapshot.json             # SnapshotReference、artifact確定後にatomic更新
+  snapshots/translation/<sha256>.json   # TranslationSnapshot、旧版も保持
+  translations/chunks/<sha256>.json     # 検証済みrequest/config/answer/run
+  attempts/translation/<sha256>.json    # 成功・失敗・縮小の全記録
+```
+
+`TranslationSnapshot`は`schema_version: 1/source_snapshot_sha256/preparation_sha256/config/chunks/splits/runs/processing`を持ちます。各chunkには現在原文に対応する完全な`units`と`artifact_sha256/answer/error`を保持し、受理済みなら前2つが非null・errorはnull、未処理／失敗ならanswerとartifactはnull・errorに理由を保持します。`splits`は既存unit分割の`unit_id/max_source_chars`操作順です。load時に原文から再実行し、全unit・親・範囲・hash・位置を再検証します。LLMにunit IDや分割範囲を変更させません。
+
+`runs`は継承した過去記録と今回の記録digest（並列処理では完了順）。実行記録は`stage/status/request/config/error/elapsed_seconds/attempts`を持ち、`status`は`validated/rejected/adjusted`、ローカル分割調整は追加の`adjustment`と空の`attempts`を持ちます。各adapter attemptのraw回答・要求／確認済み設定・terminal／終了code・retry・usage生値を保持します。生成前の拒否やローカル処理ではusageは未観測であり、0として加算しません。失敗でも観測済みusageを失わず、準備のusageとは分離します。
+
+attempt→検証済みchunk artifact→snapshot→採用参照の順でfsync／atomic replaceします。各並列jobが完了するごとに部分snapshotを採用し、別chunkの失敗で正常採用を破棄しません。`translate_document`は部分失敗でもsnapshot digestを返すので、callerは`processing.status`と各chunk.errorを確認してください。保存失敗は例外になり、直前の採用参照と保存済みattemptを保持します。参照されない保存途中artifactを自動採用するengineはありません。応答喪失・採用参照確定前のcrashによる再送／exactly-once課金は保証しません。
+
+再利用はloadで検証できた採用済みchunkに限り、現在の連続unit・分割対応と、実request（ID／種別／marker原文／unit context・固定context／glossary／policy・schema等）およびconfig（provider/model/thinking/options）を完全一致で照合します。source snapshot hashや保護payload込みsource_hashだけでは無効化せず、codeだけの変更は現在のunit／token／位置へ結び直します。準備方式・根拠・usage metadataだけの変更でも本文入力が同じなら再送しません。本文・context・固定入力・schema・実設定が変わったchunkは旧版を残して更新します。曖昧な旧訳を分割・接合して使いません。
+
+`load_translation`はNode・認証なしで各byte hashとschema、保存原文／準備、分割履歴と全unit対応、受理済みartifactの実入力・raw回答・ID／marker、runの正常terminal／送信先／submitted設定／process終了を再検証します。壊れたartifactを黙って捨てて再送したり、未検証回答を受理したりしません。これは構造・入力対応の検査であり、意味の欠落や誤訳がないことの証明ではありません。
 
 ## PDF抽出下書き（Issue #7）
 
