@@ -2,7 +2,7 @@
 
 英語の技術PDF・テキストEPUBを、原本文書への追跡と要確認事項を保ちながら日本語Markdownへ変換するCLIを開発しています。
 
-**新規`run`でPDF／EPUBの取得から準備・翻訳・Markdown出力まで実行できます。** helper初回導入・認証・任意のcatalog参照、保存済み正本の`render`／`status`にも対応します。`resume`／`revise`／`review`は未実装です。 参照だけなら認証情報や書籍を準備・送信する必要はありません。実providerでの認証・推論は未検証です。
+**新規`run`でPDF／EPUBの取得から準備・翻訳・Markdown出力まで実行できます。** helper初回導入・認証・任意のcatalog参照、保存済み正本の`render`／`status`にも対応します。`resume`で保存済みworkspaceを続行できます。`revise`／`review`は未実装です。 参照だけなら認証情報や書籍を準備・送信する必要はありません。実providerでの認証・推論は未検証です。
 
 ## 前提環境と導入
 
@@ -124,7 +124,22 @@ PDFの`--pages A-B`は1始まり・両端含む所有範囲です。省略時は
 
 runはstdoutにsummary JSON／workspace相対の成果物pathを返します。exit **0＝指定範囲の出力到達（要確認があっても0）、1＝処理失敗／部分出力、2＝入力・設定エラー**です。`processing.status`と未処理／失敗、`uncertainty_count`／QAを別々に確認してください。補正失敗時は成功chunk・原本／下書き／画像／attemptを残し、得られたsourceがあれば準備・翻訳の失敗時も原文を残した部分出力を試みます。sourceを1つも採用できなければMarkdownは作らず、保存済み原本・下書き等のpathを返します。`scope.run`は意図した所有／参照範囲と補正成功／失敗／未処理ページ、非秘密設定・エラー分類を保持します。
 
-`resume`／`revise`／`review`はまだ使えません。失敗したworkspaceを削除して上書きせず、`status DIR`で保存範囲・attempt／QAを確認してください。認証再導入だけでは未実装操作を利用できるようにはなりません。
+### 中断・失敗からの再開
+
+```sh
+doc-translate status ./work/book
+doc-translate resume ./work/book
+# 明示変更する場合だけ指定（段階別 > 共通 > 保存済み設定）
+doc-translate resume ./work/book --glossary ./terms-v2.json --translation-thinking high
+# PDF取得をやり直す必要があり、保存済みlocal model pathが使えない場合
+doc-translate resume ./work/book --artifacts-path /path/to/prepared-models
+```
+
+resumeは保存原本・範囲・非秘密設定を基準に、artifact hashと回答／入力対応を検査し、未処理・失敗・明示変更で無効になった部分だけを送信します。元の外部INPUTは不要です。取得済みPDFならlocal model directoryも不要で、EPUBにPDF依存は要求しません。完了済みで推論不要ならNode／認証も不要です。**resumeではambientな`PI_*`を設定変更として採用しません。** `--provider/model/thinking`と段階別指定、`--glossary`は明示変更として保存されます。glossary変更ではPDF取得／補正をやり直しません。ページ範囲を拡大するoptionはありません。
+
+SIGINT／SIGTERMは新規requestを止め、実行中helperの取消・認証保存drainを待ちます（強制killまで原則30秒）。SIGKILL・disk障害では応答・usageやOAuth refresh保存を保証できません。**送信済み応答を失うとusageは不明で、再送により重複課金される可能性があります。exactly-once課金は保証しません。** token保存に失敗した場合は必要に応じ再loginしてください。
+
+旧原本・snapshot・attempt・出力は削除しません。保存途中の一時fileや未検証回答は成功として採用せず、確定artifactだけを再検証します。hash不一致は送信前に明示停止し、破損fileを上書きしません。別writerが稼働中ならresume／直接stage／renderは拒否され、process終了後はOS lockが解放されます。exit codeはrunと同じ0／1／2です。未処理／失敗が残れば部分出力のままです。`revise`／`review`はまだ使えません。
 
 ## PDFのローカル準備
 

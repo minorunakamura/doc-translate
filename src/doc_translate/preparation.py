@@ -16,6 +16,7 @@ from doc_translate.inference import (
     GenerationConfig,
     GenerationInput,
     InferenceError,
+    _saved_answer,
     generate,
 )
 from doc_translate.snapshot import (
@@ -132,6 +133,20 @@ def _read(workspace, directory, digest):
 def _call(
     workspace, config, request, response_model, validate, command, cancel, before_send
 ):
+    for path in sorted((workspace / "attempts/preparation").glob("*.json")):
+        saved = _read(workspace, "attempts/preparation", path.stem)
+        if (
+            saved.get("stage") != "prepare"
+            or saved.get("method") != _METHOD
+            or saved.get("request") != request.model_dump(mode="json")
+        ):
+            continue
+        try:
+            answer = _saved_answer(saved, config, response_model)
+            validate(answer)
+        except ValueError, KeyError, TypeError, IndexError, InferenceError:
+            continue
+        return answer, path.stem
     started = time.monotonic()
 
     def record(status, attempts):
@@ -290,29 +305,7 @@ def prepare_document(
         snapshot = load_source_snapshot(workspace, source_digest)
         reference_path = workspace / "preparation-snapshot.json"
         if reference_path.exists():
-            previous = load_preparation(workspace)
-            evidence = PreparationEvidence.model_validate(
-                _read(workspace, "preparation/evidence", previous.evidence_sha256)
-            )
-            records = [
-                _read(workspace, "attempts/preparation", digest)
-                for digest in previous.runs
-            ]
-            if (
-                previous.source_snapshot_sha256 == source_digest
-                and previous.glossary.book == book
-                and previous.glossary.version == version
-                and previous.policy == policy
-                and evidence.user_terms == supplied.terms
-                and all(
-                    record["config"] == config.model_dump(mode="json")
-                    and record["method"] == _METHOD
-                    for record in records
-                )
-            ):
-                return SnapshotReference.model_validate_json(
-                    reference_path.read_bytes()
-                ).sha256
+            load_preparation(workspace)
         units = generate_translation_units(snapshot)
         collections = []
         runs = []
@@ -429,16 +422,11 @@ def load_preparation(workspace: Path, sha256: str | None = None) -> PreparationS
         if record["stage"] != "prepare" or record["status"] != "validated":
             raise ValueError("Preparation run was not validated")
         request = GenerationInput.model_validate(record["request"])
-        GenerationConfig.model_validate(record["config"])
+        config = GenerationConfig.model_validate(record["config"])
         if not isinstance(request.context, dict):
             raise TypeError("Preparation run needs object context")
-        attempt = record["attempts"][-1]
-        if attempt["code"] is not None or attempt["final"]["code"] is not None:
-            raise ValueError("Preparation run did not succeed")
-        content = attempt["final"]["message"]["content"]
-        raw_answer = "".join(part["text"] for part in content if part["type"] == "text")
         if index < len(groups):
-            answer = CollectionAnswer.model_validate_json(raw_answer)
+            answer = _saved_answer(record, config, CollectionAnswer)
             matches = (
                 answer == evidence.collections[index]
                 and json.loads(request.text) == _projection(groups[index])
@@ -446,7 +434,7 @@ def load_preparation(workspace: Path, sha256: str | None = None) -> PreparationS
                 and request.context["section"] == index
             )
         else:
-            answer = OrganizationAnswer.model_validate_json(raw_answer)
+            answer = _saved_answer(record, config, OrganizationAnswer)
             matches = (
                 answer == evidence.organization
                 and json.loads(request.text)

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import shutil
 from contextlib import redirect_stderr
 from pathlib import Path
@@ -514,3 +515,292 @@ def test_run_pdf_singleton_length_failure_is_not_success_or_config_error(
     assert summary["scope"]["run"]["failed_pages"] == [2]
     assert summary["scope"]["run"]["corrected_pages"] == []
     assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == 1
+
+
+def test_resume_pdf_fills_failed_ownership_without_acquisition_or_resending_accepted(
+    tmp_path, pdf_input, local_models, capsys, monkeypatch
+):
+    from test_resume import assert_preserved, requests, saved_files
+
+    workspace = tmp_path / "new"
+    with pytest.raises(SystemExit) as stopped:
+        main(
+            run_args(pdf_input, workspace)
+            + [
+                "--pages",
+                "2-7",
+                "--artifacts-path",
+                str(local_models),
+                "--correction-model",
+                "vision",
+            ],
+            process_command=helper(tmp_path, correction_fail_page=7),
+        )
+    assert stopped.value.code == 1
+    capsys.readouterr()
+    old_files = saved_files(workspace)
+    count = len(requests(tmp_path))
+    pdf_input.unlink()
+    shutil.rmtree(local_models)
+    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    result = json.loads(capsys.readouterr().out)
+    assert result["processing"]["status"] == "completed"
+    assert result["scope"]["run"]["corrected_pages"] == [2, 3, 4, 5, 6, 7]
+    assert result["scope"]["run"]["failed_pages"] == []
+    assert result["scope"]["run"]["not_processed_pages"] == []
+    assert result["scope"]["run"]["error"] is None
+    corrections = [
+        item for item in requests(tmp_path)[count:] if "owned_pages" in item["context"]
+    ]
+    assert [item["context"]["owned_pages"] for item in corrections] == [[7]]
+    assert_preserved(old_files)
+    count = len(requests(tmp_path))
+    monkeypatch.setenv("PATH", "")
+    main(["resume", str(workspace)])
+    assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
+    assert len(requests(tmp_path)) == count
+
+
+def test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages(
+    tmp_path, pdf_input, local_models, capsys, monkeypatch
+):
+    from test_resume import assert_preserved, requests, saved_files
+
+    workspace = tmp_path / "new"
+    replace = os.replace
+    chunks = 0
+
+    def fail_replace(src, dst):
+        nonlocal chunks
+        if "corrections/pdf" in str(dst):
+            chunks += 1
+            if chunks == 2:
+                raise OSError("interrupted second correction chunk")
+        return replace(src, dst)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_replace)
+        with pytest.raises(SystemExit) as stopped:
+            main(
+                run_args(pdf_input, workspace)
+                + [
+                    "--pages",
+                    "2-7",
+                    "--artifacts-path",
+                    str(local_models),
+                    "--correction-model",
+                    "vision",
+                ],
+                process_command=helper(tmp_path, correction_length_above=3),
+            )
+        assert stopped.value.code == 1
+    capsys.readouterr()
+    old_files = saved_files(workspace)
+    sent = requests(tmp_path)
+    assert [item["context"]["owned_pages"] for item in sent] == [
+        [2, 3, 4, 5, 6],
+        [2, 3],
+        [4, 5, 6],
+    ]
+    shutil.rmtree(local_models)
+    main(
+        ["resume", str(workspace)],
+        process_command=helper(tmp_path, correction_length_above=3),
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["processing"]["status"] == "completed"
+    assert result["scope"]["run"]["corrected_pages"] == [2, 3, 4, 5, 6, 7]
+    corrections = [
+        item
+        for item in requests(tmp_path)[len(sent) :]
+        if "owned_pages" in item["context"]
+    ]
+    assert [item["context"]["owned_pages"] for item in corrections] == [[7]]
+    assert [item["context"]["reference_pages"] for item in corrections] == [[6]]
+    assert_preserved(old_files)
+
+
+def test_resume_pdf_glossary_never_reacquires_or_recorrrects(
+    tmp_path, pdf_input, local_models, capsys
+):
+    from test_resume import requests
+
+    workspace = tmp_path / "new"
+    main(
+        run_args(pdf_input, workspace)
+        + [
+            "--pages",
+            "2-3",
+            "--artifacts-path",
+            str(local_models),
+            "--correction-model",
+            "vision",
+        ],
+        process_command=helper(tmp_path),
+    )
+    capsys.readouterr()
+    count = len(requests(tmp_path))
+    shutil.rmtree(local_models)
+    glossary = tmp_path / "terms.json"
+    glossary.write_text(
+        json.dumps(
+            {
+                "version": "2",
+                "book": "ignored",
+                "style": "ignored",
+                "terms": {"Page": "指定"},
+            }
+        )
+    )
+    main(
+        ["resume", str(workspace), "--glossary", str(glossary)],
+        process_command=helper(tmp_path),
+    )
+    assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
+    new = requests(tmp_path)[count:]
+    assert len(new) == 2
+    assert all("owned_pages" not in item["context"] for item in new)
+
+
+def test_resume_pdf_recovers_chunk_before_progress_replace_after_force_kill(
+    tmp_path, pdf_input, local_models, capsys
+):
+    import signal
+
+    from test_resume import (
+        assert_preserved,
+        await_boundary,
+        external_cli,
+        requests,
+        saved_files,
+    )
+
+    workspace = tmp_path / "new"
+    with pytest.raises(SystemExit):
+        main(
+            run_args(pdf_input, workspace)
+            + [
+                "--pages",
+                "2-7",
+                "--artifacts-path",
+                str(local_models),
+                "--correction-model",
+                "vision",
+            ],
+            process_command=helper(tmp_path, correction_fail_page=7),
+        )
+    capsys.readouterr()
+    old_files = saved_files(workspace)
+    count = len(requests(tmp_path))
+    shutil.rmtree(local_models)
+    process = external_cli(
+        tmp_path,
+        helper(tmp_path),
+        ["resume", str(workspace)],
+        boundary="run.json",
+        occurrence=3,
+    )
+    try:
+        await_boundary(tmp_path, process)
+        process.kill()
+        assert process.wait(timeout=15) == -signal.SIGKILL
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    assert len(requests(tmp_path)) == count + 1
+    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    result = json.loads(capsys.readouterr().out)
+    assert result["processing"]["status"] == "completed"
+    new_corrections = [
+        item for item in requests(tmp_path)[count:] if "owned_pages" in item["context"]
+    ]
+    assert [item["context"]["owned_pages"] for item in new_corrections] == [[7]]
+    assert_preserved(old_files)
+
+
+def test_resume_pdf_validates_whole_draft_images_once_per_pass_not_per_chunk(
+    tmp_path, pdf_input, local_models, capsys, monkeypatch
+):
+    from PIL import Image
+    from test_resume import requests
+
+    workspace = tmp_path / "new"
+    main(
+        run_args(pdf_input, workspace)
+        + [
+            "--pages",
+            "2-7",
+            "--reference-pages",
+            "9-9",
+            "--artifacts-path",
+            str(local_models),
+            "--correction-model",
+            "vision",
+        ],
+        process_command=helper(tmp_path, correction_length_above=1),
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert len(result["scope"]["run"]["chunk_sha256s"]) == 6
+    sent = requests(tmp_path)
+    opens = 0
+    image_open = Image.open
+
+    def count_open(fp, *args, **kwargs):
+        nonlocal opens
+        opens += 1
+        return image_open(fp, *args, **kwargs)
+
+    monkeypatch.setattr(Image, "open", count_open)
+    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
+    assert requests(tmp_path) == sent
+    # Eight draft PNGs: initial verification, reconciliation and source assembly.
+    assert 1 <= opens <= 3 * 8
+
+
+def test_resume_incomplete_pdf_draft_reacquires_and_old_manifest_can_supply_models(
+    tmp_path, pdf_input, local_models, conversion, capsys
+):
+    from test_resume import requests
+
+    from doc_translate.pdf import load_pdf_draft
+
+    workspace = tmp_path / "new"
+    conversion.status.value = "partial_success"
+    with pytest.raises(SystemExit) as stopped:
+        main(
+            run_args(pdf_input, workspace)
+            + [
+                "--pages",
+                "2-3",
+                "--artifacts-path",
+                str(local_models),
+                "--correction-model",
+                "vision",
+            ],
+            process_command=helper(tmp_path),
+        )
+    assert stopped.value.code == 1
+    result = json.loads(capsys.readouterr().out)
+    assert "duplicate provider charges" in result["usage"]["note"]
+    old_draft = (workspace / "pdf-draft.json").read_bytes()
+    assert not requests(tmp_path)
+    run = json.loads((workspace / "run.json").read_bytes())
+    del run["artifacts_path"]  # before resume supported saving acquisition paths
+    (workspace / "run.json").write_text(json.dumps(run))
+    with pytest.raises(SystemExit) as stopped:
+        main(["resume", str(workspace)], process_command=helper(tmp_path))
+    assert stopped.value.code == 2
+    assert "--artifacts-path" in capsys.readouterr().err
+    assert not requests(tmp_path)
+    conversion.status.value = "success"
+    main(
+        ["resume", str(workspace), "--artifacts-path", str(local_models)],
+        process_command=helper(tmp_path),
+    )
+    assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
+    assert (workspace / "pdf-draft.json").read_bytes() != old_draft
+    assert load_pdf_draft(workspace).conversion_status == "success"
+    old_digest = json.loads(old_draft)["sha256"]
+    assert load_pdf_draft(workspace, old_digest).conversion_status == "partial_success"

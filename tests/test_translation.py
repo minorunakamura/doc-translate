@@ -486,7 +486,10 @@ def test_translation_cancels_parallel_children_and_drains_before_return(
     )
     child = subprocess.Popen(
         [sys.executable, "-c", script],
-        env={**os.environ, "PYTHONPATH": str(ROOT / "tests")},
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join((str(ROOT / "src"), str(ROOT / "tests"))),
+        },
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -677,3 +680,113 @@ def test_translation_keeps_split_successes_when_another_split_fails(tmp_path):
         not in {item.unit_id for item in partial.translations}
         for request in requests(tmp_path)[sent:]
     )
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["translations/chunks", "snapshots/translation", "translation-snapshot.json"],
+)
+def test_translation_recovers_validated_calls_before_adoption_without_resending(
+    tmp_path, monkeypatch, target
+):
+    workspace = prepared(tmp_path)
+    replace = os.replace
+
+    def fail_replace(src, dst):
+        if target in str(dst):
+            raise OSError("interrupted translation save")
+        return replace(src, dst)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_replace)
+        with pytest.raises(OSError, match="interrupted translation save"):
+            translate(tmp_path, workspace)
+    sent = requests(tmp_path)
+    digest = translate(tmp_path, workspace)
+    assert load_translation(workspace, digest).processing.status == "completed"
+    assert requests(tmp_path) == sent
+
+
+@pytest.mark.parametrize(
+    "blocks",
+    [
+        [("body", "word " * 40)],
+        [("body", "alpha " * 10), ("body", "beta " * 10)],
+        [("body", "alpha " * 40), ("body", "beta " * 40)],
+    ],
+)
+def test_translation_recovers_successful_split_subcalls_before_snapshot_save(
+    tmp_path, monkeypatch, blocks
+):
+    workspace = prepare_blocks(tmp_path, blocks)
+    replace = os.replace
+
+    def fail_replace(src, dst):
+        if "snapshots/translation" in str(dst):
+            raise OSError("interrupted split adoption")
+        return replace(src, dst)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_replace)
+        with pytest.raises(OSError, match="interrupted split adoption"):
+            translate(tmp_path, workspace, {"length_above": 80})
+    sent = requests(tmp_path)
+    children = {
+        path: path.read_bytes()
+        for path in (workspace / "translations/chunks").glob("*.json")
+    }
+    assert children
+    digest = translate(tmp_path, workspace, {"length_above": 80})
+    adopted = load_translation(workspace, digest)
+    assert all(path.read_bytes() == data for path, data in children.items())
+    assert {chunk.artifact_sha256 for chunk in adopted.chunks} == {
+        path.stem for path in children
+    }
+    assert adopted.processing.status == "completed"
+    assert len(adopted.chunks) > 1
+    assert "".join(u.source_text for c in adopted.chunks for u in c.units) == "".join(
+        text for _, text in blocks
+    )
+    assert requests(tmp_path) == sent
+
+
+@pytest.mark.parametrize("tamper", ["terminal", "incomplete", "domain", "hash"])
+def test_translation_revalidates_orphan_runs_before_reusing(
+    tmp_path, monkeypatch, tamper
+):
+    workspace = prepared(tmp_path)
+    replace = os.replace
+
+    def fail_replace(src, dst):
+        if "translations/chunks" in str(dst):
+            raise OSError("interrupted chunk save")
+        return replace(src, dst)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_replace)
+        with pytest.raises(OSError):
+            translate(tmp_path, workspace)
+    path = next((workspace / "attempts/translation").glob("*.json"))
+    record = json.loads(path.read_bytes())
+    sent = requests(tmp_path)
+    if tamper == "hash":
+        path.write_bytes(path.read_bytes() + b" ")
+        corrupt = path.read_bytes()
+        with pytest.raises(ValueError, match="SHA-256"):
+            translate(tmp_path, workspace)
+        assert path.read_bytes() == corrupt
+        assert requests(tmp_path) == sent
+        return
+    path.rename(path.with_suffix(".original"))
+    if tamper == "terminal":
+        record["attempts"][-1]["final"]["terminal"]["reason"] = "length"
+    elif tamper == "incomplete":
+        record["attempts"] = []
+    else:
+        record["attempts"][-1]["final"]["message"]["content"] = [
+            {"type": "text", "text": '{"translations":[]}'}
+        ]
+    rewrite_artifact(workspace, "attempts/translation", record)
+    digest = translate(tmp_path, workspace)
+    assert load_translation(workspace, digest).processing.status == "completed"
+    assert len(requests(tmp_path)) == len(sent) + 1

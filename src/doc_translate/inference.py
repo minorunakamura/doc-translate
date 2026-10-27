@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from io import BytesIO
 from typing import Annotated, Literal
 from uuid import uuid4
@@ -381,6 +381,18 @@ def _validate_final(
     return final
 
 
+def _image_metadata(image: GenerationImage) -> ImageMetadata:
+    return ImageMetadata(
+        sha256=hashlib.sha256(image.data).hexdigest(),
+        byte_size=len(image.data),
+        base64_bytes=4 * ((len(image.data) + 2) // 3),
+        mimeType=image.mimeType,
+        width=image.width,
+        height=image.height,
+        coordinates=image.coordinates,
+    )
+
+
 def _image_payload(
     images: Sequence[GenerationImage], preflight: Preflight, attempt: Attempt
 ) -> list[dict]:
@@ -418,17 +430,7 @@ def _image_payload(
         ):
             raise InferenceError("input_limit", [])
         payload.append({**image.model_dump(exclude={"data"}), "data": data})
-        attempt.images.append(
-            ImageMetadata(
-                sha256=hashlib.sha256(image.data).hexdigest(),
-                byte_size=len(image.data),
-                base64_bytes=len(data),
-                mimeType=image.mimeType,
-                width=image.width,
-                height=image.height,
-                coordinates=image.coordinates,
-            )
-        )
+        attempt.images.append(_image_metadata(image))
     return payload
 
 
@@ -640,6 +642,45 @@ def _finite_float(value: str) -> float:
     if not math.isfinite(number):
         raise ValueError("Non-finite answer number")
     return number
+
+
+def _saved_answer[T: BaseModel](
+    record: dict,
+    config: GenerationConfig,
+    response_model: type[T],
+    images: Sequence[GenerationImage] = (),
+) -> T:
+    """Revalidate saved helper success; image callers must first validate PNG bytes."""
+    if record["status"] != "validated" or record["config"] != config.model_dump(
+        mode="json"
+    ):
+        raise ValueError("Saved run was not validated for this config")
+    attempt = record["attempts"][-1]
+    if attempt["code"] is not None or attempt["exit_code"] != 0:
+        raise ValueError("Saved helper did not succeed")
+    preflight = Preflight.model_validate(attempt["preflight"])
+    _check_versions(preflight)
+    if (
+        (preflight.provider, preflight.model) != (config.provider, config.model)
+        or config.thinking not in preflight.thinking_levels
+        or (
+            config.options.maxTokens is not None
+            and config.options.maxTokens > preflight.max_tokens
+        )
+    ):
+        raise ValueError("Saved preflight differs from config")
+    if images and not preflight.image_input:
+        raise ValueError("Saved preflight does not support images")
+    if attempt["images"] != [asdict(_image_metadata(image)) for image in images]:
+        raise ValueError("Saved helper images differ from actual images")
+    final = _validate_final(attempt["final"], config, preflight, "result")
+    assert final.message is not None
+    raw = "".join(
+        part.text for part in final.message.content if isinstance(part, _Text)
+    )
+    return response_model.model_validate(
+        json.loads(raw, parse_constant=_invalid_constant, parse_float=_finite_float)
+    )
 
 
 def generate[T: BaseModel](

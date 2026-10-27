@@ -15,6 +15,7 @@ from doc_translate.inference import (
     GenerationImage,
     GenerationInput,
     InferenceError,
+    _saved_answer,
     generate,
 )
 from doc_translate.pdf import (
@@ -678,6 +679,90 @@ def _record(workspace, status, request, config, attempts):
     )
 
 
+def _images(workspace, pages):
+    return [
+        GenerationImage(
+            data=_read_artifact(workspace, page.image),
+            mimeType="image/png",
+            width=page.width_pixels,
+            height=page.height_pixels,
+            coordinates=f"page {page.page}; origin top-left; pixels; scale_x={page.scale_x}; scale_y={page.scale_y}; rendering={json.dumps(page.rendering)}",
+        )
+        for page in pages
+    ]
+
+
+def _correction_request(digest, owned, reference, policy, projection):
+    return GenerationInput(
+        stage="correction",
+        policy=policy,
+        text=json.dumps(projection, ensure_ascii=False),
+        context={
+            "draft_sha256": digest,
+            "owned_pages": [number for number in owned],
+            "reference_pages": [number for number in reference],
+            "response_schema": CorrectionAnswer.model_json_schema(),
+            "coordinates": "Draft bbox: original page points with coord_origin. Figure regions: original PNG pixels, origin top-left; image coordinates include point-to-pixel scales.",
+        },
+        glossary=None,
+    )
+
+
+def _saved_correction(
+    workspace, run, record, config, request, pages, items, projection
+):
+    if record.get("request") != request.model_dump(mode="json"):
+        return None
+    context = request.context
+    images = _images(workspace, pages)
+    try:
+        answer = _saved_answer(record, config, CorrectionAnswer, images)
+        _validate_answer(
+            answer, context["draft_sha256"], context["owned_pages"], items, pages
+        )
+    except ValueError, KeyError, TypeError, IndexError, InferenceError:
+        return None
+    chunk = _make_chunk(
+        answer, context["reference_pages"], pages, run, projection["problems"]
+    )
+    return _store(
+        workspace, "corrections/pdf", "json", chunk.model_dump_json().encode()
+    ).sha256
+
+
+def _recover_pdf_correction(
+    workspace, path, draft_sha256, owned_pages, allowed_pages, policy, config, drafts
+):
+    """Probe one saved reply under its original scope without invoking a provider."""
+    run = PDFArtifact(artifact=f"attempts/pdf-correction/{path.name}", sha256=path.stem)
+    record = json.loads(_read_artifact(workspace, run))
+    try:
+        context = record["request"]["context"]
+        owned = TypeAdapter(list[PositiveInt]).validate_python(context["owned_pages"])
+        reference = TypeAdapter(list[PositiveInt]).validate_python(
+            context["reference_pages"]
+        )
+        if (
+            context["draft_sha256"] != draft_sha256
+            or not set(owned) <= set(owned_pages)
+            or not set(reference) <= set(allowed_pages)
+            or not owned
+            or len(owned + reference) != len(set(owned + reference))
+        ):
+            return None
+    except ValueError, KeyError, TypeError:
+        return None
+    _draft, pages, items = _authorized_draft(
+        workspace, draft_sha256, owned, reference, drafts
+    )
+    projection = _projection(items, owned + reference)
+    request = _correction_request(draft_sha256, owned, reference, policy, projection)
+    digest = _saved_correction(
+        workspace, run, record, config, request, pages, items, projection
+    )
+    return (digest, owned) if digest is not None else None
+
+
 def correct_pdf(
     *,
     workspace: Path,
@@ -691,35 +776,27 @@ def correct_pdf(
     before_send: BeforeSend | None = None,
 ) -> str:
     """Generate, validate and save one chunk; never adopt a source snapshot."""
+    config = GenerationConfig.model_validate(config.model_dump())
     with workspace_lock(workspace):
         _draft, pages, items = _authorized_draft(
             workspace, draft_sha256, owned_pages, reference_pages
         )
         allowed = owned_pages + reference_pages
         projection = _projection(items, allowed)
-        request = GenerationInput(
-            stage="correction",
-            policy=policy,
-            text=json.dumps(projection, ensure_ascii=False),
-            context={
-                "draft_sha256": draft_sha256,
-                "owned_pages": [number for number in owned_pages],
-                "reference_pages": [number for number in reference_pages],
-                "response_schema": CorrectionAnswer.model_json_schema(),
-                "coordinates": "Draft bbox: original page points with coord_origin. Figure regions: original PNG pixels, origin top-left; image coordinates include point-to-pixel scales.",
-            },
-            glossary=None,
+        request = _correction_request(
+            draft_sha256, owned_pages, reference_pages, policy, projection
         )
-        images = [
-            GenerationImage(
-                data=_read_artifact(workspace, page.image),
-                mimeType="image/png",
-                width=page.width_pixels,
-                height=page.height_pixels,
-                coordinates=f"page {page.page}; origin top-left; pixels; scale_x={page.scale_x}; scale_y={page.scale_y}; rendering={json.dumps(page.rendering)}",
+        images = _images(workspace, pages)
+        for path in sorted((workspace / "attempts/pdf-correction").glob("*.json")):
+            run = PDFArtifact(
+                artifact=f"attempts/pdf-correction/{path.name}", sha256=path.stem
             )
-            for page in pages
-        ]
+            record = json.loads(_read_artifact(workspace, run))
+            recovered = _saved_correction(
+                workspace, run, record, config, request, pages, items, projection
+            )
+            if recovered is not None:
+                return recovered
         try:
             result = generate(
                 config,
@@ -763,22 +840,23 @@ def _load_pdf_correction(workspace, sha256, drafts):
         workspace, chunk.draft_sha256, chunk.owned_pages, chunk.reference_pages, drafts
     )
     record = json.loads(_read_artifact(workspace, chunk.run))
-    if record["status"] != "validated":
-        raise ValueError("Correction run was not validated")
-    content = record["attempts"][-1]["final"]["message"]["content"]
-    answer = CorrectionAnswer.model_validate_json(
-        "".join(part["text"] for part in content if part["type"] == "text")
-    )
-    _validate_answer(answer, chunk.draft_sha256, chunk.owned_pages, items, pages)
+    config = GenerationConfig.model_validate(record["config"])
     projection = _projection(items, chunk.owned_pages + chunk.reference_pages)
-    context = record["request"]["context"]
+    request = GenerationInput.model_validate(record["request"])
+    context = request.context
+    if not isinstance(context, dict):
+        raise TypeError("Correction request needs object context")
     if (
-        context["draft_sha256"] != chunk.draft_sha256
+        request.stage != "correction"
+        or context["response_schema"] != CorrectionAnswer.model_json_schema()
+        or context["draft_sha256"] != chunk.draft_sha256
         or context["owned_pages"] != chunk.owned_pages
         or context["reference_pages"] != chunk.reference_pages
         or record["request"]["text"] != json.dumps(projection, ensure_ascii=False)
     ):
         raise ValueError("Saved correction differs from its authorized request")
+    answer = _saved_answer(record, config, CorrectionAnswer, _images(workspace, pages))
+    _validate_answer(answer, chunk.draft_sha256, chunk.owned_pages, items, pages)
     if chunk != _make_chunk(
         answer, chunk.reference_pages, pages, chunk.run, projection["problems"]
     ):

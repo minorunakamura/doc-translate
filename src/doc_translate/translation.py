@@ -16,10 +16,9 @@ from pydantic import Field, TypeAdapter
 from doc_translate.inference import (
     BeforeSend,
     GenerationConfig,
-    GenerationFinal,
     GenerationInput,
     InferenceError,
-    Preflight,
+    _saved_answer,
     generate,
 )
 from doc_translate.preparation import PreparationSnapshot, Visible, load_preparation
@@ -176,6 +175,30 @@ def _validate(answer, units):
 
 
 def _call(workspace, config, request, units, command, cancel, before_send):
+    for path in sorted((workspace / "attempts/translation").glob("*.json")):
+        record = _read(workspace, "attempts/translation", path.stem)
+        if record.get("stage") != "translation" or record.get(
+            "request"
+        ) != request.model_dump(mode="json"):
+            continue
+        if (
+            len(units) > 1
+            and record.get("config") == config.model_dump(mode="json")
+            and record.get("status") == "rejected"
+            and record.get("error") in {"length", "input_limit"}
+        ):
+            # Replay only the bisection; child answers still cross both validators.
+            return TranslationChunk(units=units, error=record["error"]), path.stem
+        try:
+            answer = _saved_answer(record, config, TranslationAnswer)
+            if record["error"] is not None:
+                continue
+            _validate(answer, units)
+        except ValueError, KeyError, TypeError, IndexError, InferenceError:
+            continue
+        return _accepted_chunk(
+            workspace, config, request, units, answer, path.stem
+        ), path.stem
     started = time.monotonic()
     answer = None
     error = None
@@ -218,6 +241,10 @@ def _call(workspace, config, request, units, command, cancel, before_send):
     )
     if answer is None:
         return TranslationChunk(units=units, error=error), run
+    return _accepted_chunk(workspace, config, request, units, answer, run), run
+
+
+def _accepted_chunk(workspace, config, request, units, answer, run):
     artifact = _store(
         workspace,
         "translations/chunks",
@@ -228,7 +255,7 @@ def _call(workspace, config, request, units, command, cancel, before_send):
             "run": run,
         },
     )
-    return TranslationChunk(units=units, artifact_sha256=artifact, answer=answer), run
+    return TranslationChunk(units=units, artifact_sha256=artifact, answer=answer)
 
 
 def _chunks(units, max_source_chars):
@@ -266,6 +293,28 @@ def _process(
 ):
     runs, splits = [], []
     oversized = next((u for u in units if len(u.source_text) > limit), None)
+    adjustment_run = None
+    if oversized is None:
+        request = _request(units, preparation).model_dump(mode="json")
+        for path in sorted((workspace / "attempts/translation").glob("*.json")):
+            record = _read(workspace, "attempts/translation", path.stem)
+            if (
+                record.get("status") != "adjusted"
+                or record.get("stage") != "translation"
+                or record.get("request") != request
+                or record.get("config") != config.model_dump(mode="json")
+            ):
+                continue
+            try:
+                operation = UnitSplit.model_validate(record["adjustment"])
+                _split(units, operation)
+            except ValueError, KeyError, TypeError:
+                continue
+            # Only replay the deterministic split; every resulting answer is revalidated.
+            oversized = next(u for u in units if u.unit_id == operation.unit_id)
+            limit = operation.max_source_chars
+            adjustment_run = path.stem
+            break
     if oversized is None:
         chunk, run = _call(
             workspace,
@@ -310,7 +359,8 @@ def _process(
             return [TranslationChunk(units=units, error=reason)], [*runs, run], splits
         splits.append(operation)
         runs.append(
-            _store(
+            adjustment_run
+            or _store(
                 workspace,
                 "attempts/translation",
                 {
@@ -422,6 +472,10 @@ def translate_document(
                     units = _split(units, operation)
                     splits.append(operation)
                 old_units = _split(old_units, operation)
+        saved_runs = [
+            (path.stem, _read(workspace, "attempts/translation", path.stem))
+            for path in sorted((workspace / "attempts/translation").glob("*.json"))
+        ]
         chunks = []
         remaining = []
         index = 0
@@ -442,6 +496,30 @@ def translate_document(
                             _validate(old.answer, current)
                             reused = old.model_copy(update={"units": current})
                             break
+            if reused is None:
+                for run, record in saved_runs:
+                    try:
+                        projection = json.loads(record["request"]["text"])
+                        if not isinstance(projection, list) or not projection:
+                            continue
+                        current = units[index : index + len(projection)]
+                        request = _request(current, preparation)
+                        if (
+                            record.get("stage") != "translation"
+                            or record["request"] != request.model_dump(mode="json")
+                            or record["error"] is not None
+                        ):
+                            continue
+                        answer = _saved_answer(record, config, TranslationAnswer)
+                        _validate(answer, current)
+                    except ValueError, KeyError, TypeError, IndexError, InferenceError:
+                        continue
+                    reused = _accepted_chunk(
+                        workspace, config, request, current, answer, run
+                    )
+                    if run not in runs:
+                        runs.append(run)
+                    break
             if reused is None:
                 remaining.append(units[index])
                 index += 1
@@ -568,45 +646,14 @@ def load_translation(workspace: Path, sha256: str | None = None) -> TranslationS
             raise ValueError("Translation differs from actual inputs or answer")
         _validate(chunk.answer, chunk.units)
         run = _read(workspace, "attempts/translation", artifact["run"])
-        attempt = run["attempts"][-1]
-        final = GenerationFinal.model_validate(attempt["final"])
-        preflight = Preflight.model_validate(attempt["preflight"])
-        submitted = snapshot.config.options.model_dump(mode="json")
-        submitted.update(
-            reasoning=None
-            if snapshot.config.thinking == "off"
-            else snapshot.config.thinking,
-            maxRetries=0,
-        )
         if (
             artifact["run"] not in snapshot.runs
             or run["stage"] != "translation"
-            or run["status"] != "validated"
             or run["error"] is not None
-            or attempt["code"] is not None
-            or attempt["exit_code"] != 0
-            or final.code is not None
-            or final.terminal is None
-            or final.terminal.model_dump() != {"type": "done", "reason": "stop"}
-            or final.message is None
-            or final.message.stopReason != "stop"
-            or (final.message.provider, final.message.model, final.message.api)
-            != (snapshot.config.provider, snapshot.config.model, preflight.api)
-            or (preflight.provider, preflight.model)
-            != (snapshot.config.provider, snapshot.config.model)
-            or final.requested.model_dump()
-            != snapshot.config.model_dump(exclude={"options"})
-            or final.submitted.model_dump(mode="json") != submitted
-            or any(part.type == "toolCall" for part in final.message.content)
         ):
             raise ValueError("Translation run was not validated")
-        raw = "".join(
-            part["text"]
-            for part in attempt["final"]["message"]["content"]
-            if part["type"] == "text"
-        )
         if (
-            TranslationAnswer.model_validate_json(raw) != chunk.answer
+            _saved_answer(run, snapshot.config, TranslationAnswer) != chunk.answer
             or run["request"] != artifact["request"]
             or run["config"] != artifact["config"]
         ):

@@ -1,12 +1,12 @@
 # 開発ガイド
 
-対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13の安全Markdown・対応表・QA・summaryとoffline render/status、Issue #14のPDF／EPUB新規run接続です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13の安全Markdown・対応表・QA・summaryとoffline render/status、Issue #14のPDF／EPUB新規run接続、Issue #15のresume／障害復旧です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
 
 ## 構成・環境
 
 - `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）・原文組立adapter（`pdf_source.py`）、共通unit生成・inline保護・workflow分割（`units.py`）、固定context／glossary準備と根拠・実行記録（`preparation.py`）、翻訳chunk・検証・部分採用と再利用（`translation.py`）、原文snapshot、workspace OS lock、JSONL codec。
 - `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証／generation helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`、独立推論のpreflight／stream接続（`generation.ts`）。`ai/tests/`の`.mjs`は公開APIとcompile済みhelperを使うテスト専用processです。
-- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。`tests/test_preparation.py`は保存原文→実helper／faux→固定準備artifactの公開prepare/loadを検査します。`tests/test_translation.py`は保存原文／固定準備→実helper／faux→翻訳の公開translate/loadを検査します。`tests/test_render.py`は正本→Markdown／対応表／QAと実CLI render/statusを検査します。`tests/test_run.py`はPDF／EPUBの公開CLIからworkspace・出力・statusまでを検査します。新規`run`は実装済みで、`resume`／`revise`／`review`は未実装です。
+- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。`tests/test_preparation.py`は保存原文→実helper／faux→固定準備artifactの公開prepare/loadを検査します。`tests/test_translation.py`は保存原文／固定準備→実helper／faux→翻訳の公開translate/loadを検査します。`tests/test_render.py`は正本→Markdown／対応表／QAと実CLI render/statusを検査します。`tests/test_run.py`はPDF／EPUBの公開CLIからworkspace・出力・statusまでを検査します。新規`run`と`resume`は実装済みで、`revise`／`review`は未実装です。
 - `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、および別venvにinstallしたwheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
 
 実動基準：macOS 26.7.1 arm64、Python 3.14.9、Node 24.21.0、pnpm 12.10.1、npm 11.19.0。CIはGitHub-hosted macos-15 ARM64、Python 3.14／Node 24です。別OSやmacOSの最低versionは未保証です。
@@ -284,3 +284,80 @@ Pythonは`pyproject.toml`変更後に`uv lock`、Nodeは共通`ai/package.json`�
 fixtureは自作の小文書／人工応答だけを使い、書籍の切出し、実credential、token、重みを追加しません。`sample/`はローカル資料としてignoreします。テストはofflineで、依存installだけをネットワーク処理と区別します。Hub／Transformersのoffline設定は他の全通信まで遮断するfirewallではありません。実provider送信・大型取得は別途個別承認が必要です。
 
 CIはpush／pull_requestで上記checksとwheel導入を実行する設定です。secrets、pull_request_target、continue-on-errorは使いません。今回および後続Work Itemではremote CIの実行・成功確認・実行ref／run URLの取得・記録を受け入れ条件にせず、そのためのcommit／pushも必須ではありません。既存CI設定・smoke検査と、各Work Itemの責務に対応するローカル正式チェック・build／別環境導入検証は維持します。remote CIの未実行だけでは未完了・blockedにせず、未実行をremote成功とも表示しません。§18の過去実験はpi-ai直接経路の検証実績ではありません。
+
+## resume／障害復旧の検証境界（Issue #15）
+
+`tests/test_resume.py`は公開CLI→workspace／status／出力と実Node `runHelper`＋公開faux providerで検査します。`tests/fixtures/resume_process.py`は実Python CLI入口で、試験専用に**OS `replace`だけ**をbefore／afterで停止できます。productionに故障注入flagはありません。source／準備／翻訳pointerの両側でSIGINTとSIGKILLを送り、旧原本・snapshot・出力hash不変、accepted request再送なし、未受理応答の再送とusage不明／重複課金開示、API失敗、hash破損の事前拒否、interstageを含むwriter排他、保存設定の優先順位を確認します。`tests/test_run.py`にPDF部分所有回復、chunk確定後・進捗replace前の強制kill、未完了draftの再取得、glossaryによる取得／補正非無効化を含めます。PDF fixtureの外部公開変換境界以外にworkflowのmockは使いません。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/pytest tests/test_resume.py tests/test_run.py tests/test_preparation.py tests/test_pdf_correction.py tests/test_translation.py
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+.venv/bin/ty check
+pnpm --dir ai format
+pnpm --dir ai lint
+pnpm --dir ai test
+```
+
+pytestとは別の直接entry再現例です。model／credential／networkは使わず、`process_command`を実Node helper／public fauxへ明示します。`BOUNDARY=source-snapshot.json|preparation-snapshot.json|translation-snapshot.json`、`EDGE=before|after`、`STOP_SIGNAL=SIGINT|SIGKILL`で各境界を選べます。SIGINTでは正常取消drainを待ち、SIGKILLではOS lock自動解放と保存済みartifactの再検証だけを確認します。OAuth refreshの強制kill安全性や実請求・意味品質は証明しません。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+BOUNDARY=preparation-snapshot.json EDGE=before STOP_SIGNAL=SIGKILL .venv/bin/python - <<'PY'
+import hashlib, json, os, shutil, signal, subprocess, sys, tempfile, time
+from pathlib import Path
+sys.path.insert(0, str(Path('tests').resolve()))
+from test_epub import make_epub
+root = Path.cwd()
+work = Path(tempfile.mkdtemp(prefix='doc-translate-resume-'))
+source = make_epub(work)
+workspace = work / 'workspace'
+settings = work / 'faux.json'
+settings.write_text('{}')
+helper = [shutil.which('node'), str(root / 'ai/tests/run-process.mjs'),
+          str(work / 'credentials'), str(settings), str(work / 'requests.jsonl')]
+entry = [sys.executable, str(root / 'tests/fixtures/resume_process.py'),
+         '--helper', json.dumps(helper)]
+initial = subprocess.run([*entry, '--', 'run', str(source), '--workspace', str(workspace),
+                          '--provider', 'faux', '--model', 'text', '--thinking', 'off'],
+                         capture_output=True, text=True, check=True)
+old = {p: hashlib.sha256(p.read_bytes()).hexdigest()
+       for directory in ('originals', 'snapshots', 'renders')
+       for p in (workspace / directory).rglob('*') if p.is_file()}
+glossary = work / 'terms.json'
+glossary.write_text(json.dumps({'version':'2', 'book':'ignored', 'style':'ignored',
+                                'terms':{'Original':'指定'}}))
+marker = work / 'boundary.marker'
+with (work / 'stop.out').open('w') as out, (work / 'stop.err').open('w') as err:
+    child = subprocess.Popen([*entry, '--boundary', os.environ.get('BOUNDARY', 'preparation-snapshot.json'),
+                              '--edge', os.environ.get('EDGE', 'before'), '--marker', str(marker),
+                              '--', 'resume', str(workspace), '--glossary', str(glossary)],
+                             stdout=out, stderr=err)
+    try:
+        deadline = time.monotonic() + 15
+        while not marker.exists():
+            assert child.poll() is None and time.monotonic() < deadline
+            time.sleep(.01)
+        stop = getattr(signal, os.environ.get('STOP_SIGNAL', 'SIGKILL'))
+        child.send_signal(stop)
+        marker.with_suffix('.release').touch()
+        code = child.wait(timeout=35)
+        assert code in (0, 1) if stop == signal.SIGINT else code == -signal.SIGKILL
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+resumed = subprocess.run([*entry, '--', 'resume', str(workspace)], capture_output=True, text=True, check=True)
+summary = json.loads(resumed.stdout)
+assert summary['processing']['status'] == 'completed'
+assert len((work / 'requests.jsonl').read_text().splitlines()) == 5
+assert all(hashlib.sha256(p.read_bytes()).hexdigest() == digest for p, digest in old.items())
+status = subprocess.run([str(Path(sys.executable).with_name('doc-translate')), 'status', str(workspace)],
+                        capture_output=True, text=True, check=True)
+assert json.loads(status.stdout)['render_current'] is True
+print(work, 'completed; 5 requests; old hashes preserved; saved status current')
+PY
+```
+
+残る一時fileは採用対象でなく、試験workspaceも自動削除しません。実provider／実認証・OCRの新たな実行やmodel取得はこの検証に含めません。

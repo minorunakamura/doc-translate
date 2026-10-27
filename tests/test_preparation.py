@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from doc_translate.inference import GenerationConfig
+from doc_translate.inference import GenerationConfig, GenerationOptions
 from doc_translate.preparation import StylePolicy, load_preparation, prepare_document
 from doc_translate.snapshot import SourceSnapshot, save_source_snapshot
 from doc_translate.units import generate_translation_units
@@ -462,7 +462,15 @@ def test_rejected_evidence_records_usage_and_keeps_old_adoption(tmp_path):
     digest = run(tmp_path, workspace, candidates)
     candidates[0]["evidence"][0]["quote"] = "Invented transaction log definition."
     with pytest.raises(ValueError, match="evidence"):
-        run(tmp_path, workspace, candidates, terms={"new": "新版"})
+        run(
+            tmp_path,
+            workspace,
+            candidates,
+            terms={"new": "新版"},
+            config=CONFIG.model_copy(
+                update={"options": GenerationOptions(maxTokens=512)}
+            ),
+        )
     assert load_preparation(workspace) == load_preparation(workspace, digest)
     records = [
         json.loads(path.read_bytes())
@@ -490,6 +498,9 @@ def test_rejected_schema_records_raw_response_and_keeps_old_adoption(tmp_path):
             workspace,
             candidates,
             terms={"new": "新版"},
+            config=CONFIG.model_copy(
+                update={"options": GenerationOptions(maxTokens=512)}
+            ),
             answers_override={"collect": {"unexpected": "raw artificial answer"}},
         )
     assert load_preparation(workspace) == load_preparation(workspace, digest)
@@ -611,7 +622,7 @@ def test_preparation_preserves_old_adoption_when_atomic_replace_fails(
     with pytest.raises(OSError, match="Artificial"):
         run(tmp_path, workspace, candidates, terms={"new": "新版"})
     assert load_preparation(workspace) == load_preparation(workspace, digest)
-    assert len(list((workspace / "attempts/preparation").glob("*.json"))) == 4
+    assert len(list((workspace / "attempts/preparation").glob("*.json"))) == 3
 
 
 def test_preparation_load_verifies_all_dependency_hashes_and_adopted_inputs(tmp_path):
@@ -745,3 +756,125 @@ def test_organization_can_echo_user_only_terms_without_marking_body_evidence(tmp
         ).read_bytes()
     )
     assert evidence["collections"][0]["candidates"][-1]["evidence"] == []
+
+
+@pytest.mark.parametrize(
+    "target", ["preparation/evidence", "preparation-snapshot.json"]
+)
+def test_preparation_recovers_validated_calls_before_adoption_without_resending(
+    tmp_path, monkeypatch, target
+):
+    import os
+
+    workspace, candidates = source(tmp_path)
+    replace = os.replace
+
+    def fail_replace(src, dst):
+        if target in str(dst):
+            raise OSError("interrupted adoption")
+        return replace(src, dst)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_replace)
+        with pytest.raises(OSError, match="interrupted adoption"):
+            run(tmp_path, workspace, candidates)
+    sent = (tmp_path / "requests.jsonl").read_bytes()
+    digest = run(tmp_path, workspace, candidates)
+    assert load_preparation(workspace, digest).glossary.terms["Nimbus"] == "Nimbus"
+    assert (tmp_path / "requests.jsonl").read_bytes() == sent
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "rejected",
+        "incomplete",
+        "terminal",
+        "domain",
+        "method",
+        "schema",
+        "policy",
+        "hash",
+    ],
+)
+def test_preparation_revalidates_orphan_calls_instead_of_trusting_status(
+    tmp_path, monkeypatch, tamper
+):
+    import os
+
+    workspace, candidates = source(tmp_path)
+    replace = os.replace
+
+    def fail_replace(src, dst):
+        if "preparation/evidence" in str(dst):
+            raise OSError("interrupted adoption")
+        return replace(src, dst)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_replace)
+        with pytest.raises(OSError):
+            run(tmp_path, workspace, candidates)
+    path, record = next(
+        (path, json.loads(path.read_bytes()))
+        for path in (workspace / "attempts/preparation").glob("*.json")
+        if json.loads(path.read_bytes())["request"]["context"]["phase"] == "collect"
+    )
+    sent = len((tmp_path / "requests.jsonl").read_text().splitlines())
+    if tamper == "hash":
+        path.write_bytes(path.read_bytes() + b" ")
+        corrupt = path.read_bytes()
+        with pytest.raises(ValueError, match="SHA-256"):
+            run(tmp_path, workspace, candidates)
+        assert path.read_bytes() == corrupt
+        assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == sent
+        return
+    # Retain the original artifact outside the candidate filename set.
+    path.rename(path.with_suffix(".original"))
+    if tamper == "rejected":
+        record["status"] = "rejected"
+    elif tamper == "incomplete":
+        record["attempts"] = []
+    elif tamper == "terminal":
+        record["attempts"][-1]["final"]["terminal"]["reason"] = "length"
+    elif tamper == "domain":
+        bad = {
+            "context": "Records",
+            "candidates": [
+                {
+                    "term": "invented",
+                    "translation": "偽",
+                    "evidence": [{"unit_id": "unit-1", "quote": "invented"}],
+                }
+            ],
+        }
+        record["attempts"][-1]["final"]["message"]["content"] = [
+            {"type": "text", "text": json.dumps(bad)}
+        ]
+    elif tamper == "method":
+        record["method"] = "old-method"
+    elif tamper == "schema":
+        record["request"]["context"]["response_schema"] = {}
+    else:
+        record["request"]["policy"] = "old policy"
+    rewrite_artifact(workspace, "attempts/preparation", record)
+    digest = run(tmp_path, workspace, candidates)
+    assert load_preparation(workspace, digest).glossary.terms["Nimbus"] == "Nimbus"
+    assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == sent + 1
+
+
+def test_preparation_reuses_collection_after_organization_rejection(tmp_path):
+    workspace, candidates = source(tmp_path)
+    with pytest.raises(ValueError, match="body evidence"):
+        run(
+            tmp_path,
+            workspace,
+            candidates,
+            answers_override={
+                "collect": {"context": "Records and naming.", "candidates": candidates},
+                "organize": {"context": "Records", "terms": {"ungrounded": "偽"}},
+            },
+        )
+    sent = len((tmp_path / "requests.jsonl").read_text().splitlines())
+    digest = run(tmp_path, workspace, candidates)
+    assert load_preparation(workspace, digest).glossary.terms["Nimbus"] == "Nimbus"
+    assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == sent + 1

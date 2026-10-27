@@ -4,7 +4,7 @@ Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Is
 
 ## 新規run（Issue #14）
 
-公開CLIは`doc-translate run INPUT --workspace DIR`です。既存公開APIを接続する`doc_translate.run.run_document`を呼び、PDF／EPUBから同じ`SourceSnapshot`保存後、`prepare_document`→`translate_document`→`render_document`へ進みます。各APIが非再入lockを自分で所有するため、外側でlockを重ねません。workspaceの新規`mkdir`は空directory・file・symlink／dangling symlinkを含む既存pathを拒否します。既存資料・旧成果物を上書きするrun／復旧engineは追加しません。
+公開CLIは`doc-translate run INPUT --workspace DIR`です。既存公開APIを接続する`doc_translate.run.run_document`を呼び、PDF／EPUBから同じ`SourceSnapshot`保存後、`prepare_document`→`translate_document`→`render_document`へ進みます。run／resumeは全工程のOS lockを所有し、同process／同threadの1つのstageだけへ内部で所有権を貸します。手動の`workspace_lock`二重取得は引き続き拒否します。workspaceの新規`mkdir`は空directory・file・symlink／dangling symlinkを含む既存pathを拒否します。runは既存workspaceを拒否し、続行はresumeを使います。
 
 - EPUBは原archiveを`originals/<sha256>.epub`へatomicにコピーし、その同じbyte列を既存bounded readerで読み、hash／artifact付き`SourceDocument`を渡して構造取得します。PDF依存や補正modelを読み込みません。ページ指定は拒否します。
 - PDFは`--artifacts-path`で準備済みlocal modelを要求し、既存`acquire_pdf`のraw／original／PNG保存→所有5ページ＋許可済みの前後各1ページで補正→`assemble_pdf_source`→source保存です。`--pages A-B`省略時は実draftの全対象ページが所有範囲です。`--reference-pages A-B`は参照専用許可で所有対象を増やしません。離れた参照指定はmin–maxの連続ローカル取得を許しますが、補正requestへは所有＋許可済み隣接ページだけを投影します。
@@ -18,7 +18,7 @@ WORKSPACE/
   ...                             # 既存のdraft／attempt／snapshot／render契約
 ```
 
-`run.json`は`schema_version: 1/document/source_name/owned_pages/reference_pages/correction/translation/policy/user_terms/corrected_pages/failed_pages/not_processed_pages/chunk_sha256s/error/error_code`です。`document`は`SourceDocument`、段階設定は既存`GenerationConfig`、`policy`は既存`StylePolicy`です。EPUBの`owned_pages`／`correction`はnull、ページ集合は空です。PDF全体を指定したときの`owned_pages`は取得前null、取得後に実ページ番号を固定します。明示所有範囲は取得前から保持します。参照指定と補正済み／失敗／未処理ページ、採用chunk digestは区別し、進行に応じatomicに更新します。credential・raw環境・秘密値・raw例外は保存しません。`error_code`は観測できた既存推論分類で、分類未観測時はnull、`error`は非秘密の工程失敗案内です。これだけでresume／途中artifact復旧を実装済みとはしません。
+`run.json`は`schema_version: 1/document/source_name/owned_pages/reference_pages/correction/translation/policy/user_terms/corrected_pages/failed_pages/not_processed_pages/chunk_sha256s/artifacts_path/error/error_code`です。`document`は`SourceDocument`、段階設定は既存`GenerationConfig`、`policy`は既存`StylePolicy`です。EPUBの`owned_pages`／`correction`はnull、ページ集合は空です。PDF全体を指定したときの`owned_pages`は取得前null、取得後に実ページ番号を固定します。明示所有範囲は取得前から保持します。参照指定と補正済み／失敗／未処理ページ、採用chunk digestは区別し、進行に応じatomicに更新します。credential・raw環境・秘密値・raw例外は保存しません。`error_code`は観測できた既存推論分類で、分類未観測時はnull、`error`は非秘密の工程失敗案内です。これだけでresume／途中artifact復旧を実装済みとはしません。
 
 CLIの送信前表示は新しいpreflightを重ねず、既存推論の**preflight→generate境界**を使います。`generate`と各stage公開APIに任意の`before_send: BeforeSend | None = None`を追加し、`BeforeSend = Callable[[GenerationConfig, GenerationInput, Preflight], None]`です。検証済みpreflightと画像を確認した後、実際のgenerate recordを送る直前に毎回（retryを含む）呼びます。CLIはstderrへ入力名／hash、意図範囲、実requestの送信範囲・内容、段階provider／model／thinking、実`Preflight.auth.source/type`をflushします。原本fileや画像は準備／翻訳へ送らず、provider／model／認証fallbackやproductionのfake環境flagはありません。`cli.main(argv=None, *, process_command=None)`の明示process指定は既存adapterと同じ外部processテストseamだけです。productionは検証済み導入済みruntimeを使います。
 
@@ -31,6 +31,21 @@ CLIの送信前表示は新しいpreflightを重ねず、既存推論の**prefli
 - 新規runのrender/statusは文書hashと対応するmanifestを`scope.run`へ表示します。source未取得のrunもstatusで原本hashと保存pathを検査できます。status検査成功自体は内容失敗でもexit0。保存済みsourceを持つ旧workspaceの契約とNode不要は維持します。
 
 利用手順・オプションは[README](../../README.md#文書を翻訳する通常利用)、offlineの実CLI直接確認は[開発ガイド](../../CONTRIBUTING.md#新規runの検証境界)を参照してください。
+
+## 再開（Issue #15）
+
+公開CLIは`doc-translate resume DIR`、Python入口は`doc_translate.run.resume_document(*, workspace, translation=None, correction=None, shared=None, artifacts_path=None, user_terms=None, process_command=None, before_send=None)`です。保存済み`RunManifest`を既定にし、CLIの明示stage設定 > 明示共通設定 > 保存値の順で解決します。resumeにPI環境の設定fallback・新たなページ許可optionはありません。明示変更は`run.json`へatomic保存し、旧不変artifactを保持します。
+
+- `artifacts_path`はPDF再取得時だけ必要な非秘密local path（旧manifestでは省略／null可）。元INPUT名は表示・book名用で、再開はworkspace内の原本hash／pathを検査します。
+- EPUBは保存原本と現行reader／extractorの入力から原文を再構築し、採用済みsourceとの対応を検査します。PDF依存は読み込みません。
+- PDFは原本・raw・全PNGを`load_pdf_draft`で検査し、取得version／設定と必須成功check・画像被覆を比較します。単にdraft pointerがあるだけでは取得完了としません。必要なら保存／明示model pathで再取得します。検証済みchunkの所有を照合し、進捗manifestの直前に確定したchunkも回収して不足所有だけを補正します。部分source pointerの存在を全所有完了とみなしません。
+- 旧採用source／preparation／translation／render参照とattempt hashを送信前に検査します。hash不一致は停止し、破損artifactを上書き・黙って破棄しません。
+- 補正・準備・翻訳は実request／config／画像metadata・terminal／helper終了と回答domain検証を再度照合し、確定した受理可能結果だけを再利用します。回答保存後・採用pointer前の中断でも再送せず復帰できます。翻訳の上限縮小／分割結果も元入力に照合して再利用します。
+- glossary変更は準備の整理と影響する翻訳を更新し、収集・PDF取得／補正を無効化しません。model等の明示変更は該当stageの実入力として比較します。
+- `workspace_lock`の公開手動取得は非再入のままです。内部のrun／resume所有権だけを同PID／threadのstageに限定して貸し、直接stage／renderや別process／threadは通常のflockで拒否します。crash／kill後はOS解放を利用します。
+- 一時fileは採用参照／回答として扱いません。送信後の応答損失を全て記録できる保証はなく、summaryの`usage.note`とusage artifactは常にusage不明・再送による重複課金の可能性を明示します。sourceが無い失敗summaryにも段階attempt件数・同じ注意を返します。
+
+全体のSIGINT／SIGTERM handlerは共有cancel eventを設定し、local／interstage中断後の新規paid requestを止めます。推論helperの既存30秒drainは変更しません。SIGKILLでOAuth refresh保存やexactly-once課金を保証しません。成功時はstaleなrun errorと失敗ページ状態を更新し、残る失敗／未処理は部分出力です。
 
 ## 原文snapshot
 
@@ -90,7 +105,7 @@ WORKSPACE/
 
 保存はmodel再検証→UTF-8 JSON byte列のhash→OS lock取得→同filesystemの一時fileにwrite／flush／fsync→atomic replace／directory fsync→採用参照のatomic更新の順です。artifact確定後に参照を切り替え、旧版を削除しません。既存digestはhashとschemaを検査します。loadもhashとschemaを検査し、不一致を採用しません。原資料本体の取得・コピー・hash照合は本APIの責務ではありません。
 
-`doc_translate.workspace.workspace_lock(Path)`は非blockingのPOSIX flockでwriter重複を拒否します（`WorkspaceLockedError`）。`save_source_snapshot`は自身でlockを取るため、その外側から同じlockを二重取得しません。lock fileの残存は所有を意味せず、process終了でOS lockが解放されます。参照切替前に中断したartifactが残っても、自動で採用しません。一般的なworkflowのresume／attempt復旧は未実装です。
+`doc_translate.workspace.workspace_lock(Path)`は非blockingのPOSIX flockでwriter重複を拒否します（`WorkspaceLockedError`）。`save_source_snapshot`は自身でlockを取るため、その外側から同じlockを二重取得しません。lock fileの残存は所有を意味せず、process終了でOS lockが解放されます。参照切替前に中断したartifactが残っても、自動で採用しません。run／resumeの所有権と検証済みattempt復旧は上記「再開」を参照してください。
 
 ## 共通翻訳unit生成（Issue #10）
 
