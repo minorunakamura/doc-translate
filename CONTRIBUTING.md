@@ -1,12 +1,12 @@
 # 開発ガイド
 
-対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
 
 ## 構成・環境
 
-- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）・原文組立adapter（`pdf_source.py`）、共通unit生成・inline保護・workflow分割（`units.py`）、原文snapshot、workspace OS lock、JSONL codec。
+- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）・原文組立adapter（`pdf_source.py`）、共通unit生成・inline保護・workflow分割（`units.py`）、固定context／glossary準備と根拠・実行記録（`preparation.py`）、原文snapshot、workspace OS lock、JSONL codec。
 - `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証／generation helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`、独立推論のpreflight／stream接続（`generation.ts`）。`ai/tests/`の`.mjs`は公開APIとcompile済みhelperを使うテスト専用processです。
-- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。文書pipeline、翻訳・出力・再開のCLI操作は未実装です。
+- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。`tests/test_preparation.py`は保存原文→実helper／faux→固定準備artifactの公開prepare/loadを検査します。文書pipeline、翻訳・出力・再開のCLI操作は未実装です。
 - `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、および別venvにinstallしたwheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
 
 実動基準：macOS 26.7.1 arm64、Python 3.14.9、Node 24.21.0、pnpm 12.10.1、npm 11.19.0。CIはGitHub-hosted macos-15 ARM64、Python 3.14／Node 24です。別OSやmacOSの最低versionは未保証です。
@@ -98,7 +98,7 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 ### 共通翻訳unitの検証境界
 
-Issue #10の公開seamは検証済み`SourceSnapshot`→`doc_translate.units.generate_translation_units`→`split_translation_units`／`validate_unit_text`です。API、marker／PDF inline表現、hash・位置・分割範囲と例外は[artifact契約](docs/reference/artifacts.md#共通翻訳unit生成issue-10)を参照してください。snapshot／adapterの旧round-trip契約は変更せず、CLI・翻訳engine・glossary準備・unit保存・rendererは追加しません。
+Issue #10の公開seamは検証済み`SourceSnapshot`→`doc_translate.units.generate_translation_units`→`split_translation_units`／`validate_unit_text`です。API、marker／PDF inline表現、hash・位置・分割範囲と例外は[artifact契約](docs/reference/artifacts.md#共通翻訳unit生成issue-10)を参照してください。snapshot／adapterの旧round-trip契約は変更せず、このunit API自身にはCLI・翻訳engine・glossary準備・unit保存・rendererを追加しません。
 
 ```sh
 export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
@@ -106,6 +106,24 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 ```
 
 `tests/test_units.py`は人工PDF snapshotと実EPUB reader→原文抽出から、採用table cell／spanと祖先context、confirmedな図内部の除外（draft-local refを含む）、caption／近接・不確実textの保持、段落／item単位のmixed inline、link／literal／identifier保護、日本語並替え・marker釣合い、独立した原文／context／snapshot hash、両形式のlossless分割・再分割・不可分spanの明示失敗を公開APIで検査します。private collaborator mock・外部通信・重み・実書籍・実LLMは使いません。語義からidentifierを完全同定することや意味品質は保証せず、普通の単語に見えるidentifierは明示inlineを使います。unitのローカルtoken payloadをそのままLLMへ送らない境界を将来のcallerも守る必要があります。
+
+### 文書context・glossary準備の検証境界
+
+Issue #11の公開seamは保存済み原文→`doc_translate.preparation.prepare_document`（生成・検証・保存・採用）→`load_preparation`です。API、回答schema、固定入力hash、候補根拠／全attempt記録の保存形は[artifact契約](docs/reference/artifacts.md#文書contextglossary準備issue-11)を参照してください。PDF／EPUBとも既存unitをmarker投影し、見出し／EPUB resourceごとの収集→文書全体の整理という1方式を使います。CLI・全文翻訳・汎用方式plugin・依存は追加しません。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/pytest tests/test_preparation.py tests/test_units.py tests/test_inference.py tests/test_source_snapshot.py
+```
+
+`tests/test_preparation.py`の自作PDF原文snapshotと実EPUB readerからの人工原文、`ai/tests/preparation-process.mjs`のnetwork拒否下の公開`fauxProvider`＋実`runHelper`を使います。内部`generate`／validator／保存helperをmockしません。保存故障注入はOSの`replace`境界だけです。faux processも通常のBiome／oxlint検査対象です。
+
+- 公開prepare/save/loadの観測で利用者terms優先、複合語・原表記、本文根拠なし候補の非採用、単一policy由来style、固定glossary/contextの保存を確認します。
+- 節単位の実送信と整理入力、語がなくても節contextが整理へ届くこと、PDF／EPUB両方のblock／inline code・数式・画像・XHTML全文の非送信、snapshot-boundな用例／出典を検査します。
+- 未知unit／捏造引用・根拠なし語の採用、schema不正を拒否し、失敗のraw回答／usage記録と旧版保持、retryの全attempt（失敗分も含む）を確認します。
+- 同じ固定版の無送信再利用、準備方式metadataだけの変更で固定翻訳入力hashが変わらないこと、policy／利用者terms改版、全artifactのhash不正、hashを再計算した捏造根拠・採用内容差替え、採用参照replace失敗、writer排他を検査します。
+
+実LLM・実credential・model重み・既存書籍を使いません。この機械検証は候補網羅性・定義の意味や訳語品質の確認ではなく、全文翻訳snapshot／CLI統合の成立も示しません。実送信や取得は別途承認が必要です。
 
 ## wheelの明示buildと導入検査
 
