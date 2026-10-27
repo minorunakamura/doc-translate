@@ -1,6 +1,6 @@
 # 初期artifact／JSONL契約（schema version 1）
 
-Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。EPUB原資料のコピー・unitの永続保存／訳文・policy／glossary／context snapshot、attempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
+Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。EPUB原資料のコピー・unitの永続保存／訳文snapshot、文書全体のattempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
 
 ## 原文snapshot
 
@@ -123,6 +123,61 @@ leafは`text/code/literal/identifier/formula`＋`text`、paired構造は`emphasi
 `validate_unit_text`はmarkerの欠落／重複／未知、対の不釣合い、親構造の変更を拒否します。同じ親内の完全なspan／tokenの並替えや日本語textの語順変更は許容します。訳文の意味品質・要約の有無をこの機械検査だけで認定しません。
 
 分割は明示の正整数文字上限でworkflow側が行い、元unitと原文を変更しません。可能なら空白で切り、通常textは文字境界でも切れますが、paired span全体とprotected markerは不可分です。再分割しても最初の親ID／hashと範囲を維持します。不可分spanが上限を超える場合は`UnitSplitError(ValueError)`の`unit_id/source_range`と理由を返し、途中のunit配列・切捨て・要約を成功として返しません。callerはこの失敗を対象snapshot／元unitに結び付けて記録する責務を持ち、永続的な失敗記録engineは本APIに含みません。
+
+## 文書context・glossary準備（Issue #11）
+
+公開APIは`doc_translate.preparation.prepare_document(*, workspace: Path, book: str, policy: StylePolicy, config: GenerationConfig, user_terms: dict[str, str] | None = None, version: str = "1", source_sha256: str | None = None, process_command: Sequence[str] | None = None, cancel: threading.Event | None = None) -> str`と`load_preparation(workspace: Path, sha256: str | None = None) -> PreparationSnapshot`です。`prepare_document`自身が保存・採用とworkspace lockを所有します。callerは外側から同じlockを取得しません。原文の保存・loadは既存APIを使い、PDF依存をimportしません。CLI・訳文生成・翻訳snapshotは追加しません。
+
+```python
+from pathlib import Path
+from doc_translate.inference import GenerationConfig
+from doc_translate.preparation import StylePolicy, prepare_document, load_preparation
+
+workspace = Path("workspace")  # 検証済みの原文snapshotを保存済み
+policy = StylePolicy(
+    version="1", text="本文はですます調。見出しは自然な体言止めを認めます。"
+)
+digest = prepare_document(
+    workspace=workspace,
+    book="自作技術文書",
+    policy=policy,
+    config=GenerationConfig(provider="PROVIDER", model="MODEL", thinking="off"),
+    user_terms={"transaction log": "トランザクションログ"},
+)
+fixed = load_preparation(workspace, digest)
+print(fixed.glossary.terms, fixed.translation_inputs_sha256)
+```
+
+上例の実推論には個別の送信承認と導入済みhelper／認証が必要です。`process_command`は既存推論adapterと同じ外部processテストseamであり、provider fallbackやpluginではありません。
+
+### 初期方式と回答
+
+方式は`chapter-collect-organize-v1`の1つです。保存原文から共通unitを生成し、読み順を保って見出しごと（EPUBはresource block境界でも）に区切り、各まとまりを独立`generate(stage="prepare")`で読みます。各unitの`unit_id/source_text/heading_path`だけを投影し、ローカル`tokens.value`・その他の構造payloadを送信しません。code本体・数式・図内部はunit生成時に除外され、inline code／formulaはmarkerのままです。原資料・画像・XHTML全文は渡しません。文書中の命令／linkは未信頼dataです。
+
+1. 収集回答`CollectionAnswer`は`context`（その節の主題・翻訳用context）と`candidates`を持ちます。候補は`term/translation/evidence`、根拠は`unit_id/quote`です。語・訳語・引用・contextは空白だけの値を認めません。根拠なしの一般知識候補は`evidence: []`で保持できますが、自動採用対象ではありません。
+2. Pythonは根拠IDがその呼出しの送信unitにあること、引用がmarker済み原文の連続した実在文字列であることを完全一致で検査します。原語`term`の包含だけは、対応unitのpaired構造marker（開始／終了）を引用から除いたtextで検査し、強調等の境界をまたぐ複合語を自然な原語keyで保持します。引用自体は書き換えません。code／formula／literal等の単独保護markerは除去・展開せず、その境界を越す語やmarkerだけの語を本文根拠として認めません。誤った根拠を黙って本文確認済みにせず、その回答を拒否します。これは出現の検査であり、定義／訳語の意味的妥当性の認定ではありません。
+3. 全節の収集結果を独立した整理呼出しへ渡します。`OrganizationAnswer`は文書全体の`context`（主題・章節の解釈）と`terms`を持ち、自動採用するkeyは根拠のある収集候補に限ります（利用者指定keyの再掲も許容しますが本文根拠ありにはしません）。同一語の複数案はこの1回で整理します。複合語も通常のkey、原表記を保つ語は同じvalueとし、文脈別ルールや採否stateは追加しません。
+4. 最後に利用者`user_terms`を上書き優先で合成します。利用者だけが指定した語も保存できますが本文確認済み候補にはしません。採用`Glossary`は`version/book/style/terms`だけです。`StylePolicy(version/text)`が唯一の文体指定で、`glossary.style`は常にその`text`から生成します。modelにstyleを別途生成させません。
+
+### 固定版・根拠・実行記録
+
+```text
+WORKSPACE/
+  preparation-snapshot.json              # SnapshotReference、最後にatomic更新
+  snapshots/preparation/<sha256>.json    # PreparationSnapshot、旧版も保持
+  preparation/evidence/<sha256>.json     # 候補・用例・出典・整理回答・利用者terms
+  attempts/preparation/<sha256>.json     # 1呼出しごとの全attempt、失敗も保存
+```
+
+`PreparationSnapshot`は`schema_version: 1`、`source_snapshot_sha256`、`glossary`、`context`、`policy`、`translation_inputs_sha256`、`evidence_sha256`、`runs`（呼出し順の実行記録digest）を持ちます。候補／根拠／実行metadataをglossaryへ混入させません。根拠artifactは`source_snapshot_sha256/sources/collections/organization/user_terms`を持ちます。`sources`はunit IDをkeyに`block_id/cell_id/node_path/attribute/locations/snapshot_id`を保持し、PDF位置／EPUB resource・snapshot-bound nodeへ追跡できます。参照元snapshot自体もhashで固定します。
+
+実行記録は`stage: prepare`、`method`、`status: validated | rejected`、実`request/config`、`elapsed_seconds`、既存adapterの全`attempts`を保存します。成功・失敗・retryのprovider／model・要求／確認済み設定・terminal・終了code・時間・raw回答・usage生値・不明状態を失いません。retryはadapterの有限retryをそのまま使い、追加retryを重ねません。準備usageを訳文生成usageと合算した記録にはしません。参考costはproviderの生値で、実請求を主張しません。
+
+固定入力hashはsort済みUTF-8 JSONの`{glossary, context, policy}`だけから生成し、準備方式・config／model・usage・根拠artifact hash・参照元snapshot hashを含めません。翻訳callerはunitの実入力hashに加え、この固定入力hashを参照できます。方式だけが変わって採用内容が同じなら翻訳入力を無効化しません。原文とpolicy／book／version／利用者terms、全呼出しの準備方式・configが現採用版と一致するとき、`prepare_document`はloadで再検証してdigestを返し、再送しません。内容変更後の新版も旧artifactを削除しません。`version`はcaller指定の非空文字列であり、時刻や試行数による自動改版を行いません。
+
+保存は同filesystemのfsync／atomic replace、参照切替は全artifact確定後です。schema・根拠拒否でも得られた全attemptを記録してから例外を返し、旧採用参照を維持します。採用参照更新失敗でも実行記録と旧版を保持します。未確定artifactを自動採用する復旧engineは追加しません。
+
+`load_preparation`はNode・認証・通信を使わず、指定digest（省略時は採用参照）のbyte hash／schema、原文snapshot・根拠・全runのhash、元unit／位置・引用の対応、収集範囲と整理語、raw回答・実requestとの対応、採用glossary／style／context／固定入力hashを再検証します。hashだけ正しい捏造根拠や採用内容の差替えを無条件に受理しません。機械的な整合検査であり、実LLMの候補網羅性や文脈・訳語の品質を保証するものではありません。
 
 ## PDF抽出下書き（Issue #7）
 
