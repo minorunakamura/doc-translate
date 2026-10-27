@@ -64,7 +64,7 @@ jobs:
           uv sync --locked --dev --extra pdf
           uv run --locked --extra pdf ty check
           uv run --locked --extra pdf python -c 'from docling.document_converter import DocumentConverter; from docling.datamodel.pipeline_options import OcrMacOptions; from docling_core.types.doc import DoclingDocument; from ocrmac import ocrmac; print(OcrMacOptions(lang=["en-US"], framework="vision", recognition="accurate"))'
-          uv run --locked --extra pdf pytest
+          uv run --locked --extra pdf pytest tests/test_pdf.py tests/test_run.py
       - name: Wheel CLI setup-ai with npm/pnpm, Node-only providers/models and codec smoke
         run: |
           uv build

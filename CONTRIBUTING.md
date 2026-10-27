@@ -39,8 +39,10 @@ Python packageは`ai/dist`を同梱するため、fresh checkoutでは`uv sync`�
 uv sync --locked --dev --extra pdf
 uv run --locked --extra pdf ty check
 uv run --locked --extra pdf python -c 'from docling.document_converter import DocumentConverter; from docling.datamodel.pipeline_options import OcrMacOptions; from docling_core.types.doc import DoclingDocument; from ocrmac import ocrmac; print(OcrMacOptions(lang=["en-US"], framework="vision", recognition="accurate"))'
-uv run --locked --extra pdf pytest
+uv run --locked --extra pdf pytest tests/test_pdf.py tests/test_run.py
 ```
+
+共通テストはcore-onlyで全件実行し、PDF extra付きではDocling依存のテストを含む上記2ファイルに限定して重複実行を抑えます。PDF依存が必要なテストを別ファイルに追加する場合は、CIとこの手順の実行対象にも追加してください。
 
 extraを保持するには`uv run --locked --extra pdf ...`（pytestは`uv run --locked --extra pdf pytest`を推奨）、またはsync済みの`.venv/bin/pytest`／`.venv/bin/ruff`／`.venv/bin/ty`を使い、`.venv/bin/pytest`を直接使う場合はvenvのactivateまたは`.venv/bin`のPATH追加が必要です。これは依存解決・importと人工fixture検証であり、それだけを実Docling変換、Apple Vision OCR、重みを使うlayout／table処理の成功と表示しません。
 
