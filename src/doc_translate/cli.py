@@ -11,7 +11,11 @@ from doc_translate.auth import authenticate
 from doc_translate.inference import Selection, resolve_config
 from doc_translate.preparation import Glossary
 from doc_translate.render import render_document, workspace_status
-from doc_translate.run import CONFIG_ERROR_CODES, run_document
+from doc_translate.run import (
+    CONFIG_ERROR_CODES,
+    resume_document,
+    run_document,
+)
 
 
 def _announce(workspace, config, inputs, preflight):
@@ -112,28 +116,35 @@ def main(
     )
     run.add_argument("input", type=Path)
     run.add_argument("--workspace", type=Path, required=True)
-    for prefix in ("", "correction-", "translation-"):
-        for field in ("provider", "model", "thinking"):
-            run.add_argument(f"--{prefix}{field}")
+    resume = commands.add_parser(
+        "resume",
+        help="Verify saved inputs and continue only unfinished or explicitly changed stages.",
+        description="Saved settings are defaults; ambient PI_* never changes them. Explicit glossary/provider/model/thinking overrides are persisted. Transmission scope cannot expand. Lost responses may have unknown usage and resending may duplicate charges. Completed saved results need no Node/authentication.",
+    )
+    resume.add_argument("workspace", type=Path)
+    for command in (run, resume):
+        for prefix in ("", "correction-", "translation-"):
+            for field in ("provider", "model", "thinking"):
+                command.add_argument(f"--{prefix}{field}")
+        command.add_argument(
+            "--artifacts-path",
+            type=Path,
+            help="Prepared local PDF models; needed only for acquisition, never downloaded.",
+        )
+        command.add_argument(
+            "--glossary",
+            type=Path,
+            help="Glossary JSON (version/book/style/terms); import preferred terms only.",
+        )
     run.add_argument("--pages", type=_page_range, help="PDF ownership A-B (inclusive).")
     run.add_argument(
         "--reference-pages",
         type=_page_range,
         help="Explicit PDF reference-only transmission permission A-B.",
     )
-    run.add_argument(
-        "--artifacts-path",
-        type=Path,
-        help="Prepared local PDF model directory; never downloaded.",
-    )
-    run.add_argument(
-        "--glossary",
-        type=Path,
-        help="Glossary JSON (version/book/style/terms); import preferred terms only.",
-    )
     args = parser.parse_args(argv)
     try:
-        if args.operation == "run":
+        if args.operation in {"run", "resume"}:
             shared = Selection(
                 **{
                     field: getattr(args, field)
@@ -141,40 +152,53 @@ def main(
                 }
             )
 
-            def selected(stage):
-                return resolve_config(
-                    stage=Selection(
-                        **{
-                            field: getattr(args, f"{stage}_{field}")
-                            for field in ("provider", "model", "thinking")
-                        }
-                    ),
-                    shared=shared,
+            def selection(stage):
+                return Selection(
+                    **{
+                        field: getattr(args, f"{stage}_{field}")
+                        for field in ("provider", "model", "thinking")
+                    }
                 )
 
-            translation = selected("translation")
-            correction = (
-                selected("correction") if args.input.suffix.lower() == ".pdf" else None
-            )
             terms = (
                 Glossary.model_validate_json(args.glossary.read_bytes()).terms
                 if args.glossary
                 else None
             )
-            result = run_document(
-                source=args.input,
-                workspace=args.workspace,
-                translation=translation,
-                correction=correction,
-                pages=args.pages,
-                reference_pages=args.reference_pages,
-                artifacts_path=args.artifacts_path,
-                user_terms=terms,
-                process_command=process_command,
-                before_send=lambda config, inputs, preflight: _announce(
-                    args.workspace, config, inputs, preflight
-                ),
-            )
+
+            def announce(config, inputs, preflight):
+                _announce(args.workspace, config, inputs, preflight)
+
+            if args.operation == "resume":
+                result = resume_document(
+                    workspace=args.workspace,
+                    translation=selection("translation"),
+                    correction=selection("correction"),
+                    shared=shared,
+                    artifacts_path=args.artifacts_path,
+                    user_terms=terms,
+                    process_command=process_command,
+                    before_send=announce,
+                )
+            else:
+                result = run_document(
+                    source=args.input,
+                    workspace=args.workspace,
+                    translation=resolve_config(
+                        stage=selection("translation"), shared=shared
+                    ),
+                    correction=resolve_config(
+                        stage=selection("correction"), shared=shared
+                    )
+                    if args.input.suffix.lower() == ".pdf"
+                    else None,
+                    pages=args.pages,
+                    reference_pages=args.reference_pages,
+                    artifacts_path=args.artifacts_path,
+                    user_terms=terms,
+                    process_command=process_command,
+                    before_send=announce,
+                )
         elif args.operation in {"render", "status"}:
             result = (
                 render_document(args.workspace)
@@ -194,19 +218,19 @@ def main(
     except ai_runtime.RuntimeUnavailable as error:
         parser.error(str(error))
     except (OSError, ValueError, RuntimeError) as error:
-        if args.operation in {"run", "render", "status"} and isinstance(
+        if args.operation in {"run", "resume", "render", "status"} and isinstance(
             error, (FileNotFoundError, ValueError)
         ):
             parser.error(str(error))
         parser.exit(1, f"doc-translate: {error}\n")
     print(json.dumps(result, ensure_ascii=False))
     if (
-        args.operation == "run"
+        args.operation in {"run", "resume"}
         and result["scope"]["run"]["error_code"] in CONFIG_ERROR_CODES
     ):
         parser.exit(2)
     if (
-        args.operation in {"run", "render"}
+        args.operation in {"run", "resume", "render"}
         and result["processing"]["status"] == "partial"
     ):
         parser.exit(1)

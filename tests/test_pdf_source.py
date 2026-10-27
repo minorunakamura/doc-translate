@@ -23,11 +23,16 @@ def continuation(page, mode="space"):
     return {"target": evidence(page, f"#/texts/{page - 1}"), "mode": mode}
 
 
-def accept(tmp_path, draft, blocks, owned, reference):
+def accept(tmp_path, draft, blocks, owned, reference, **kwargs):
     response = answer(draft[1])
     response.update(blocks=blocks, owned_pages=owned)
     digest = run(
-        tmp_path, draft, response, owned_pages=owned, reference_pages=reference
+        tmp_path,
+        draft,
+        response,
+        owned_pages=owned,
+        reference_pages=reference,
+        **kwargs,
     )
     load_pdf_correction(draft[0], digest)
     return digest
@@ -116,6 +121,7 @@ def test_dehyphenation_and_code_newline_preserve_original_fragments(tmp_path, dr
         ],
         [1],
         [2],
+        policy="Restore visible code, preserving original newlines.",
     )
     second = accept(
         tmp_path,
@@ -132,6 +138,7 @@ def test_dehyphenation_and_code_newline_preserve_original_fragments(tmp_path, dr
         ],
         [2],
         [1],
+        policy="Restore visible code, preserving original newlines.",
     )
     snapshot = assemble(draft, [first, second])
     loaded = load_source_snapshot(draft[0], save_source_snapshot(draft[0], snapshot))

@@ -909,7 +909,7 @@ def _usage(workspace: Path) -> dict:
         "wall_seconds": None,
         "local_processing_seconds": None,
         "actual_billing": "unknown",
-        "note": "All saved attempts, including failures/retries; raw usage retained, unknown is not zero. No reasoning/output or price totals inferred.",
+        "note": "All saved attempts, including failures/retries; raw usage retained, unknown is not zero. No reasoning/output or price totals inferred. Lost responses or force termination can leave usage unknown; resending may duplicate provider charges (no exactly-once billing guarantee).",
     }
 
 
@@ -1048,6 +1048,7 @@ def _build(workspace: Path):
             },
             "wall_seconds": None,
             "actual_billing": "unknown",
+            "note": usage["note"],
         },
         "processing": processing,
         "scope": {

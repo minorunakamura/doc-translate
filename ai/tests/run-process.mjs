@@ -37,6 +37,9 @@ faux.setResponses([
     }
     await appendFile(recordingPath, `${JSON.stringify(context)}\n`);
     const input = JSON.parse(context.messages[1].content[0].text);
+    if (settings.delay_phase === input.context.phase) {
+      await new Promise((resolve) => setTimeout(resolve, settings.delay_ms));
+    }
     const answer = input.context.owned_pages
       ? {
           schema_version: 1,
