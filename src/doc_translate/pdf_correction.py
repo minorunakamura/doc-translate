@@ -57,10 +57,17 @@ class CorrectionEvidence(Contract):
         return self
 
 
+class Continuation(Contract):
+    target: CorrectionEvidence | None = None
+    mode: Literal["space", "dehyphenate", "newline"]
+
+
 class _Block(Contract):
     block_id: Nonempty
     text: str
     evidence: list[CorrectionEvidence] = Field(min_length=1)
+    incoming: Continuation | None = None
+    outgoing: Continuation | None = None
 
 
 class TextBlock(_Block):
@@ -78,6 +85,7 @@ class ListBlock(_Block):
     depth: PositiveInt
     marker: str
     parent_id: Nonempty | None = None
+    parent_evidence: CorrectionEvidence | None = None
 
 
 class CodeBlock(_Block):
@@ -107,7 +115,8 @@ class TableBlock(_Block):
     kind: Literal["table"]
     rows: PositiveInt
     columns: PositiveInt
-    cells: list[TableCell] = Field(min_length=1)
+    cells: list[TableCell]
+    structure_confirmed: bool = True
 
 
 class PictureRegion(Contract):
@@ -208,7 +217,7 @@ class PDFCorrectionChunk(Contract):
     run: PDFArtifact
 
 
-def _authorized_draft(workspace, digest, owned, reference):
+def _authorized_draft(workspace, digest, owned, reference, drafts=None):
     owned = TypeAdapter(list[PositiveInt]).validate_python(owned)
     reference = TypeAdapter(list[PositiveInt]).validate_python(reference)
     allowed = owned + reference
@@ -216,7 +225,27 @@ def _authorized_draft(workspace, digest, owned, reference):
         raise ValueError(
             "Owned/reference pages must be nonempty and disjoint without duplicates"
         )
-    draft = load_pdf_draft(workspace, digest)
+    if drafts is None:
+        drafts = {}
+    if digest not in drafts:
+        draft = load_pdf_draft(workspace, digest)
+        raw = json.loads(_read_artifact(workspace, draft.raw))
+        items = {}
+        pending = [(raw, "#")]
+        while pending:
+            node, path = pending.pop()
+            if isinstance(node, dict):
+                if "self_ref" in node and node.get("prov"):
+                    if node["self_ref"] != path:
+                        raise ValueError("Raw extraction ref does not match its item")
+                    items[path] = node
+                pending.extend((value, f"{path}/{key}") for key, value in node.items())
+            elif isinstance(node, list):
+                pending.extend(
+                    (value, f"{path}/{index}") for index, value in enumerate(node)
+                )
+        drafts[digest] = (draft, items)
+    draft, items = drafts[digest]
     if draft.document.format != "pdf" or draft.conversion_status != "success":
         raise ValueError("Correction requires a successful PDF draft")
     if not set(allowed) <= set(draft.target_pages):
@@ -227,21 +256,6 @@ def _authorized_draft(workspace, digest, owned, reference):
         if len(matches) != 1:
             raise ValueError("Each authorized page needs exactly one image")
         pages.extend(matches)
-    raw = json.loads(_read_artifact(workspace, draft.raw))
-    items = {}
-    pending = [(raw, "#")]
-    while pending:
-        node, path = pending.pop()
-        if isinstance(node, dict):
-            if "self_ref" in node and node.get("prov"):
-                if node["self_ref"] != path:
-                    raise ValueError("Raw extraction ref does not match its item")
-                items[path] = node
-            pending.extend((value, f"{path}/{key}") for key, value in node.items())
-        elif isinstance(node, list):
-            pending.extend(
-                (value, f"{path}/{index}") for index, value in enumerate(node)
-            )
     return draft, pages, items
 
 
@@ -326,7 +340,13 @@ def _validate_answer(answer, digest, owned, items, pages):
             "Owned page result coverage is incomplete; blank pages need explicit evidence/reason"
         )
     for block in answer.blocks:
-        if isinstance(block, TableBlock):
+        allowed = [page.page for page in pages]
+        for continuation in (block.incoming, block.outgoing):
+            if continuation is not None and continuation.target is not None:
+                _validate_evidence(continuation.target, allowed, items)
+        if isinstance(block, ListBlock) and block.parent_evidence is not None:
+            _validate_evidence(block.parent_evidence, allowed, items)
+        if isinstance(block, TableBlock) and block.structure_confirmed:
             _validate_table(block)
         if (
             isinstance(block, TextBlock)
@@ -726,6 +746,10 @@ def correct_pdf(
 
 def load_pdf_correction(workspace: Path, sha256: str) -> PDFCorrectionChunk:
     """Load one immutable accepted chunk by digest, verifying its evidence artifacts."""
+    return _load_pdf_correction(workspace, sha256, {})
+
+
+def _load_pdf_correction(workspace, sha256, drafts):
     chunk = PDFCorrectionChunk.model_validate_json(
         _read_artifact(
             workspace,
@@ -733,7 +757,7 @@ def load_pdf_correction(workspace: Path, sha256: str) -> PDFCorrectionChunk:
         )
     )
     _draft, pages, items = _authorized_draft(
-        workspace, chunk.draft_sha256, chunk.owned_pages, chunk.reference_pages
+        workspace, chunk.draft_sha256, chunk.owned_pages, chunk.reference_pages, drafts
     )
     record = json.loads(_read_artifact(workspace, chunk.run))
     if record["status"] != "validated":

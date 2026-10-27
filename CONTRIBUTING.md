@@ -1,10 +1,10 @@
 # 開発ガイド
 
-対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
 
 ## 構成・環境
 
-- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）、原文snapshot、workspace OS lock、JSONL codec。
+- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）・原文組立adapter（`pdf_source.py`）、原文snapshot、workspace OS lock、JSONL codec。
 - `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証／generation helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`、独立推論のpreflight／stream接続（`generation.ts`）。`ai/tests/`の`.mjs`は公開APIとcompile済みhelperを使うテスト専用processです。
 - `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。文書pipeline、翻訳・出力・再開のCLI操作は未実装です。
 - `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、および別venvにinstallしたwheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
@@ -81,7 +81,20 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 - 全content kind、見出し／list階層、code改行／callout、空cell／span、除外理由・原本欠損、不正ref／wrong-page ref／cell／span、所有外出力、owned画像欠落、rawの安全なspan投影とclipしない省略、bbox重なりだけで本文を消さないことを検査します。
 - raw itemの部分所属／共有ref／不確実cellと全table所属の矛盾で外側を削除しないこと、旧chunk保持・chunk保存失敗前のattempt保存、各artifactのhash不正、load時のdomain／送信許可再検証、writer排他を検査します。save障害注入はOSの`replace`境界だけです。
 
-再現用の公開API例はartifact契約を参照してください。offlineの実process検証は補正の構造・範囲・保存に限定され、実LLMの読取り／図分類品質・全文翻訳の成立は示しません。chunkは別artifactに確定するだけで、`source-snapshot.json`を切り替えません。CLI・ページ接続・unit生成・翻訳・resume engine・全chunk所有割当は対象外です。
+再現用の公開API例はartifact契約を参照してください。offlineの実process検証は補正の構造・範囲・保存に限定され、実LLMの読取り／図分類品質・全文翻訳の成立は示しません。chunkは別artifactに確定するだけで、`source-snapshot.json`を切り替えません。CLI・unit生成・翻訳・resume engine・全chunk所有割当は対象外です。ページ接続は次の独立adapterで行います。
+
+### PDF原文組立の検証境界
+
+Issue #9は受理済みchunk→`assemble_pdf_source(workspace=..., chunk_sha256s=..., snapshot_id=...)`→既存`save_source_snapshot/load_source_snapshot`が公開seamです。API／追加schema／最小入力例は[artifact契約](docs/reference/artifacts.md#pdf原文snapshot組立issue-9)を参照してください。adapterは保存・採用lockを自分で取らず、callerが別途saveします。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/pytest tests/test_pdf_source.py tests/test_pdf_correction.py tests/test_source_snapshot.py
+```
+
+`tests/test_pdf_source.py`は既存の人工draft／evidence／run fixtureと実helper／公開faux providerを再利用し、補正回答から検証済みchunkを作ってから組み立てます。脚注越しの本文接続・分綴・code改行／language・欠損の非補完・callout行対応、別ページlist親子（同名local IDを含む）と未知／複数／循環／kind／深さ／順序のQA、未確定table・図内部非再採用、ページ順・断片／出典／画像のsave/loadをliteral期待値で検査します。同じ原本文書の別draftも、実際の抽出snapshotを残し、draft-localな同名refの内容が違う場合に推測接続しないことを検査します。補正側では接続／親根拠の許可範囲と実raw provenanceも拒否検証します。
+
+所有unionを越える処理完了・意味品質は主張しません。未確定内容は断片とQAを保持しますが、hash不一致・所有重複・異なる原本文書は拒否します。新たな永続管理・private mock・実LLM・model取得・既存書籍処理は追加しません。CLI／unit／翻訳／renderer／自動割当は対象外です。
 
 ## wheelの明示buildと導入検査
 
