@@ -1,6 +1,6 @@
 # 初期artifact／JSONL契約（schema version 1）
 
-Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。EPUB原資料のコピー・翻訳unit／訳文・policy／glossary／context snapshot、attempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
+Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。EPUB原資料のコピー・翻訳unit／訳文・policy／glossary／context snapshot、attempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
 
 ## 原文snapshot
 
@@ -154,7 +154,7 @@ for block in chunk.blocks:
 
 ### 補正回答の型と意味検証
 
-`CorrectionAnswer`は`schema_version=1`、`draft_sha256`、`owned_pages`、`blocks`、`exclusions`、`uncertainties`を必須とします。余分なfield／非有限数値を拒否します。draftと所有ページの完全一致、全所有ページの結果根拠（空白ページでも除外理由等を明示）、block／cell IDの一意性、関係先の存在・種別・局所構造を検査します。参照ページはcontext専用で、block／cell・除外・uncertainty・図内部根拠のいずれにも所有外ページを採用しません。
+`CorrectionAnswer`は`schema_version=1`、`draft_sha256`、`owned_pages`、`blocks`、`exclusions`、`uncertainties`を必須とします。余分なfield／非有限数値を拒否します。draftと所有ページの完全一致、全所有ページの結果根拠（空白ページでも除外理由等を明示）、block／cell IDの一意性、関係先の存在・種別・局所構造を検査します。参照ページはcontext専用で、block／cell・除外・uncertainty・図内部根拠のいずれにも所有外ページを採用しません。接続候補と親候補の参照根拠だけは、所有＋明示許可した参照ページで検証します（次節）。
 
 全blockは`block_id/text/evidence`を持ち、配列順がchunk内読み順です。`kind`によるdiscriminated unionであり、未検証の`SourceBlock.structure`へ保存して補正検証済みとはしません。
 
@@ -162,10 +162,10 @@ for block in chunk.blocks:
 | --- | --- |
 | `body`／`formula`／`caption`／`footnote` | 原語のtext。caption／脚注等の対応を`target_id`で保持可能 |
 | `heading` | `level`（正整数） |
-| `list` | `depth`（1始まり）、`marker`、任意の局所`parent_id`。親はlistで深さが1小さいこと |
+| `list` | `depth`（1始まり）、`marker`、任意の局所`parent_id`と`parent_evidence`。局所親はlistで深さが1小さいこと。根拠による文書全体の親解決は次節 |
 | `code` | 原語のtext（空白・改行を保存）、任意の`language` |
 | `callout` | `code_id`、印刷上の`marker`、1始まりの`lines`。対象codeと実在行を検査 |
-| `table` | `rows/columns`と`cells`。cellは`cell_id`、0始まり`row/column`、正の`row_span/column_span`、`text/heading/evidence`。空cellを含む矩形の被覆・非重複・境界を検査 |
+| `table` | `rows/columns`と`cells`。cellは`cell_id`、0始まり`row/column`、正の`row_span/column_span`、`text/heading/evidence`。`structure_confirmed`（既定true）なら空cellを含む矩形の被覆・非重複・境界を検査。falseは未確定の候補構造として保持し、`cells=[]`も可 |
 | `picture` | `region: {page,left,top,right,bottom}`、`caption_ids`、`members`。regionは元PNG内の正の領域。元ページ・対応画像・caption種別を検査 |
 
 `CorrectionEvidence`は`page`、実在する`ref`またはnull、空白のみでない`position/reason`を持ちます。任意の`charspan: [start,end]`または`cell_index`で細分化できます。refはrawの実在item・そのJSON位置の`self_ref`・当該ページのprovenanceに照合します。spanは有効な当該ページprovenance内、cell indexは実在cellかつ単一ページtable内であることを検査します。画像のみからの復元は`ref=null`と実ページ・見える位置・復元理由で表現し、架空refやrefなしの抽出selectorは受理しません。位置／理由の文章の正しさ・画像の意味的読取り自体を機械検証できるとはしません。
@@ -194,7 +194,62 @@ chunkは`schema_version/draft_sha256/owned_pages/reference_pages/blocks/retained
 
 既存`workspace_lock`を自分で取得し、既存のhash保存・`_atomic_write`（一時file／flush／fsync／atomic replace）を再利用します。外側から同じ非再入lockを取得しません。推論のraw回答と全attempt（失敗時の取得済みusage等を含む）を保存してから、検証済みchunkだけを別directoryへ確定します。`status=validated`は回答のschema／domain検証までで、後続chunkの保存成功を意味しません。schema／domain不正時は`status=rejected`の記録を残し、chunkを作りません。保存OSエラーは伝播し、既に保存できたattemptと旧chunkは削除しません。disk自体に書けない場合の記録保証はありません。
 
-loadはchunk／draft／原資料／raw／PNG／runのhashを照合し、元runのraw回答を再度schema／domain検証し、記録した送信許可範囲・draft投影・図所属からの採用結果と一致することを確認します。旧chunkはdigestで読めます。採用pointerや自動resume／再送抑止engineは追加せず、`source-snapshot.json`も作成・変更しません。全chunkの所有被覆・ページ間接続・文書source採用・unit生成・翻訳は後続です。
+loadはchunk／draft／原資料／raw／PNG／runのhashを照合し、元runのraw回答を再度schema／domain検証し、記録した送信許可範囲・draft投影・図所属からの採用結果と一致することを確認します。旧chunkはdigestで読めます。採用pointerや自動resume／再送抑止engineは追加せず、`source-snapshot.json`も作成・変更しません。複数chunkからのsource組立は次節の別APIで行います。自動所有割当・unit生成・翻訳は後続です。
+
+## PDF原文snapshot組立（Issue #9）
+
+公開APIは`doc_translate.pdf_source.assemble_pdf_source(*, workspace: Path, chunk_sha256s: Sequence[str], snapshot_id: str) -> SourceSnapshot`です。受理済みchunkのdigestを明示入力し、`load_pdf_correction`と同じ検証経路で原回答・許可範囲・図所属・原資料／raw／画像を再検証します。同じdraft hashの検証済draft／rawは1回の組立内だけ再利用し、全ページ画像のhash検証・decodeをchunkごとに繰り返しません。chunk自身と元run回答・schema／domain・所有／参照権限・図採用結果は各chunkで再検証します。人工回答も既存`correct_pdf(..., process_command=...)`→`load_pdf_correction`を通して同じseamで検証できます。adapter自身はworkspaceを書き換えず、LLM／Node／Doclingを呼びません。保存・採用はcallerが既存APIで行います。
+
+```python
+from pathlib import Path
+from doc_translate.pdf_source import assemble_pdf_source
+from doc_translate.snapshot import save_source_snapshot, load_source_snapshot
+
+workspace = Path("workspace")
+source = assemble_pdf_source(
+    workspace=workspace,
+    chunk_sha256s=[first_chunk_digest, second_chunk_digest],
+    snapshot_id="pdf-source-1",
+)
+digest = save_source_snapshot(workspace, source)  # 外側にworkspace lockを重ねない
+saved = load_source_snapshot(workspace, digest)
+print(
+    [
+        (block.block_id, block.text, block.structure.get("parent_id"))
+        for block in saved.blocks
+    ]
+)
+print([item.model_dump() for item in saved.uncertainties])
+```
+
+### 補正回答への互換的追加
+
+旧回答／旧chunkは追加fieldなしでもloadできます。全blockの任意`incoming/outgoing`は、本文の前後接続の**提案**であり、親子関係とは別です。形式は`{"target": CorrectionEvidence | null, "mode": "space" | "dehyphenate" | "newline"}`です。nullのtargetは、相手が見えない範囲境界等で継続だけが見える状態を表し、範囲外refを作らずQAへ残します。targetを指定する場合は当該chunkのdraftに対する実在ref／ページ／selectorを、所有＋参照の許可範囲内で検証します。相手の本文をblockとして重複出力しません。
+
+例えば所有1ページの本文末尾と、所有2ページの本文先頭は次のように返します（`evidence`等の既存必須fieldは省略）。`target`も通常の`CorrectionEvidence`なので、空でない`position/reason`を必須とします。
+
+```json
+[
+  {"block_id":"part","kind":"body","text":"inter-","outgoing":{"target":{"page":2,"ref":"#/texts/1","position":"upper left","reason":"visible continuation"},"mode":"dehyphenate"}},
+  {"block_id":"part","kind":"body","text":"face","incoming":{"target":{"page":1,"ref":"#/texts/0","position":"upper left","reason":"visible continuation"},"mode":"dehyphenate"}}
+]
+```
+
+別ページのlist親は、子に`"parent_evidence":{"page":1,"ref":"#/texts/0","position":"upper left","reason":"visible parent"}`を付けます。`parent_id`は従来どおりchunk内IDであり、別chunkの同じ綴りのIDを親にしません。親候補が複数／未知、局所指定と根拠が矛盾、親kind／深さ／読み順が不整合なら、`parent_id=null`と元提案・断片・QAを残します。採用親は必ず先行するlistで深さが1小さいため、循環を採用しません。親を再出力せず、子は別blockのままです。親子関係だけを理由に本文を連結しません。
+
+`table.structure_confirmed=false`は行列／cellが未確定である明示です。型・出典は検証しますが、候補cellの矩形完成を要求せず、sourceの`cells`は空、候補は`retained_cells`と原断片に置き、原画像とQAを残します。確定tableは従来どおり矩形／span／空cellを検証します。複数ページtableの一般的な接合は行いません。
+
+### 接続・出典・未確定内容
+
+- chunkの所有ページのunionが今回の選択範囲です。全PDFや連続した全ページを処理済みとは表示しません。空の入力、所有重複、異なる原本文書（`SourceDocument`不一致）の混在、不正artifactは`ValueError`等で拒否します。同じ原本文書の別draftは受理し、位置は各chunkの実draft hashを保持します。
+- ページ順に並べ、同一ページ内はchunkの配列順を保持します。block／cell／図内部のIDは文書内`pdf-N`へ割り当てます。`structure`の関係ID／caption／図member／cell IDも対応付け、元のlocal IDは断片に残します。
+- 接続候補はページ・ref・指定selectorに基づき、所有された採用blockへ一意に解決します。画像のみの根拠はページ＋`position`で照合します。refはdraft-localです。別draftでは同名refだけで一致にせず、位置説明と、`self_ref`を除いた実raw itemの一致も必要です。異なる抽出表現などで同一位置を証明できない場合は接続せずQAにします。
+- 前後提案の相互一致、mode、kind、ページ／読み順、構造を検査します。prose（body／caption／footnote／同じ階層・親のlist）は`space`で境界空白を1空白に、`dehyphenate`で末尾の可視ASCII `-`を除いて結合します。codeはlanguageが一致する`newline`だけを扱い、既存の空白・改行を削らず、境界に改行がなければ1改行を挿入します。code calloutの参照行も結合後の行へ対応付けます。本文の間に挟まる脚注を保持して接続できます。他の本文を飛び越して関連性だけで連結しません。
+- 相手不明／複数、前後不一致、kind／language／順序等の矛盾、範囲末尾継続は、元断片・位置・画像を残して`uncertainties`と失敗した`pdf_connection`機械検査へ記録します。それだけで文書全体を例外停止しません。脚注を消さず、codeの閉じ括弧・欠けた末尾を補いません。原回答の不確実性も元のoriginと`pdf_correction`工程で引き継ぎます。
+- 各source blockの`structure.fragments`は`chunk_sha256/draft_sha256/block/id_map`を持ち、結合前のtext／evidence／型付き構造・local IDを保持します。`id_map`はそのchunkのlocal block／cell ID→文書内IDです。`structure.page_images`は明示許可済みPNGのartifact／hash・実寸・描画条件です。`locations`は採用本文の所有ページだけで、`extraction_snapshot`は実draft hash、`evidence`にはselector・見える位置・理由をJSONで保持します。
+- 図の`retained_blocks`やtableの`retained_cells`を独立本文として再採用しません。内部block／除外等の全情報は断片が参照する不変chunkから追跡でき、tableの内部cellも構造に残します。空白・除外のみのchunkも`pdf_chunk_ownership`検査のdigest／所有範囲から辿れます。原本画像やrawを削除・再生成しません。
+
+`processing=pdf_connection/completed`は選択した受理済みchunkの組立到達であり、内容品質・全PDF処理完了の承認ではありません。`content_reviews`は空です。CLI／run／resume／翻訳unit生成／翻訳／renderer／自動chunk割当はこのAPIに含みません。
 
 ## EPUB安全読込み（Issue #5）
 

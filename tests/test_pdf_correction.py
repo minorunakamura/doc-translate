@@ -1213,3 +1213,28 @@ def test_partial_table_cell_selector_keeps_other_cells_and_parent_table(
     ]
     assert chunk.retained_blocks == []
     assert any("fields" in item.target_ids for item in chunk.uncertainties)
+
+
+@pytest.mark.parametrize("field", ["parent_evidence", "incoming", "outgoing"])
+@pytest.mark.parametrize(
+    "bad_selector", ["unauthorized", "unknown-ref", "invalid-span"]
+)
+def test_connection_evidence_obeys_authorization_and_raw_provenance(
+    tmp_path, draft, field, bad_selector
+):
+    response = answer(draft[1])
+    block = response["blocks"][0]
+    selector = evidence(2, "#/texts/1")
+    if bad_selector == "unauthorized":
+        selector = evidence(3, "#/texts/2")
+    elif bad_selector == "unknown-ref":
+        selector["ref"] = "#/texts/999"
+    else:
+        selector["charspan"] = [0, 999]
+    if field == "parent_evidence":
+        block.update(kind="list", depth=2, marker="-", parent_evidence=selector)
+    else:
+        block[field] = {"target": selector, "mode": "space"}
+    with pytest.raises(ValueError):
+        run(tmp_path, draft, response)
+    assert not list((draft[0] / "corrections/pdf").glob("*.json"))
