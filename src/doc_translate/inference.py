@@ -10,7 +10,7 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Annotated, Literal
@@ -152,6 +152,9 @@ class Preflight(_Versions):
     max_tokens: Positive
     auth: _Auth
     input_limits: _InputLimits | None
+
+
+BeforeSend = Callable[[GenerationConfig, GenerationInput, Preflight], None]
 
 
 class _Terminal(_Model):
@@ -436,6 +439,7 @@ def _attempt(
     command: Sequence[str],
     cwd: str,
     cancelled: threading.Event,
+    before_send: BeforeSend | None,
 ) -> Attempt:
     attempt = Attempt(request_id=uuid4().hex)
     started = time.monotonic()
@@ -561,6 +565,8 @@ def _attempt(
                                 image_payload = _image_payload(
                                     images, preflight, attempt
                                 )
+                                if before_send is not None:
+                                    before_send(config, inputs, attempt.preflight)
                                 send(
                                     "generate",
                                     {
@@ -644,6 +650,7 @@ def generate[T: BaseModel](
     images: Sequence[GenerationImage] = (),
     process_command: Sequence[str] | None = None,
     cancel: threading.Event | None = None,
+    before_send: BeforeSend | None = None,
 ) -> GenerationResult[T]:
     """Validate one JSON answer; retry only known library-heuristic transient errors.
 
@@ -676,7 +683,9 @@ def generate[T: BaseModel](
         for number in range(3):
             if cancelled.is_set():
                 raise InferenceError("cancelled", attempts)
-            attempt = _attempt(config, inputs, images, command, cwd, cancelled)
+            attempt = _attempt(
+                config, inputs, images, command, cwd, cancelled, before_send
+            )
             attempts.append(attempt)
             if cancelled.is_set() and attempt.code not in {
                 "storage_failed",

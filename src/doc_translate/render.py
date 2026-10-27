@@ -1073,6 +1073,15 @@ def _build(workspace: Path):
         "machine_checks": qa["checks"],
         "content_review": qa["content_review"],
     }
+    if (workspace / "run.json").exists():
+        from doc_translate.run import RunManifest
+
+        run = RunManifest.model_validate_json((workspace / "run.json").read_bytes())
+        if run.document != source.document:
+            raise ValueError("Run manifest/document mismatch")
+        summary["scope"]["run"] = run.model_dump(mode="json")
+        if run.error is not None:
+            summary["processing"]["status"] = "partial"
     files = {
         "japanese.md": japanese.encode(),
         "english.md": english.encode(),
@@ -1128,6 +1137,16 @@ def render_document(workspace: Path) -> dict:
 
 def workspace_status(workspace: Path) -> dict:
     """Inspect current saved inputs and verified output without writing or inference."""
+    if (
+        not (workspace / "source-snapshot.json").exists()
+        and (workspace / "run.json").exists()
+    ):
+        from doc_translate.run import RunManifest, failed_run_summary
+
+        return failed_run_summary(
+            workspace,
+            RunManifest.model_validate_json((workspace / "run.json").read_bytes()),
+        )
     summary, _files = _build(workspace)
     pointer = workspace / "render.json"
     summary["artifacts"] = {}
@@ -1150,6 +1169,8 @@ def workspace_status(workspace: Path) -> dict:
                 "source_snapshot_sha256",
                 "translation_snapshot_sha256",
                 "usage",
+                "scope",
+                "processing",
             )
         ):
             summary = saved

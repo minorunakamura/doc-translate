@@ -1,6 +1,36 @@
 # 初期artifact／JSONL契約（schema version 1）
 
-Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13のoffline render/status・Markdown／対応表／QAを記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。EPUB原資料のコピー、新規取得・翻訳・再開・修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
+Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13のoffline render/status・Markdown／対応表／QA、Issue #14の新規run接続を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。新規runの原資料コピー・取得・翻訳・出力CLIは実装済みです。再開・修正JSON・reviewの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
+
+## 新規run（Issue #14）
+
+公開CLIは`doc-translate run INPUT --workspace DIR`です。既存公開APIを接続する`doc_translate.run.run_document`を呼び、PDF／EPUBから同じ`SourceSnapshot`保存後、`prepare_document`→`translate_document`→`render_document`へ進みます。各APIが非再入lockを自分で所有するため、外側でlockを重ねません。workspaceの新規`mkdir`は空directory・file・symlink／dangling symlinkを含む既存pathを拒否します。既存資料・旧成果物を上書きするrun／復旧engineは追加しません。
+
+- EPUBは原archiveを`originals/<sha256>.epub`へatomicにコピーし、その同じbyte列を既存bounded readerで読み、hash／artifact付き`SourceDocument`を渡して構造取得します。PDF依存や補正modelを読み込みません。ページ指定は拒否します。
+- PDFは`--artifacts-path`で準備済みlocal modelを要求し、既存`acquire_pdf`のraw／original／PNG保存→所有5ページ＋許可済みの前後各1ページで補正→`assemble_pdf_source`→source保存です。`--pages A-B`省略時は実draftの全対象ページが所有範囲です。`--reference-pages A-B`は参照専用許可で所有対象を増やしません。離れた参照指定はmin–maxの連続ローカル取得を許しますが、補正requestへは所有＋許可済み隣接ページだけを投影します。
+- `length/input_limit`なら所有chunkを2分し、毎回許可範囲内の隣接contextを再計算します。singletonでも失敗する場合はfailedを残し、要約・欠落成功にはしません。成功chunkを保持し、`pdf_run_scope`機械検査とsource処理状態／uncertaintyで、成功した所有unionを指定範囲全体と誤認しないようにします。
+- PDF／EPUBともcontext／glossary準備は翻訳設定です。段階設定→共通設定→既存`PI_*`のfield単位優先順位を再利用します。`--glossary FILE`は既存`Glossary(version/book/style/terms)`を検証し`terms`だけを利用者優先指定として取り込みます。bookは入力stem、versionは`1`、styleは固定`StylePolicy`から生成します。
+
+```text
+WORKSPACE/
+  run.json                        # RunManifest、非秘密設定と意図した範囲
+  originals/<sha256>.pdf|epub      # 受け付けた不変byte列
+  ...                             # 既存のdraft／attempt／snapshot／render契約
+```
+
+`run.json`は`schema_version: 1/document/source_name/owned_pages/reference_pages/correction/translation/policy/user_terms/corrected_pages/failed_pages/not_processed_pages/chunk_sha256s/error/error_code`です。`document`は`SourceDocument`、段階設定は既存`GenerationConfig`、`policy`は既存`StylePolicy`です。EPUBの`owned_pages`／`correction`はnull、ページ集合は空です。PDF全体を指定したときの`owned_pages`は取得前null、取得後に実ページ番号を固定します。明示所有範囲は取得前から保持します。参照指定と補正済み／失敗／未処理ページ、採用chunk digestは区別し、進行に応じatomicに更新します。credential・raw環境・秘密値・raw例外は保存しません。`error_code`は観測できた既存推論分類で、分類未観測時はnull、`error`は非秘密の工程失敗案内です。これだけでresume／途中artifact復旧を実装済みとはしません。
+
+CLIの送信前表示は新しいpreflightを重ねず、既存推論の**preflight→generate境界**を使います。`generate`と各stage公開APIに任意の`before_send: BeforeSend | None = None`を追加し、`BeforeSend = Callable[[GenerationConfig, GenerationInput, Preflight], None]`です。検証済みpreflightと画像を確認した後、実際のgenerate recordを送る直前に毎回（retryを含む）呼びます。CLIはstderrへ入力名／hash、意図範囲、実requestの送信範囲・内容、段階provider／model／thinking、実`Preflight.auth.source/type`をflushします。原本fileや画像は準備／翻訳へ送らず、provider／model／認証fallbackやproductionのfake環境flagはありません。`cli.main(argv=None, *, process_command=None)`の明示process指定は既存adapterと同じ外部processテストseamだけです。productionは検証済み導入済みruntimeを使います。
+
+結果とexit：
+
+- 指定範囲が出力まで到達したらexit0。要確認だけなら`processing.status=completed`とQA件数を併記し、内容品質承認にしません。
+- 補正・準備・翻訳の失敗／部分出力はexit1。sourceがあるなら原文と受理済み訳文を保持して既存renderを試み、summaryの`processing.status=partial`、未処理／失敗unitと`scope.run`の意図したPDF範囲を表示します。
+- 入力／設定エラーはexit2。既存推論の`invalid_request/unknown_provider/unknown_model/unsupported_thinking/unsupported_image/invalid_image`はこの分類です。chunk縮小後の`length/input_limit`は処理上限失敗としてexit1です。設定不足や既存workspaceもexit2。hash／schema／認証の失敗を成功にしません。
+- sourceを1件も採用できなければMarkdownは作らず、partial summaryの`artifacts.original/run`と取得できた`pdf_draft`を返します。attemptは既存pathに残ります。
+- 新規runのrender/statusは文書hashと対応するmanifestを`scope.run`へ表示します。source未取得のrunもstatusで原本hashと保存pathを検査できます。status検査成功自体は内容失敗でもexit0。保存済みsourceを持つ旧workspaceの契約とNode不要は維持します。
+
+利用手順・オプションは[README](../../README.md#文書を翻訳する通常利用)、offlineの実CLI直接確認は[開発ガイド](../../CONTRIBUTING.md#新規runの検証境界)を参照してください。
 
 ## 原文snapshot
 

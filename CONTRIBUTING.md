@@ -1,12 +1,12 @@
 # 開発ガイド
 
-対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13の安全Markdown・対応表・QA・summaryとoffline render/statusです。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13の安全Markdown・対応表・QA・summaryとoffline render/status、Issue #14のPDF／EPUB新規run接続です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
 
 ## 構成・環境
 
 - `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）・原文組立adapter（`pdf_source.py`）、共通unit生成・inline保護・workflow分割（`units.py`）、固定context／glossary準備と根拠・実行記録（`preparation.py`）、翻訳chunk・検証・部分採用と再利用（`translation.py`）、原文snapshot、workspace OS lock、JSONL codec。
 - `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証／generation helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`、独立推論のpreflight／stream接続（`generation.ts`）。`ai/tests/`の`.mjs`は公開APIとcompile済みhelperを使うテスト専用processです。
-- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。`tests/test_preparation.py`は保存原文→実helper／faux→固定準備artifactの公開prepare/loadを検査します。`tests/test_translation.py`は保存原文／固定準備→実helper／faux→翻訳の公開translate/loadを検査します。`tests/test_render.py`は正本→Markdown／対応表／QAと実CLI render/statusを検査します。新規取得・翻訳・再開のCLI操作は未実装です。
+- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。`tests/test_preparation.py`は保存原文→実helper／faux→固定準備artifactの公開prepare/loadを検査します。`tests/test_translation.py`は保存原文／固定準備→実helper／faux→翻訳の公開translate/loadを検査します。`tests/test_render.py`は正本→Markdown／対応表／QAと実CLI render/statusを検査します。`tests/test_run.py`はPDF／EPUBの公開CLIからworkspace・出力・statusまでを検査します。新規`run`は実装済みで、`resume`／`revise`／`review`は未実装です。
 - `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、および別venvにinstallしたwheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
 
 実動基準：macOS 26.7.1 arm64、Python 3.14.9、Node 24.21.0、pnpm 12.10.1、npm 11.19.0。CIはGitHub-hosted macos-15 ARM64、Python 3.14／Node 24です。別OSやmacOSの最低versionは未保証です。
@@ -173,6 +173,52 @@ PY
 ```
 
 日本語側に原文＋`※`、英語側に原文、4-backtickのcode fence、数式、code原本欠損のQAが残ります。source mapから元ページ2へ戻れますが、PDF全文とは表示しません。訳文／分割／失敗usageを含む検証は`tests/test_render.py`の既存prepare/translate公開API＋faux fixtureを参照してください。実LLM・実credential・model取得・書籍・viewer・remote CIは使いません。
+
+## 新規runの検証境界
+
+Issue #14のseamは公開`cli.main(argv, process_command=...)`→workspace／Markdown／statusです。新しいworkflowは既存の取得・補正・準備・翻訳・render APIをつなぐだけで、内部generate／workflowはmockしません。`tests/test_run.py`は実EPUB ZIPと、`tests/test_pdf.py`のDocling公開converter／page backend・人工local model fixtureを使います。`ai/tests/run-process.mjs`は実`runHelper`と公開faux providerを接続し、network transportを拒否、credential directoryは一時pathのみです。helper sourceを変えないのでbuildは不要です。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/pytest tests/test_run.py
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+.venv/bin/ty check
+.venv/bin/pytest
+pnpm --dir ai format
+pnpm --dir ai lint  # oxlint --type-aware --type-check --deny-warnings
+pnpm --dir ai test
+```
+
+PDF／EPUBの出力到達、所有5ページ分割／length縮小、許可範囲だけの隣接context・離れた参照範囲の無送信、全ページ指定、指定glossary terms優先、要確認と部分失敗の区別、補正成功保持／sourceなし／準備・翻訳失敗時の部分出力、既存空directory・file・symlinkの拒否、未知modelの無送信／no fallback、実認証metadataの送信前flushを検査します。partial補正の意図範囲／成功／失敗はrunと後続statusの両方で確認します。既存workspaceのrender/statusと同じく、保存-only操作は空PATHでも動きます。
+
+実LLM・実credential・model取得・書籍を使わない、公開CLI直接確認（repository root、開発依存導入済み）：
+
+```sh
+RUN_FIXTURE=$(mktemp -d)
+export RUN_FIXTURE HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+PYTHONPATH=tests .venv/bin/python - <<'PY_RUN'
+import json, os, shutil
+from pathlib import Path
+from test_epub import make_epub
+from doc_translate.cli import main
+root = Path(os.environ["RUN_FIXTURE"])
+source = make_epub(root)  # 自作mixed-inline EPUB、既存書籍ではない
+settings = root / "faux.json"
+settings.write_text(json.dumps({}))
+main(["run", str(source), "--workspace", str(root / "new"),
+      "--provider", "faux", "--model", "text", "--thinking", "off"],
+     process_command=[shutil.which("node"), str(Path("ai/tests/run-process.mjs").resolve()),
+                      str(root / "credentials"), str(settings), str(root / "requests.jsonl")])
+PY_RUN
+.venv/bin/doc-translate status "$RUN_FIXTURE/new"  # exit0、completed／render_current=true
+.venv/bin/doc-translate render "$RUN_FIXTURE/new"  # exit0、LLMなし
+# 同じworkspaceへの新規runはexit2（setup／実認証／推論を開始しない）
+.venv/bin/doc-translate run "$RUN_FIXTURE/book.epub" --workspace "$RUN_FIXTURE/new" \
+  --provider faux --model text --thinking off
+```
+
+最初のrunはstderrへprepare×2／translation×1の送信前通知、stdoutへsummaryを表示します。`artifacts`から日本語側の`訳:Original`とinline保持、英語原文、source map、QA／usageを確認できます。PDFのsynthetic直接確認は`.venv/bin/pytest -s tests/test_run.py -k 'owns_requested or partial_pdf or without_pages'`で同じ公開CLIを使い、置き換えるのはDocling外部APIとfaux providerだけです。fixtureの取得成功は実PDFの完全抽出や実LLM意味品質・viewer表示の保証ではありません。汎用resume／revise／review・remote CIの実行はこのIssueでは行いません。
 
 ## wheelの明示buildと導入検査
 

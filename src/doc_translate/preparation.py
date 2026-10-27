@@ -12,6 +12,7 @@ from typing import Annotated, Literal
 from pydantic import Field, TypeAdapter
 
 from doc_translate.inference import (
+    BeforeSend,
     GenerationConfig,
     GenerationInput,
     InferenceError,
@@ -128,7 +129,9 @@ def _read(workspace, directory, digest):
     return json.loads(data)
 
 
-def _call(workspace, config, request, response_model, validate, command, cancel):
+def _call(
+    workspace, config, request, response_model, validate, command, cancel, before_send
+):
     started = time.monotonic()
 
     def record(status, attempts):
@@ -153,6 +156,7 @@ def _call(workspace, config, request, response_model, validate, command, cancel)
             response_model=response_model,
             process_command=command,
             cancel=cancel,
+            before_send=before_send,
         )
     except InferenceError as error:
         record("rejected", error.attempts)
@@ -266,6 +270,7 @@ def prepare_document(
     source_sha256: str | None = None,
     process_command: Sequence[str] | None = None,
     cancel: threading.Event | None = None,
+    before_send: BeforeSend | None = None,
 ) -> str:
     """Collect source evidence, organize document-wide, save and atomically adopt."""
     policy = StylePolicy.model_validate(policy.model_dump())
@@ -331,6 +336,7 @@ def prepare_document(
                 lambda answer, group=group: _validate_collection(answer, group),
                 process_command,
                 cancel,
+                before_send,
             )
             collections.append(collection)
             runs.append(run)
@@ -361,6 +367,7 @@ def prepare_document(
             lambda answer: _validate_organization(answer, collections, supplied.terms),
             process_command,
             cancel,
+            before_send,
         )
         evidence = PreparationEvidence(
             source_snapshot_sha256=source_digest,
