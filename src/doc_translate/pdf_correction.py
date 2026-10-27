@@ -10,6 +10,7 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, TypeAdapter, model_validator
 
 from doc_translate.inference import (
+    BeforeSend,
     GenerationConfig,
     GenerationImage,
     GenerationInput,
@@ -687,6 +688,7 @@ def correct_pdf(
     config: GenerationConfig,
     process_command: Sequence[str] | None = None,
     cancel: threading.Event | None = None,
+    before_send: BeforeSend | None = None,
 ) -> str:
     """Generate, validate and save one chunk; never adopt a source snapshot."""
     with workspace_lock(workspace):
@@ -726,6 +728,7 @@ def correct_pdf(
                 images=images,
                 process_command=process_command,
                 cancel=cancel,
+                before_send=before_send,
             )
         except InferenceError as error:
             _record(workspace, "rejected", request, config, error.attempts)

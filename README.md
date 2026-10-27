@@ -2,7 +2,7 @@
 
 英語の技術PDF・テキストEPUBを、原本文書への追跡と要確認事項を保ちながら日本語Markdownへ変換するCLIを開発しています。
 
-**現在のCLIはhelper依存の初回導入、provider／modelの参照、login／logout、保存済み正本からの`render`／`status`に対応します。新規文書を取得・翻訳する`run`等のCLIは未実装です。** 参照だけなら認証情報や書籍を準備・送信する必要はありません。実providerでの認証・推論は未検証です。
+**新規`run`でPDF／EPUBの取得から準備・翻訳・Markdown出力まで実行できます。** helper初回導入・認証・任意のcatalog参照、保存済み正本の`render`／`status`にも対応します。`resume`／`revise`／`review`は未実装です。 参照だけなら認証情報や書籍を準備・送信する必要はありません。実providerでの認証・推論は未検証です。
 
 ## 前提環境と導入
 
@@ -22,7 +22,9 @@ doc-translate setup-ai --package-manager pnpm
 
 runtimeは文書workspaceではなく、`~/.local/share/doc-translate/ai/`（`XDG_DATA_HOME`指定時はその下の`doc-translate/ai/`）に保存します。setupのたびにmanager・固定lock・helperに対応する新しいdirectoryを作り、導入と検査に成功したものだけを次回利用対象にします。別managerで既存node_modulesを上書きせず、旧runtime、文書、credentialは削除しません。失敗した導入directoryも残ります。成功時は利用先とmanager／lock hash／helper・library versionをJSONで表示します。
 
-Pythonのcore導入にDoclingやOCR modelは不要です。PDF用依存は別extra `pdf`です。PDF取得のPython APIは使えますが、翻訳・補正や文書処理CLIにはまだ接続していません。
+Pythonのcore導入にDoclingやOCR modelは不要です。EPUBのrunはcoreだけで使えます。PDFのrunには別extra `pdf`と、後述のローカルmodel準備が必要です。
+
+初回の基本手順は **①`setup-ai`を1回 → ②選んだproviderへ必要なら`login`を1回 → ③`run`** です。認証済みの通常利用は文書ごとの`run`だけでよく、`providers`／`models`はIDを調べたい場合だけの任意操作です。
 
 ## provider／modelを調べる（任意）
 
@@ -59,7 +61,7 @@ doc-translate logout --provider anthropic
 
 保存先は`$XDG_CONFIG_HOME/doc-translate/`、変数が未設定または空なら`~/.config/doc-translate/`です。directoryは0700、`credentials.json`は0600で、文書workspaceやexport、Pi CLIのauth.jsonとは別です。OpenAI OAuthの初回loginで安定したinstallation UUIDを`installation-id`（0600）に作成・再利用します。logoutはこのUUIDや別providerのcredentialを消しません。これらのファイルを共有・repositoryへ追加しないでください。
 
-OAuth tokenのTTL判定・refresh・認証変換はpi-ai／providerに任せ、通常は保存credentialを再利用します。refresh失敗時にambient API keyや別の認証modeへ自動fallbackしません。ただし文書の翻訳操作は未実装で、実tokenのrefresh・利用権・推論の成功は未確認です。ChatGPTサブスクリプションは共有利用枠であり、API課金や全modelの利用権、無制限利用を保証しません。
+OAuth tokenのTTL判定・refresh・認証変換はpi-ai／providerに任せ、通常は保存credentialを再利用します。refresh失敗時にambient API keyや別の認証modeへ自動fallbackしません。実tokenのrefresh・利用権・実provider推論の成功は未確認です。ChatGPTサブスクリプションは共有利用枠であり、API課金や全modelの利用権、無制限利用を保証しません。
 
 認証の入力・選択はcontrolling TTYで非echoにし、pipeからの秘密入力やechoへのfallbackは受け付けません。認証URL・device codeはterminalにのみ表示し、stdoutの成功JSONは`operation`・`provider`・login時の`method`だけです。URL・code・token・入力内容をログやterminal録画へ保存したり、Issueへ添付したりしないでください。helperのraw stderr／provider例外も出力しません。
 
@@ -67,7 +69,7 @@ Ctrl-C／SIGTERM／入力EOF等の取消ではchildを回収し、進行中のcr
 
 ## 保存済み正本の再出力・状態確認
 
-既存の原文snapshotを保存したworkspaceを指定します。訳文snapshotがある場合は保存時の入力対応を再検査して使います。新規文書からworkspaceを作るCLIはまだありません。
+既存の原文snapshotを保存したworkspaceを指定します。訳文snapshotがある場合は保存時の入力対応を再検査して使います。新規文書からは後述の`run`でworkspaceを作成します。
 
 ```sh
 doc-translate render DIR
@@ -85,28 +87,48 @@ doc-translate status DIR
 
 HTML table・数式・MathMLの実表示はviewerに依存します。このIssueではviewer表示を未確認とし、統合受入れで確認します。hash不一致は正本・assetの改変や保存障害を調べ、旧出力を確認してください。破損を無視した再採用や自動LLM再送はしません。
 
-## 対応予定の文書処理CLI
+## 文書を翻訳する（通常利用）
 
 - PDF：文字付き・画像のみの英語技術PDF。Docling抽出を原本画像と照合して補正します。任意の実スキャンの完全復元は保証しません。
-- EPUB：DRM解除不要のEPUB 2／3、整形式XHTMLのリフロー型。fixed-layout、画像主体、DTBook専用、複数renditionの自動選択、壊れたXML修復、画像OCRは対象外です。
+- EPUB：DRM解除不要のEPUB 2／3、整形式XHTMLのリフロー型。fixed-layout、画像主体、DTBook専用、複数renditionの自動選択、壊れたXML修復、画像OCRは対象外です。Docling・OCR・補正LLMは使いません。
 - 出力：日本語Markdown、閲覧用英語Markdown、相対参照assets、原文との対応表、QA・利用量記録。PDF／EPUBの出力生成、同じ組版の再現、図内文字の翻訳は対象外です。
 
-以下は将来の利用イメージであり、**これらのサブコマンドはまだ実装されていません**。
+`PROVIDER`／`MODEL`は利用権のある正確なID、`DIR`は**まだ存在しない**workspaceへ置換してください。空directory・file・symlink（danglingを含む）も既存workspaceとして拒否します。自動上書き・自動install・別modelへのfallbackはありません。
 
 ```sh
-# 翻訳、続行、局所修正
-doc-translate run INPUT --workspace DIR
-doc-translate resume DIR
-doc-translate revise DIR --source FILE --reason TEXT
+# 初回setup・必要なloginを済ませた後は、文書ごとにこの操作だけ
+# EPUBはPDF用model directory不要
+doc-translate run own.epub --workspace work/epub-book \
+  --provider PROVIDER --model MODEL --thinking off
+# PDF：下記ローカル準備を済ませ、画像対応の補正modelを指定
+doc-translate run own.pdf --workspace work/pdf-book \
+  --provider PROVIDER --model TEXT_MODEL --thinking off \
+  --correction-provider VISION_PROVIDER --correction-model VISION_MODEL \
+  --correction-thinking high --artifacts-path /absolute/path/to/local-models \
+  --pages 2-6 --reference-pages 7-7
 ```
 
-providerはOpenAI固定ではなく、pi-aiを直接利用します。ChatGPTサブスクリプションOAuthも実動検証対象ですが、実認証・利用権・翻訳品質は未確認です。
+各設定fieldの優先順位は`--correction-*`／`--translation-*` → 共通`--provider/--model/--thinking` → `PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL`です。準備は翻訳設定を使い、EPUBでは補正設定を使いません。不足・未知model・非対応thinking／画像能力は送信前に停止します。providerはOpenAI固定ではありません。ChatGPTサブスクリプションOAuthも実動検証対象ですが、実認証・利用権・意味品質は未確認です。
 
-EPUBにPDF依存・OCR modelは不要です。PDF取得だけを使う場合の準備は次節を参照してください。
+PDFの`--pages A-B`は1始まり・両端含む所有範囲です。省略時は実PDF全ページが所有対象になります。既定の送信許可も所有範囲内だけで、外側は`--reference-pages A-B`で明示したページだけ参照専用に許可します。補正は所有5ページごとに、許可範囲内の前後各1ページだけをcontextとして使います。離れた参照指定を含むローカル取得範囲は広くなることがありますが、それはproviderへの送信許可を増やしません。参照ページは翻訳対象に追加せず、部分範囲をPDF全文処理完了と表示しません。EPUBは文書全体を対象にし、ページ指定を受け付けません。
 
-## PDF取得だけを使う場合のローカル準備
+送信直前、stderrへ入力名・SHA-256・所有／参照の許可範囲・そのrequestの送信範囲と内容・段階・provider／model／thinking・実preflightの認証source／typeをJSONで表示してから送ります。tokenやcredentialは表示・workspace保存しません。画像／抽出下書きはPDF補正だけに送り、準備・翻訳には保存したunit／context／glossary等だけを送ります。実行コマンド自体が指定範囲の送信操作です。権利・機密性・送信先を事前に確認してください。
 
-PDFの取得は公開Python APIから利用できます（[引数・保存契約](docs/reference/artifacts.md#pdf抽出下書きissue-7)）。Node／provider認証／LLMは不要です。抽出下書きは正しい原文や補正済み原文ではありません。翻訳や補正を行いたいだけなら、未実装の文書CLIのために重みを取得する必要はありません。
+利用者指定の訳語は`--glossary FILE`で自動準備結果より優先できます。既存の採用glossary形式の小例：
+
+```json
+{"version":"1","book":"自作文書","style":"本文はですます調。","terms":{"transaction log":"トランザクションログ"}}
+```
+
+取り込むのは検証済み`terms`だけです。今回の採用`book`は入力fileのstem、`version`は`1`、`style`はrunの固定文体policy（本文はですます調、見出しは自然な体言止め可）から生成します。
+
+runはstdoutにsummary JSON／workspace相対の成果物pathを返します。exit **0＝指定範囲の出力到達（要確認があっても0）、1＝処理失敗／部分出力、2＝入力・設定エラー**です。`processing.status`と未処理／失敗、`uncertainty_count`／QAを別々に確認してください。補正失敗時は成功chunk・原本／下書き／画像／attemptを残し、得られたsourceがあれば準備・翻訳の失敗時も原文を残した部分出力を試みます。sourceを1つも採用できなければMarkdownは作らず、保存済み原本・下書き等のpathを返します。`scope.run`は意図した所有／参照範囲と補正成功／失敗／未処理ページ、非秘密設定・エラー分類を保持します。
+
+`resume`／`revise`／`review`はまだ使えません。失敗したworkspaceを削除して上書きせず、`status DIR`で保存範囲・attempt／QAを確認してください。認証再導入だけでは未実装操作を利用できるようにはなりません。
+
+## PDFのローカル準備
+
+PDFのrunには以下のローカル取得準備が必要です。取得だけの公開Python API（[引数・保存契約](docs/reference/artifacts.md#pdf抽出下書きissue-7)）ならNode／provider認証／LLMは不要ですが、runでの補正・準備・翻訳には必要です。抽出下書きは正しい原文や補正済み原文ではありません。EPUBにはこの準備は不要です。
 
 PDF依存を含むwheelを明示導入します。
 
@@ -151,6 +173,6 @@ hf download docling-project/docling-models \
 
 ## 成果物とエラーの読み方
 
-将来の処理結果では、処理到達範囲・機械検査・内容確認範囲を区別します。要確認箇所は出力の`※`とQAで追跡し、出力ができただけで内容品質承認済みとはしません。現時点ではこれらの成果物・status表示も未実装です。
+処理結果では、処理到達範囲・機械検査・内容確認範囲を区別します。要確認箇所は出力の`※`とQAで追跡し、出力ができただけで内容品質承認済みとはしません。
 
-未実装の文書処理は認証・依存の再導入では使えるようになりません。実書籍や秘密情報をIssueに添付しないでください。
+エラー時も元workspaceを保持し、summaryのpathからQA・attemptを確認してください。実書籍や秘密情報をIssueに添付しないでください。

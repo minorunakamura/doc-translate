@@ -1,19 +1,72 @@
-"""Command-line setup, authentication and offline catalog access."""
+"""Document runs, setup/authentication, catalogs and saved-only operations."""
 
 import argparse
 import json
+import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from doc_translate import ai_runtime
 from doc_translate.auth import authenticate
+from doc_translate.inference import Selection, resolve_config
+from doc_translate.preparation import Glossary
 from doc_translate.render import render_document, workspace_status
+from doc_translate.run import CONFIG_ERROR_CODES, run_document
 
 
-def main() -> None:
+def _announce(workspace, config, inputs, preflight):
+    run = json.loads((workspace / "run.json").read_bytes())
+    print(
+        json.dumps(
+            {
+                "stage": inputs.stage,
+                "input": run["source_name"],
+                "document_sha256": run["document"]["sha256"],
+                "owned_pages": run["owned_pages"],
+                "reference_pages": run["reference_pages"],
+                "transmission": {
+                    "owned_pages": inputs.context.get(
+                        "owned_pages",
+                        run["corrected_pages"]
+                        if run["document"]["format"] == "pdf"
+                        else None,
+                    ),
+                    "reference_pages": inputs.context.get("reference_pages", []),
+                    "content": "page images and scoped extraction draft"
+                    if inputs.stage == "correction"
+                    else "saved source units/context/glossary only; no original file, images, code or formula payload",
+                },
+                "provider": config.provider,
+                "model": config.model,
+                "thinking": config.thinking,
+                "auth": preflight.auth.model_dump(),
+            },
+            ensure_ascii=False,
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _page_range(value: str) -> tuple[int, int]:
+    try:
+        start, end = (int(number) for number in value.split("-"))
+        if start < 1 or end < start:
+            raise ValueError
+        return start, end
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "Expected ascending positive page range A-B"
+        ) from None
+
+
+def main(
+    argv: Sequence[str] | None = None, *, process_command: Sequence[str] | None = None
+) -> None:
     parser = argparse.ArgumentParser(
         prog="doc-translate",
-        description="Traceable PDF and EPUB translation: offline rendering and status of saved snapshots.",
-        epilog="Outputs JSON. Exit codes: 0 success, 1 execution failure, 2 input/configuration error. Authentication is performed only by login/logout; no inference is performed.",
+        description="Traceable PDF and EPUB translation, rendering and status.",
+        epilog="Outputs JSON. Exit codes: 0 success, 1 execution failure, 2 input/configuration error. Run sends explicitly scoped document data to the selected providers. Saved render/status need no Node or authentication.",
     )
     commands = parser.add_subparsers(dest="operation", required=True)
     setup = commands.add_parser(
@@ -52,9 +105,77 @@ def main() -> None:
             description="No acquisition, correction, translation, Node, authentication or network access. Render exits 1 for partial output; status exits 0 when inspection succeeds. Input/configuration errors exit 2.",
         )
         command.add_argument("workspace", type=Path)
-    args = parser.parse_args()
+    run = commands.add_parser(
+        "run",
+        help="Translate a local PDF/EPUB in a new workspace.",
+        description="First use: setup-ai once, then login if needed. providers/models are optional lookups. Regular use: run with stage or shared provider/model/thinking (or PI_* environment). Creates a new workspace; existing paths including empty directories/symlinks are refused. Announces input hash, scope and actual preflight authentication on stderr before each transmission; summary/artifact paths on stdout. Exit 0 includes needs-attention, 1 partial/failure, 2 input/configuration error.",
+    )
+    run.add_argument("input", type=Path)
+    run.add_argument("--workspace", type=Path, required=True)
+    for prefix in ("", "correction-", "translation-"):
+        for field in ("provider", "model", "thinking"):
+            run.add_argument(f"--{prefix}{field}")
+    run.add_argument("--pages", type=_page_range, help="PDF ownership A-B (inclusive).")
+    run.add_argument(
+        "--reference-pages",
+        type=_page_range,
+        help="Explicit PDF reference-only transmission permission A-B.",
+    )
+    run.add_argument(
+        "--artifacts-path",
+        type=Path,
+        help="Prepared local PDF model directory; never downloaded.",
+    )
+    run.add_argument(
+        "--glossary",
+        type=Path,
+        help="Glossary JSON (version/book/style/terms); import preferred terms only.",
+    )
+    args = parser.parse_args(argv)
     try:
-        if args.operation in {"render", "status"}:
+        if args.operation == "run":
+            shared = Selection(
+                **{
+                    field: getattr(args, field)
+                    for field in ("provider", "model", "thinking")
+                }
+            )
+
+            def selected(stage):
+                return resolve_config(
+                    stage=Selection(
+                        **{
+                            field: getattr(args, f"{stage}_{field}")
+                            for field in ("provider", "model", "thinking")
+                        }
+                    ),
+                    shared=shared,
+                )
+
+            translation = selected("translation")
+            correction = (
+                selected("correction") if args.input.suffix.lower() == ".pdf" else None
+            )
+            terms = (
+                Glossary.model_validate_json(args.glossary.read_bytes()).terms
+                if args.glossary
+                else None
+            )
+            result = run_document(
+                source=args.input,
+                workspace=args.workspace,
+                translation=translation,
+                correction=correction,
+                pages=args.pages,
+                reference_pages=args.reference_pages,
+                artifacts_path=args.artifacts_path,
+                user_terms=terms,
+                process_command=process_command,
+                before_send=lambda config, inputs, preflight: _announce(
+                    args.workspace, config, inputs, preflight
+                ),
+            )
+        elif args.operation in {"render", "status"}:
             result = (
                 render_document(args.workspace)
                 if args.operation == "render"
@@ -73,11 +194,19 @@ def main() -> None:
     except ai_runtime.RuntimeUnavailable as error:
         parser.error(str(error))
     except (OSError, ValueError, RuntimeError) as error:
-        if args.operation in {"render", "status"} and isinstance(
+        if args.operation in {"run", "render", "status"} and isinstance(
             error, (FileNotFoundError, ValueError)
         ):
             parser.error(str(error))
         parser.exit(1, f"doc-translate: {error}\n")
     print(json.dumps(result, ensure_ascii=False))
-    if args.operation == "render" and result["processing"]["status"] == "partial":
+    if (
+        args.operation == "run"
+        and result["scope"]["run"]["error_code"] in CONFIG_ERROR_CODES
+    ):
+        parser.exit(2)
+    if (
+        args.operation in {"run", "render"}
+        and result["processing"]["status"] == "partial"
+    ):
         parser.exit(1)

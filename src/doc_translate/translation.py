@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import Field, TypeAdapter
 
 from doc_translate.inference import (
+    BeforeSend,
     GenerationConfig,
     GenerationFinal,
     GenerationInput,
@@ -174,7 +175,7 @@ def _validate(answer, units):
         validate_unit_text(unit, item.text)
 
 
-def _call(workspace, config, request, units, command, cancel):
+def _call(workspace, config, request, units, command, cancel, before_send):
     started = time.monotonic()
     answer = None
     error = None
@@ -185,6 +186,7 @@ def _call(workspace, config, request, units, command, cancel):
             response_model=TranslationAnswer,
             process_command=command,
             cancel=cancel,
+            before_send=before_send,
         )
     except InferenceError as failure:
         attempts = failure.attempts
@@ -259,12 +261,20 @@ def _split(units, operation):
     return [*units[:index], *parts, *units[index + 1 :]]
 
 
-def _process(workspace, config, preparation, units, limit, command, cancel):
+def _process(
+    workspace, config, preparation, units, limit, command, cancel, before_send
+):
     runs, splits = [], []
     oversized = next((u for u in units if len(u.source_text) > limit), None)
     if oversized is None:
         chunk, run = _call(
-            workspace, config, _request(units, preparation), units, command, cancel
+            workspace,
+            config,
+            _request(units, preparation),
+            units,
+            command,
+            cancel,
+            before_send,
         )
         runs.append(run)
         if chunk.error not in {"length", "input_limit"} or cancel.is_set():
@@ -322,7 +332,7 @@ def _process(workspace, config, preparation, units, limit, command, cancel):
             chunks.append(TranslationChunk(units=group, error="cancelled"))
             continue
         results, calls, operations = _process(
-            workspace, config, preparation, group, limit, command, cancel
+            workspace, config, preparation, group, limit, command, cancel, before_send
         )
         chunks.extend(results)
         runs.extend(calls)
@@ -361,6 +371,7 @@ def translate_document(
     concurrency: int = 2,
     process_command: Sequence[str] | None = None,
     cancel: threading.Event | None = None,
+    before_send: BeforeSend | None = None,
 ) -> str:
     """Adopt incremental results; return a snapshot digest even for partial failure."""
     config = GenerationConfig.model_validate(config.model_dump())
@@ -477,6 +488,7 @@ def translate_document(
                         max_source_chars,
                         process_command,
                         cancelled,
+                        before_send,
                     )
                     active[future] = index
                     return True
