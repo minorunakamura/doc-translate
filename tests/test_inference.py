@@ -679,7 +679,8 @@ def test_timeout_remains_live_while_helper_stops_reading_large_document(tmp_path
                 provider="faux",
                 model="vision",
                 thinking="off",
-                options=GenerationOptions(timeoutMs=500),
+                # Allow proxy/helper cold startup before testing the stalled write.
+                options=GenerationOptions(timeoutMs=2000),
             ),
             GenerationInput(
                 stage="translation",
