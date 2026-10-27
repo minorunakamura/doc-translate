@@ -2,15 +2,17 @@
 
 import argparse
 import json
+from pathlib import Path
 
 from doc_translate import ai_runtime
 from doc_translate.auth import authenticate
+from doc_translate.render import render_document, workspace_status
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="doc-translate",
-        description="Traceable PDF and EPUB translation (document workflows not implemented yet).",
+        description="Traceable PDF and EPUB translation: offline rendering and status of saved snapshots.",
         epilog="Outputs JSON. Exit codes: 0 success, 1 execution failure, 2 input/configuration error. Authentication is performed only by login/logout; no inference is performed.",
     )
     commands = parser.add_subparsers(dest="operation", required=True)
@@ -41,9 +43,24 @@ def main() -> None:
         "logout", help="Delete this application's stored provider credential."
     )
     logout.add_argument("--provider", required=True)
+    for operation in ("render", "status"):
+        command = commands.add_parser(
+            operation,
+            help="Regenerate outputs from saved snapshots only."
+            if operation == "render"
+            else "Inspect saved processing, QA, scope, usage and output paths.",
+            description="No acquisition, correction, translation, Node, authentication or network access. Render exits 1 for partial output; status exits 0 when inspection succeeds. Input/configuration errors exit 2.",
+        )
+        command.add_argument("workspace", type=Path)
     args = parser.parse_args()
     try:
-        if args.operation == "setup-ai":
+        if args.operation in {"render", "status"}:
+            result = (
+                render_document(args.workspace)
+                if args.operation == "render"
+                else workspace_status(args.workspace)
+            )
+        elif args.operation == "setup-ai":
             result = ai_runtime.setup(args.package_manager)
         elif args.operation in {"login", "logout"}:
             result = authenticate(
@@ -56,5 +73,11 @@ def main() -> None:
     except ai_runtime.RuntimeUnavailable as error:
         parser.error(str(error))
     except (OSError, ValueError, RuntimeError) as error:
+        if args.operation in {"render", "status"} and isinstance(
+            error, (FileNotFoundError, ValueError)
+        ):
+            parser.error(str(error))
         parser.exit(1, f"doc-translate: {error}\n")
     print(json.dumps(result, ensure_ascii=False))
+    if args.operation == "render" and result["processing"]["status"] == "partial":
+        parser.exit(1)
