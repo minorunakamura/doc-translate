@@ -1,6 +1,6 @@
 # 初期artifact／JSONL契約（schema version 1）
 
-Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。EPUB原資料のコピー・翻訳unit／訳文・policy／glossary／context snapshot、attempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
+Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。EPUB原資料のコピー・unitの永続保存／訳文・policy／glossary／context snapshot、attempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
 
 ## 原文snapshot
 
@@ -61,6 +61,68 @@ WORKSPACE/
 保存はmodel再検証→UTF-8 JSON byte列のhash→OS lock取得→同filesystemの一時fileにwrite／flush／fsync→atomic replace／directory fsync→採用参照のatomic更新の順です。artifact確定後に参照を切り替え、旧版を削除しません。既存digestはhashとschemaを検査します。loadもhashとschemaを検査し、不一致を採用しません。原資料本体の取得・コピー・hash照合は本APIの責務ではありません。
 
 `doc_translate.workspace.workspace_lock(Path)`は非blockingのPOSIX flockでwriter重複を拒否します（`WorkspaceLockedError`）。`save_source_snapshot`は自身でlockを取るため、その外側から同じlockを二重取得しません。lock fileの残存は所有を意味せず、process終了でOS lockが解放されます。参照切替前に中断したartifactが残っても、自動で採用しません。一般的なworkflowのresume／attempt復旧は未実装です。
+
+## 共通翻訳unit生成（Issue #10）
+
+公開APIは`doc_translate.units.generate_translation_units(snapshot: SourceSnapshot) -> list[TranslationUnit]`、`split_translation_units(units: Sequence[TranslationUnit], *, max_source_chars: int) -> list[TranslationUnit]`、`validate_unit_text(unit: TranslationUnit, text: str) -> None`です。受理済み翻訳前原文からPythonだけで生成します。workspace書込み・LLM・renderer・CLI・翻訳engine・glossary準備は行いません。既存のsnapshot保存契約は変更しません。
+
+```python
+from doc_translate.snapshot import load_source_snapshot
+from doc_translate.units import generate_translation_units, split_translation_units
+
+source = load_source_snapshot(workspace, source_digest)
+units = generate_translation_units(source)
+inputs = split_translation_units(units, max_source_chars=12000)
+for unit in inputs:
+    print(unit.unit_id, unit.block_id, unit.cell_id, unit.node_path, unit.source_text)
+```
+
+### identity・出典・context
+
+`TranslationUnit`は共通の`extra=forbid`／非有限数値拒否を継承し、次を保持します。`context`とtokenの`value`はJSON objectです。
+
+| field | 契約 |
+| --- | --- |
+| `unit_id` | snapshot内の読み順で`unit-1`等。block／cell／Docling ref／元XHTML IDとは別。異なるsnapshot間の恒久identityは主張せず、参照はsnapshotと組み合わせる |
+| `block_id`／`cell_id`／`node_path`／`attribute` | 所属blockと、該当時のみ採用cell、EPUB tree node、`alt/title`属性への対応 |
+| `kind`／`format` | 段落・見出し・list・table_cell・caption・footnote・callout・alt等、`pdf/epub` |
+| `source_text`／`tokens` | 以下の保護marker付き原文と、不変のinline構造／保護対象のローカル対応。素の原文・構造は参照snapshotに残る |
+| `source_hash` | marker原文とtokenのkind／保護値のcanonical JSON SHA-256。位置・snapshot-boundな参照解決先は含めず、literal／link target等の変更を含める |
+| `context`／`context_hash` | 見出しpath、table行列・span・関連する採用見出しcell、list祖先・depth／marker／親、caption対象／callout行、EPUB role等と、そのcanonical JSON SHA-256 |
+| `locations` | 所有blockの元位置、またはEPUBのunit node位置。PDF cellにはtable位置とcell ID／行列／根拠を併用し、存在しない文字単位の精度を作らない |
+| `snapshot_id`／`source_snapshot_sha256`／`document_sha256` | 参照snapshot ID、既存save APIと同じmodel JSON byte列のhash、原本文書hash |
+| `parent_unit_id`／`parent_source_hash`／`source_range` | 未分割時null。分割時は元unitのidentity／hashと、元のmarker付き`source_text`に対する半開区間`{start,end}`（Python文字offset）。PDF／XML byte位置ではない |
+
+PDFでは採用`blocks`と確定tableの`cells`だけを扱い、`fragments/retained_blocks/retained_cells`から本文を再採用しません。code／formula／picture本体はunitにせず、図のconfirmedなblock／cell所属も除外します。pictureの`members`は補正時の提案も残すため、採用snapshotのuncertainty対象やuncertain／partialの対象をconfirmed提案だけで再除外しません。不確実cellを持つ採用tableも全体所属の提案だけでは消しません。refによる所属はpage・draft・selectorを照合し、部分spanを広いblock全体の削除根拠にせず、draftを一意にできない参照からも除外しません。caption・脚注・外側／uncertain／partialの内容は残します。未確定tableの候補cellは翻訳せず、元snapshotのQA／原画像を保持します。
+
+EPUBではresource大のsectionの`structure.tree`を正本とし、`block.text`のprojectionからunitを作りません。段落／item／cell全体のmixed contentをまとめ、nested listは別itemとして親contextへ対応付けます。表の0始まり行列はrowspan／colspanとrow group境界を考慮し、`rowspan=0`は現在のgroupの残行として扱い、元属性とnode位置も残します。図内部のprose、pre／code本体、inertな数式／SVG／active subtreeの内部を翻訳しません。caption・notes・画像alt／titleは別の追跡可能なunitです。未知のblock kind、tree参照不整合、解決できないtable span、不正inline表現は例外停止し、黙って平文projectionへfallbackしません。初期snapshot fixtureの部分的な旧inline記述を、完全なunit入力の契約と扱いません。
+
+### inline保護と分割
+
+`source_text`は例として`Use ⟦1⟧the ⟦2⟧guide⟦/2⟧⟦/1⟧ with ⟦=3⟧.`のような文字列です。`InlineToken`は`token_id/kind/start_marker/end_marker/value`を持ち、paired markerが強調・link等を、単独markerがinline code／literal／identifier／数式・図の参照を表します。元のmarker区切り文字自体もliteral tokenへ退避します。
+
+**`tokens.value`はローカル復元用で、翻訳LLMへ丸ごと送る入力ではありません。** link target・元ID／属性・inline code等はここへ保持し、数式／SVGは位置参照だけにします。将来の翻訳callerは固定ID・`source_text`・必要contextとmarker契約だけを送り、コード本体・数式・XHTML全文・保護payloadを自由編集させません。context内の見出し／祖先textも保護済み表現であり、raw codeを埋め込みません。
+
+PDFの任意`structure.inline`（cellにも同じ`inline`）は次の明示的なordered表現です。平文blockは追加指定不要で、既存補正／組立adapterの挙動は変更しません。
+
+```json
+[
+  {"kind":"text","text":"Use "},
+  {"kind":"emphasis","children":[{"kind":"identifier","text":"Widget"}]},
+  {"kind":"text","text":" with "},
+  {"kind":"link","target":"https://example.test/guide","children":[{"kind":"text","text":"the guide"}]},
+  {"kind":"text","text":" and "},
+  {"kind":"code","text":"run()"}
+]
+```
+
+leafは`text/code/literal/identifier/formula`＋`text`、paired構造は`emphasis/strong/subscript/superscript`＋`children`、`link`は追加の`target`です。全leafを順に連結した値が採用`block.text/cell.text`に完全一致しなければ拒否します。平文からはHTTP(S) URL、backtick literal、snake_case／CamelCase／dotted identifier、数値literalを保護します。普通の単語に見えるidentifier／その他のliteralは明示inlineで指定し、意味的な自動同定は保証しません。
+
+表の見出しcontextはtable全体を全cellへ複製せず、EPUBの明示`headers`を優先し、`scope`と行列／spanに関連する候補をindexから選びます。scope未指定のPDF／EPUBは右側の同じ行／spanと列ごとの直近先行見出しを候補にする決定的fallbackであり、semanticな見出し関係の認定ではありません。曖昧なEPUBの関係には元の明示`headers/scope`を使い、一般browserの全見出し関連付けを再実装しません。
+
+`validate_unit_text`はmarkerの欠落／重複／未知、対の不釣合い、親構造の変更を拒否します。同じ親内の完全なspan／tokenの並替えや日本語textの語順変更は許容します。訳文の意味品質・要約の有無をこの機械検査だけで認定しません。
+
+分割は明示の正整数文字上限でworkflow側が行い、元unitと原文を変更しません。可能なら空白で切り、通常textは文字境界でも切れますが、paired span全体とprotected markerは不可分です。再分割しても最初の親ID／hashと範囲を維持します。不可分spanが上限を超える場合は`UnitSplitError(ValueError)`の`unit_id/source_range`と理由を返し、途中のunit配列・切捨て・要約を成功として返しません。callerはこの失敗を対象snapshot／元unitに結び付けて記録する責務を持ち、永続的な失敗記録engineは本APIに含みません。
 
 ## PDF抽出下書き（Issue #7）
 

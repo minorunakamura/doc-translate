@@ -1,10 +1,10 @@
 # 開発ガイド
 
-対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
 
 ## 構成・環境
 
-- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）・原文組立adapter（`pdf_source.py`）、原文snapshot、workspace OS lock、JSONL codec。
+- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）・原文組立adapter（`pdf_source.py`）、共通unit生成・inline保護・workflow分割（`units.py`）、原文snapshot、workspace OS lock、JSONL codec。
 - `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証／generation helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`、独立推論のpreflight／stream接続（`generation.ts`）。`ai/tests/`の`.mjs`は公開APIとcompile済みhelperを使うテスト専用processです。
 - `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。文書pipeline、翻訳・出力・再開のCLI操作は未実装です。
 - `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、および別venvにinstallしたwheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
@@ -96,6 +96,17 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 所有unionを越える処理完了・意味品質は主張しません。未確定内容は断片とQAを保持しますが、hash不一致・所有重複・異なる原本文書は拒否します。新たな永続管理・private mock・実LLM・model取得・既存書籍処理は追加しません。CLI／unit／翻訳／renderer／自動割当は対象外です。
 
+### 共通翻訳unitの検証境界
+
+Issue #10の公開seamは検証済み`SourceSnapshot`→`doc_translate.units.generate_translation_units`→`split_translation_units`／`validate_unit_text`です。API、marker／PDF inline表現、hash・位置・分割範囲と例外は[artifact契約](docs/reference/artifacts.md#共通翻訳unit生成issue-10)を参照してください。snapshot／adapterの旧round-trip契約は変更せず、CLI・翻訳engine・glossary準備・unit保存・rendererは追加しません。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/pytest tests/test_units.py tests/test_epub_source.py tests/test_pdf_source.py tests/test_source_snapshot.py
+```
+
+`tests/test_units.py`は人工PDF snapshotと実EPUB reader→原文抽出から、採用table cell／spanと祖先context、confirmedな図内部の除外（draft-local refを含む）、caption／近接・不確実textの保持、段落／item単位のmixed inline、link／literal／identifier保護、日本語並替え・marker釣合い、独立した原文／context／snapshot hash、両形式のlossless分割・再分割・不可分spanの明示失敗を公開APIで検査します。private collaborator mock・外部通信・重み・実書籍・実LLMは使いません。語義からidentifierを完全同定することや意味品質は保証せず、普通の単語に見えるidentifierは明示inlineを使います。unitのローカルtoken payloadをそのままLLMへ送らない境界を将来のcallerも守る必要があります。
+
 ## wheelの明示buildと導入検査
 
 ```sh
@@ -125,7 +136,7 @@ uv pip install --python "$TMP/pdf/bin/python" "$WHEEL[pdf]"
 (cd "$TMP" && pdf/bin/python -c 'from docling.document_converter import DocumentConverter; from docling.datamodel.pipeline_options import OcrMacOptions; from docling_core.types.doc import DoclingDocument; from ocrmac import ocrmac')
 ```
 
-core-onlyでEPUB用位置のsnapshot保存・読込みと、`read_epub(Path)`による安全読込み・package／spine／fallback／URI解決をpytestで確認しています。`uv run pytest tests/test_epub.py`は人工ZIPでpath・ZIP／XML／fallback上限・entity／DOCTYPE・固定layout・暗号化／font難読化・対象外本文の受理／拒否を検証します。namespace展開名の長さ／累積量・単一tagの属性数、深いpathと祖先衝突の区切り、申告size＋prefix CRCによるstored／deflate切捨て・deflate終端・data descriptor／空member、複数font／manifest alias／暗号化recordも公開`read_epub`経由で検査します。性能回帰は固定の時間閾値やprivate helper mockを使わず、祖先prefix再構築と暗号化recordごとのmanifest全走査を避ける実装と公開受理／拒否の回帰で確認します。`extract_epub_source(book, *, document, snapshot_id)`は受理済みreader結果からresource大のsection blockと階層を持つflat node table（ordered child位置参照）を生成します。XML最大深さ128でも共通JSON契約の再帰上限を超えずsave/loadできます。元archive hash／artifactはcallerが明示供給する真実で、adapterは原資料コピー・hash照合・workspace書込みをしません。spine順／non-linear／alias・fallback provenance、off-spine notes／linkの発見順と循環回避、mixed text／child／tail、見出し・list／table span・caption／alt・code空白、実在IDとsnapshot-bound node位置を保持します。単数／複数のnotes roleを子孫へ継承し、同じnodeのtocを優先します。参照先と共有duplicate候補のlocationは元IDを複製せずsnapshot-bound座標で保持し、長い元IDが繰返しincoming linkごとに増幅しないことを公開save/loadで検査します。全訪問elementのstructured／excluded／inert処置とcoverage、duplicate／missing fragment・非XHTML／active assetの原資料参照と要確認を残します。treeは表示用markupではなく、raw MathML／SVG／script／CSSは不活性な元resourceで保持します。`uv run pytest tests/test_epub_source.py tests/test_source_snapshot.py`で人工EPUB 2／3のliteral比較と既存のatomic save/loadを検査できます。翻訳unit生成・renderer・CLI接続は未実装です。Node／Docling／OCR・外部取得は不要です。画像主体の一般判定は保証せず、本文textがなく画像のみのspineを停止する範囲です。APIと固定上限は[artifact契約](docs/reference/artifacts.md)を参照してください。PDF extraの別環境importはmodel実行ではありません。
+core-onlyでEPUB用位置のsnapshot保存・読込みと、`read_epub(Path)`による安全読込み・package／spine／fallback／URI解決をpytestで確認しています。`uv run pytest tests/test_epub.py`は人工ZIPでpath・ZIP／XML／fallback上限・entity／DOCTYPE・固定layout・暗号化／font難読化・対象外本文の受理／拒否を検証します。namespace展開名の長さ／累積量・単一tagの属性数、深いpathと祖先衝突の区切り、申告size＋prefix CRCによるstored／deflate切捨て・deflate終端・data descriptor／空member、複数font／manifest alias／暗号化recordも公開`read_epub`経由で検査します。性能回帰は固定の時間閾値やprivate helper mockを使わず、祖先prefix再構築と暗号化recordごとのmanifest全走査を避ける実装と公開受理／拒否の回帰で確認します。`extract_epub_source(book, *, document, snapshot_id)`は受理済みreader結果からresource大のsection blockと階層を持つflat node table（ordered child位置参照）を生成します。XML最大深さ128でも共通JSON契約の再帰上限を超えずsave/loadできます。元archive hash／artifactはcallerが明示供給する真実で、adapterは原資料コピー・hash照合・workspace書込みをしません。spine順／non-linear／alias・fallback provenance、off-spine notes／linkの発見順と循環回避、mixed text／child／tail、見出し・list／table span・caption／alt・code空白、実在IDとsnapshot-bound node位置を保持します。単数／複数のnotes roleを子孫へ継承し、同じnodeのtocを優先します。参照先と共有duplicate候補のlocationは元IDを複製せずsnapshot-bound座標で保持し、長い元IDが繰返しincoming linkごとに増幅しないことを公開save/loadで検査します。全訪問elementのstructured／excluded／inert処置とcoverage、duplicate／missing fragment・非XHTML／active assetの原資料参照と要確認を残します。treeは表示用markupではなく、raw MathML／SVG／script／CSSは不活性な元resourceで保持します。`uv run pytest tests/test_epub_source.py tests/test_source_snapshot.py`で人工EPUB 2／3のliteral比較と既存のatomic save/loadを検査できます。翻訳unit生成は上記の共通APIで行い、このEPUB抽出API自身にはrenderer・CLI接続を含めません。Node／Docling／OCR・外部取得は不要です。画像主体の一般判定は保証せず、本文textがなく画像のみのspineを停止する範囲です。APIと固定上限は[artifact契約](docs/reference/artifacts.md)を参照してください。PDF extraの別環境importはmodel実行ではありません。
 
 ## 認証の実装・検証境界
 
