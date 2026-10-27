@@ -1,12 +1,12 @@
 # 開発ガイド
 
-対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshotです。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13の安全Markdown・対応表・QA・summaryとoffline render/statusです。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
 
 ## 構成・環境
 
 - `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）・原文組立adapter（`pdf_source.py`）、共通unit生成・inline保護・workflow分割（`units.py`）、固定context／glossary準備と根拠・実行記録（`preparation.py`）、翻訳chunk・検証・部分採用と再利用（`translation.py`）、原文snapshot、workspace OS lock、JSONL codec。
 - `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証／generation helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`、独立推論のpreflight／stream接続（`generation.ts`）。`ai/tests/`の`.mjs`は公開APIとcompile済みhelperを使うテスト専用processです。
-- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。`tests/test_preparation.py`は保存原文→実helper／faux→固定準備artifactの公開prepare/loadを検査します。`tests/test_translation.py`は保存原文／固定準備→実helper／faux→翻訳の公開translate/loadを検査します。文書pipeline、翻訳・出力・再開のCLI操作は未実装です。
+- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。`tests/test_preparation.py`は保存原文→実helper／faux→固定準備artifactの公開prepare/loadを検査します。`tests/test_translation.py`は保存原文／固定準備→実helper／faux→翻訳の公開translate/loadを検査します。`tests/test_render.py`は正本→Markdown／対応表／QAと実CLI render/statusを検査します。新規取得・翻訳・再開のCLI操作は未実装です。
 - `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、および別venvにinstallしたwheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
 
 実動基準：macOS 26.7.1 arm64、Python 3.14.9、Node 24.21.0、pnpm 12.10.1、npm 11.19.0。CIはGitHub-hosted macos-15 ARM64、Python 3.14／Node 24です。別OSやmacOSの最低versionは未保証です。
@@ -140,6 +140,39 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 - main-thread SIGINT／SIGTERMを実processへ送り、2つのchildが取消・usage保持・drain／回収を終えるまで戻らず、未開始chunkを新規送信しないことを検査します。
 
 CLI・renderer・汎用復旧管理・依存は追加しません。実credential・実provider通信・実LLM／意味品質・既存書籍は未検証です。Node fixtureも通常のBiome／type-aware oxlint／Vitest対象で、helper source変更がないためこの変更にbuildは不要です。
+
+## Markdown／対応表／QA・render/statusの検証境界
+
+Issue #13は保存した正本→`doc_translate.render.render_document(workspace)`と実CLI `render DIR`／`status DIR`が公開seamです。`render.py`が出力とQAを、`render_assets.py`が元archive／PNGの検査と安全な表示assetを担います。依存・Node source・取得／翻訳APIは変更しません。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/pytest tests/test_render.py
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+.venv/bin/ty check  # PDF extra付き環境。未導入なら解決できないimportを区別して報告
+.venv/bin/pytest
+```
+
+自作source／EPUB・固定した人工訳文を使い、fence内backtick・callout・list・空cell／span・MathML・PNG／crop・notes／anchors・危険markup／外部参照・元text不変・部分／split訳・stale／hash／atomic保存・writer排他を検査します。訳文は既存の実helper／公開faux providerを通し、private collaboratorをmockしません。CLIのcore-only条件は空PATHで検査します。機械検査は意味品質の承認ではなく、viewer実表示は統合受入れまで未確認です。
+
+LLMもNodeも使わない直接CLI確認用の自作fixture（原資料を取得した実績ではありません）：
+
+```sh
+WORKSPACE=$(mktemp -d)
+export WORKSPACE
+.venv/bin/python - <<'PY'
+import os
+from pathlib import Path
+from doc_translate.snapshot import SourceSnapshot, save_source_snapshot
+source = SourceSnapshot.model_validate_json(Path('tests/fixtures/render-source.pdf.json').read_bytes())
+save_source_snapshot(Path(os.environ['WORKSPACE']), source)
+PY
+.venv/bin/doc-translate render "$WORKSPACE"  # exit 1: 訳文なしの部分出力、JSONを返す
+.venv/bin/doc-translate status "$WORKSPACE"  # exit 0: render_current=true、QA／出力pathを返す
+```
+
+日本語側に原文＋`※`、英語側に原文、4-backtickのcode fence、数式、code原本欠損のQAが残ります。source mapから元ページ2へ戻れますが、PDF全文とは表示しません。訳文／分割／失敗usageを含む検証は`tests/test_render.py`の既存prepare/translate公開API＋faux fixtureを参照してください。実LLM・実credential・model取得・書籍・viewer・remote CIは使いません。
 
 ## wheelの明示buildと導入検査
 

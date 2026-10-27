@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "self-authored-render-demo",
+  "document": {"format": "pdf", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "artifact": "self-authored.pdf"},
+  "blocks": [
+    {"block_id": "heading", "kind": "heading", "text": "Self-authored guide", "locations": [{"format": "pdf", "page": 2, "evidence": "Artificial source; not a real PDF acquisition"}], "structure": {"level": 2}},
+    {"block_id": "body", "kind": "body", "text": "An untranslated paragraph.", "locations": [{"format": "pdf", "page": 2, "evidence": "Artificial source"}]},
+    {"block_id": "code", "kind": "code", "text": "print('```')\n  unfinished(", "locations": [{"format": "pdf", "page": 2, "evidence": "Artificial source"}], "structure": {"language": "python"}},
+    {"block_id": "formula", "kind": "formula", "text": "x < y", "locations": [{"format": "pdf", "page": 2, "evidence": "Artificial source"}]}
+  ],
+  "uncertainties": [{"reason": "Original code is unfinished; do not invent its ending", "target_ids": ["code"], "locations": [{"format": "pdf", "page": 2, "evidence": "Artificial source"}], "stage": "source", "origin": "original"}],
+  "processing": {"stage": "source", "status": "completed"}
+}

@@ -2,7 +2,7 @@
 
 英語の技術PDF・テキストEPUBを、原本文書への追跡と要確認事項を保ちながら日本語Markdownへ変換するCLIを開発しています。
 
-**現在使えるのはhelper依存の初回導入、provider／modelの参照、login／logoutです。文書の取得・翻訳・Markdown生成はまだ使えません。** 参照だけなら認証情報や書籍を準備・送信する必要はありません。実providerでの認証・推論は未検証です。
+**現在のCLIはhelper依存の初回導入、provider／modelの参照、login／logout、保存済み正本からの`render`／`status`に対応します。新規文書を取得・翻訳する`run`等のCLIは未実装です。** 参照だけなら認証情報や書籍を準備・送信する必要はありません。実providerでの認証・推論は未検証です。
 
 ## 前提環境と導入
 
@@ -65,7 +65,27 @@ OAuth tokenのTTL判定・refresh・認証変換はpi-ai／providerに任せ、�
 
 Ctrl-C／SIGTERM／入力EOF等の取消ではchildを回収し、進行中のcredential保存を待つため強制kill前に最大30秒のgraceを設けます。入力中の未送信文字を破棄してechoを復元します。SIGKILLやdisk障害では保存・terminal復元を保証できません。破損JSONや保存失敗を空credential・成功とは扱わず、取消中の保存失敗もエラーにします。エラー時は保存先・権限・空き容量等を確認し、必要なら再loginしてください。秘密入りファイルの内容を診断ログに貼らないでください。
 
-## 予定している対応範囲（未実装）
+## 保存済み正本の再出力・状態確認
+
+既存の原文snapshotを保存したworkspaceを指定します。訳文snapshotがある場合は保存時の入力対応を再検査して使います。新規文書からworkspaceを作るCLIはまだありません。
+
+```sh
+doc-translate render DIR
+doc-translate status DIR
+```
+
+両操作とも取得・補正・準備・翻訳を呼びません。Node・認証・PDF extra・OCR model・外部通信は不要です。`render`は日本語／閲覧用英語Markdown、相対参照assets、source map、QA、usage、summaryを生成し、stdoutのJSONにworkspace相対の成果物pathを表示します。元snapshot・旧出力は削除しません。
+
+- `render`のexitは0＝指定された保存範囲が出力まで到達、1＝部分出力または保存等の実行失敗、2＝入力・hash・設定エラーです。訳文なし／部分失敗なら原文を残した部分出力とし、日本語側に`※`を付けます。現在原文と元snapshotが違う旧訳は自動流用しません。
+- `status`は検査成功なら部分出力でも0、入力／hashエラーは2、その他の実行失敗は1です。`render_current: false`は未出力または入力変更後の旧出力です。旧成果物がある場合は`previous_artifacts`で場所を確認できます。
+- `※`は表示用の目印だけです。理由・原本欠損か処理問題か・元位置・block／unit・出力anchorをQAで確認してください。コード／数式内部や保存済み原文／訳文には混ぜません。
+- summaryは出力到達／未処理／失敗、機械検査、原文の内容確認記録と訳文未確認範囲、usageを区別します。PDFの所有範囲を全文とみなさず、`pages_with_source_blocks`は本文の位置だけを示します。内容品質承認ではありません。
+- code・数式・図内文字は原文を保持します。単純表はMarkdown、結合表は安全なHTMLです。安全なMathML／画像を使い、表示不能な構造や危険なassetは不活性な原データ参照とQAを残します。外部画像は読込みません。
+- usageは準備・補正・翻訳・reviewの保存済み全attemptを失敗／retry込みで分離します。未観測の利用量・全体wall time・実請求額は不明で、0や推計総額に置き換えません。今回のrender時間は別記録です。
+
+HTML table・数式・MathMLの実表示はviewerに依存します。このIssueではviewer表示を未確認とし、統合受入れで確認します。hash不一致は正本・assetの改変や保存障害を調べ、旧出力を確認してください。破損を無視した再採用や自動LLM再送はしません。
+
+## 対応予定の文書処理CLI
 
 - PDF：文字付き・画像のみの英語技術PDF。Docling抽出を原本画像と照合して補正します。任意の実スキャンの完全復元は保証しません。
 - EPUB：DRM解除不要のEPUB 2／3、整形式XHTMLのリフロー型。fixed-layout、画像主体、DTBook専用、複数renditionの自動選択、壊れたXML修復、画像OCRは対象外です。
@@ -74,10 +94,9 @@ Ctrl-C／SIGTERM／入力EOF等の取消ではchildを回収し、進行中のcr
 以下は将来の利用イメージであり、**これらのサブコマンドはまだ実装されていません**。
 
 ```sh
-# 翻訳、続行、保存済み正本からの再出力、局所修正
+# 翻訳、続行、局所修正
 doc-translate run INPUT --workspace DIR
 doc-translate resume DIR
-doc-translate render DIR
 doc-translate revise DIR --source FILE --reason TEXT
 ```
 

@@ -1,6 +1,6 @@
 # 初期artifact／JSONL契約（schema version 1）
 
-Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshotを記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。EPUB原資料のコピー、文書全体のattempt／usage／QA集計、manifest、修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
+Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13のoffline render/status・Markdown／対応表／QAを記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。EPUB原資料のコピー、新規取得・翻訳・再開・修正JSONの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
 
 ## 原文snapshot
 
@@ -236,6 +236,35 @@ attempt→検証済みchunk artifact→snapshot→採用参照の順でfsync／a
 再利用はloadで検証できた採用済みchunkに限り、現在の連続unit・分割対応と、実request（ID／種別／marker原文／unit context・固定context／glossary／policy・schema等）およびconfig（provider/model/thinking/options）を完全一致で照合します。source snapshot hashや保護payload込みsource_hashだけでは無効化せず、codeだけの変更は現在のunit／token／位置へ結び直します。準備方式・根拠・usage metadataだけの変更でも本文入力が同じなら再送しません。本文・context・固定入力・schema・実設定が変わったchunkは旧版を残して更新します。曖昧な旧訳を分割・接合して使いません。
 
 `load_translation`はNode・認証なしで各byte hashとschema、保存原文／準備、分割履歴と全unit対応、受理済みartifactの実入力・raw回答・ID／marker、runの正常terminal／送信先／submitted設定／process終了を再検証します。壊れたartifactを黙って捨てて再送したり、未検証回答を受理したりしません。これは構造・入力対応の検査であり、意味の欠落や誤訳がないことの証明ではありません。
+
+## 安全Markdown・対応表・QA・render/status（Issue #13）
+
+公開APIは`doc_translate.render.render_document(workspace: Path) -> dict`と`workspace_status(workspace: Path) -> dict`です。CLIは`doc-translate render DIR`／`status DIR`で同じsummary JSONをstdoutへ返します。原文を既存loadで検証し、訳文があれば`load_translation`経由で元準備版・実入力・全unit／保護markerを再検査します。現在のsource hashと訳文の出典が違う場合は`stale_translation: true`とし、旧訳は使わず原文を残した部分出力にします。取得・LLM・認証・Node・PDF native依存は呼びません。
+
+```text
+WORKSPACE/
+  render.json                   # schema_version / summary / files(path→SHA-256)、最後にatomic更新
+  renders/<render-digest>/
+    japanese.md
+    english.md
+    assets/<sha256>.<png|jpg|gif|webp|txt>
+    source-map.json
+    qa.json
+    usage.json
+    summary.json
+```
+
+renderは既存の非再入workspace lockと`_atomic_write`を使い、全出力を確定してから参照を切り替えます。旧版・未採用の途中出力は削除しません。保存例外は伝播し、旧参照を維持します。resume／復旧engineは追加しません。statusは書込みせず、出力参照のschema・workspace内path・全file hashと現在入力／保存attempt集合を比較します。`render_current`と、必要時の`previous_artifacts`で旧出力を区別します。
+
+- **source-map**: `blocks`はblock ID／kind／元locations／出力anchor（図内部等で独立出力しないblockはnull）。`units`は実際の翻訳入力unit全fieldと出力anchor。split時も親unit・元marker文字範囲を保持し、順に組み立てます。EPUBのanchorはsnapshot-bound node位置に対応し、文字精度を主張しません。
+- **QA**: sourceの機械検査、保存入力検証、両言語の実unit到達・anchor一意性／内部参照／local assets検査を分けます。`uncertainties`は元recordに`block_ids/unit_ids/output_anchors`を追加し、render由来の安全fallback／未訳も記録します。目印は表示だけの`※`で、code／formula内部に入れません。
+- **内容確認**: `content_review.records`はsource snapshotの確認記録、`unreviewed_source_unit_ids`はその対象外、`translation_records: []`と`unreviewed_translation_unit_ids`は未実装の訳文内容reviewを混同しないための別範囲です。`meaning_quality_approved`／`viewer_display_checked`はfalseです。
+- **summary**: 正本hash、`processing.status: completed | partial`、unitの`output_reached/not_processed/failed/render_failed`、`output_reached_blocks`、source処理状態、機械検査、要確認／原本欠損件数、内容確認、usage、成果物pathと`render_elapsed_seconds`を持ちます。要確認のみで失敗にはしません。`scope.ownership_records`は保存済みPDF所有記録そのもの、`pages_with_source_blocks`は本文位置で、参照ページやPDF全文被覆とはみなしません。
+- **usage**: `stages.preparation/correction/translation/review`にworkspace内の保存済み全attempt artifact／hash／raw recordを列挙します。失敗・retry・未採用も含め、raw provider usageや要求／確認済み設定・時間・終了を失いません。source/translation採用runだけに絞りません。段階ごとの意味の異なるtoken値を合算せず、reasoningを二重加算しません。過去ローカル処理時間・全体wall time・実請求は保存情報がなくnull／unknownのまま、今回のrender時間と分離します。
+
+表示は保存構造から生成し、raw XHTMLをコピーしません。単純な見出し行付き表はMarkdown、span付き／非単純表は固定tag／検証済み整数spanのHTMLです。未確定PDF表は原ページ画像と正本参照を残し、候補cellを本文へ再採用しません。code fenceは原text内のbacktickより長くし、注釈は外に出します。PDF図はhash／実寸を検査したPNGを記録領域でcropします。EPUBは必要時だけ原archive hashと既存bounded readerで元code／MathML／assetを読み、安全なPresentation MathMLの許可tag／属性、decode済みraster画像を使います。active SVG・annotation-xml・外部画像・不許可数式は有効化せず、`.txt`原データやsource snapshotへの参照とQAを残します。文書／訳文の任意Markdown・HTMLはescapeし、link先は生成anchorまたは検査したHTTP(S)／mailtoのみです。literal URLは本文として保持し、自動fetchしません。
+
+renderのexitは0＝保存指定範囲の出力到達、1＝部分出力／実行失敗、2＝入力／hash等のエラー。statusは検査成功なら状態がpartialでも0です。CLI fixture作成・直接確認手順は[開発ガイド](../../CONTRIBUTING.md)の「Markdown／対応表／QA・render/statusの検証境界」を参照してください。viewer実表示、意味品質、任意PDF全文の完全性はこの検査の保証外です。
 
 ## PDF抽出下書き（Issue #7）
 
