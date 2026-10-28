@@ -19,27 +19,56 @@ from doc_translate.run import (
 
 
 def _announce(workspace, config, inputs, preflight):
-    run = json.loads((workspace / "run.json").read_bytes())
+    if inputs.stage == "review":
+        from doc_translate.snapshot import (
+            SnapshotReference,
+            load_source_snapshot,
+            source_snapshot_sha256,
+        )
+
+        source = load_source_snapshot(workspace)
+        notice = {
+            "input": source.document.artifact,
+            "document_sha256": source.document.sha256,
+            "source_snapshot_sha256": source_snapshot_sha256(workspace),
+            "translation_snapshot_sha256": SnapshotReference.model_validate_json(
+                (workspace / "translation-snapshot.json").read_bytes()
+            ).sha256,
+            "transmission": {
+                "unit_ids": inputs.context["unit_ids"],
+                "block_ids": inputs.context["block_ids"],
+                "pages": inputs.context["pages"],
+                "images": inputs.context["pages"],
+                "content": "selected saved source/translation pairs, fixed policy/glossary; selected page images and blocks only"
+                if inputs.context["pages"]
+                else "selected saved source/translation pairs and fixed policy/glossary only; no page images or other unit context",
+            },
+        }
+    else:
+        run = json.loads((workspace / "run.json").read_bytes())
+        notice = {
+            "input": run["source_name"],
+            "document_sha256": run["document"]["sha256"],
+            "owned_pages": run["owned_pages"],
+            "reference_pages": run["reference_pages"],
+            "transmission": {
+                "owned_pages": inputs.context.get(
+                    "owned_pages",
+                    run["corrected_pages"]
+                    if run["document"]["format"] == "pdf"
+                    else None,
+                ),
+                "reference_pages": inputs.context.get("reference_pages", []),
+                "content": "page images and scoped extraction draft"
+                if inputs.stage == "correction"
+                else "saved source units/context/glossary only; no original file, images, code or formula payload",
+            },
+        }
     print(
         json.dumps(
             {
+                **notice,
                 "stage": inputs.stage,
-                "input": run["source_name"],
-                "document_sha256": run["document"]["sha256"],
-                "owned_pages": run["owned_pages"],
-                "reference_pages": run["reference_pages"],
-                "transmission": {
-                    "owned_pages": inputs.context.get(
-                        "owned_pages",
-                        run["corrected_pages"]
-                        if run["document"]["format"] == "pdf"
-                        else None,
-                    ),
-                    "reference_pages": inputs.context.get("reference_pages", []),
-                    "content": "page images and scoped extraction draft"
-                    if inputs.stage == "correction"
-                    else "saved source units/context/glossary only; no original file, images, code or formula payload",
-                },
                 "provider": config.provider,
                 "model": config.model,
                 "thinking": config.thinking,
@@ -129,6 +158,24 @@ def main(
         required=True,
         help="Nonblank revision/adoption reason; replace TEXT.",
     )
+    review = commands.add_parser(
+        "review",
+        help="Independently review explicit saved units or PDF pages; never rewrite text.",
+        description="Send only comma-separated explicit unit IDs (--units unit-1,unit-2), or PDF pages A-B with selected page images. Requires current saved translations. Records findings, reviewer, scope and usage; empty findings never approve quality. Uses explicit provider/model/thinking over saved translation (units) or correction (pages) settings, never ambient PI_*. Does not modify saved stage settings or snapshots. Exit 0 accepted review, 1 inference/save failure, 2 invalid scope/inputs.",
+    )
+    review.add_argument("workspace", type=Path)
+    scope = review.add_mutually_exclusive_group(required=True)
+    scope.add_argument(
+        "--units",
+        help="Comma-separated explicit unit IDs; no ranges or implicit expansion.",
+    )
+    scope.add_argument(
+        "--pages",
+        type=_page_range,
+        help="PDF review page range A-B, inclusive; no scope expansion.",
+    )
+    for field in ("provider", "model", "thinking"):
+        review.add_argument(f"--{field}")
     run = commands.add_parser(
         "run",
         help="Translate a local PDF/EPUB in a new workspace.",
@@ -227,6 +274,26 @@ def main(
                     process_command=process_command,
                     before_send=announce,
                 )
+        elif args.operation == "review":
+            from doc_translate.review import review_document
+
+            result = review_document(
+                workspace=args.workspace,
+                unit_ids=[i.strip() for i in args.units.split(",")]
+                if args.units is not None
+                else None,
+                pages=args.pages,
+                selection=Selection(
+                    **{
+                        field: getattr(args, field)
+                        for field in ("provider", "model", "thinking")
+                    }
+                ),
+                process_command=process_command,
+                before_send=lambda config, inputs, preflight: _announce(
+                    args.workspace, config, inputs, preflight
+                ),
+            )
         elif args.operation == "revise":
             from doc_translate.revise import revise_document
 
@@ -261,10 +328,13 @@ def main(
             "render",
             "status",
             "revise",
+            "review",
         } and isinstance(error, (FileNotFoundError, ValueError)):
             parser.error(str(error))
         parser.exit(1, f"doc-translate: {error}\n")
     print(json.dumps(result, ensure_ascii=False))
+    if args.operation == "review" and result["review"]["status"] == "rejected":
+        parser.exit(2 if result["review"]["error"] in CONFIG_ERROR_CODES else 1)
     if (
         args.operation in {"run", "resume"}
         and result["scope"]["run"]["error_code"] in CONFIG_ERROR_CODES

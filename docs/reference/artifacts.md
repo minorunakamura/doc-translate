@@ -1,6 +1,36 @@
 # 初期artifact／JSONL契約（schema version 1）
 
-Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13のoffline render/status・Markdown／対応表／QA、Issue #14の新規run接続、Issue #15のresume／復旧、Issue #16の基点付き修正・PDF補正候補の明示採用を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。新規runの原資料コピー・取得・翻訳・出力CLIは実装済みです。resume／reviseは実装済み、reviewは未実装です。修正envelopeと候補採用は以下の公開契約を使います。認証とNode generation operationは以下に実装済みの語彙を記述します。
+Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13のoffline render/status・Markdown／対応表／QA、Issue #14の新規run接続、Issue #15のresume／復旧、Issue #16の基点付き修正・PDF補正候補の明示採用を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。新規runの原資料コピー・取得・翻訳・出力CLIは実装済みです。resume／reviseと、Issue #17の明示範囲reviewも実装済みです。修正envelopeと候補採用は以下の公開契約を使います。認証とNode generation operationは以下に実装済みの語彙を記述します。
+
+## 明示範囲review（Issue #17）
+
+公開CLIは`review DIR --units unit-1,unit-2`またはPDFの`review DIR --pages A-B`、APIは`doc_translate.review.review_document(workspace=..., unit_ids=[...], selection=Selection(...), process_command=..., before_send=...)`（ページ指定時は`unit_ids`に代えて`pages=(A,B)`）です。`load_reviews(workspace)`はhash・歴史的source／translation・実request・helper結果・対象ID／元位置を保存-onlyで再検証します。独立推論は既存`generate(stage="review")`を使い、別Runner／会話履歴／自動全体reviewは追加しません。
+
+### 入力と範囲
+
+- exactly oneの明示unit IDs／ページ範囲が必要です。IDは現在の有効translation chunkの分割済みunit（`.part-N`含む）を使い、未知ID／親IDの推測展開・古い訳のIDだけjoinはしません。現在のsource、準備、runのpolicy／terms／translation設定に対応し、選択unitの受理済み訳文が必要です。未訳・staleなら無送信で不足条件を示し、勝手に翻訳しません。candidateがpendingでも有効な採用版の照合は可能です。
+- unitモードの`text.units`には選択unitのID・block/cell/node/attribute・親unit／source_range、種別、marker原文・対応訳、選択inline tokenのmarker／kind／text、表の行列・spanだけを投影します。tokenの任意metadata／属性や他unit本文を含む`unit.context`、全文`preparation.context`、block全文、画像を無条件に送りません。固定policy／採用glossaryを添えます。
+- PDFページモードは保存`page_images`のうち指定ページだけをページ順に使い、PNG bytes／hash／実寸／scale／座標・描画条件を既存画像境界で検査します。指定ページのblock本文・最小構造（table cells等）と対応unit訳だけを送ります。全chunkの画像／fragments／raw下書きを送りません。block位置だけでなく保存table cell evidence・unit位置・図regionのページも検査し、選択外へ跨る本文／訳文は送らず具体的な範囲エラーにします。黙ってskipや送信範囲の拡大はしません。
+- 明示設定 > 保存該当段階設定（unitsはtranslation snapshot、pagesはrunまたは採用sourceのcorrection設定）。不足は明示エラーで、ambient `PI_*`／別providerへのfallbackや保存設定の変更はありません。送信前通知は原資料hash・両snapshot hash、選択ID／ページ／画像と、preflightで判明したprovider/model/thinking／auth source/typeを含みます。
+
+### 回答・保存・QA
+
+LLM回答は`ReviewAnswer`のみで、元位置・確認者・承認状態を自己申告させません。
+
+```json
+{"findings":[{"target_kind":"unit","target_id":"unit-1","reason":"照合が必要な具体的な理由"}]}
+```
+
+`target_kind`は`unit/block/page`、pageの`target_id`は1始まりページを10進文字列で指定します。unitモードでは選択unitだけ、pagesモードでは選択されたunit／block／画像ページだけを認め、未知・範囲外ID、余分field、不正schema、空白だけの理由は拒否します。非翻訳code／formula／図blockにも、またblockのないページにも指摘可能です。Pythonが保存済み対象から`block_ids/unit_ids/locations`を補い、PDF table cellはblock継承位置ではなく保存cell evidenceのページを使います。画像のみのpage指摘は保存画像hash・ページを根拠にし、文字／bbox精度を創作しません。
+
+| path | 内容・確定点 |
+| --- | --- |
+| `attempts/review/<sha256>.json` | `stage/status`、対象source／translation hash、実request/config、error、経過秒、全attempt（preflight／raw最終回答／終了／画像metadata／usage／retry）。成功・空findings・schema／domain拒否・推論失敗を保持。未観測usageは`final:null`または`usage:null/unknown`で0としない |
+| `reviews/<sha256>.json` | 受理成功のみ。`ReviewRecord`: schema_version=1、source_snapshot_sha256／translation_snapshot_sha256、文書順unit_ids／block_ids、ページ順pages、config、Python由来reviewer=`provider/model`、method=`independent_llm`、attemptへの`run` hash、位置付きfindings。新規不変artifactのatomic確定がcommitで、別index／採用pointerは不要 |
+
+workspace writer lock下でattemptを先に、reviewを後にhash付きatomic保存します。保存失敗でも旧review／旧snapshot／採用参照／旧renderを保持し、既存source-snapshot／translation-snapshot／preparation／run参照を変えません。途中fileは履歴へ採用せず、再実行は新規独立推論です。失敗までに観測したusageは既存usage集計が段階別に保持し、応答損失や強制終了時のexactly-once課金は保証しません。
+
+CLIのstdoutは保存-only statusに`review: {status: validated|rejected, error, run, sha256?, artifact?}`を加えます。exitは0＝記録成功（findingsありも含む）、1＝推論／保存失敗、2＝入力・範囲・設定エラーです。review自体は出力を自動再生成しません。statusは現行hashの確認／未確認範囲を即時表示し、renderの鮮度判定は`content_review`も比較します。後のoffline renderは現行findingsを`stage:review`の位置／block／unit／output anchor付きQAと表示用`※`へ反映します。旧版reviewは履歴だけに残し、現行の確認範囲・目印には流用しません。機械検査成功・空findings・modelの自己申告のいずれも意味品質承認にせず、`meaning_quality_approved=false`を維持します。
 
 ## 新規run（Issue #14）
 
@@ -350,7 +380,7 @@ renderは既存の非再入workspace lockと`_atomic_write`を使い、全出力
 
 - **source-map**: `blocks`はblock ID／kind／元locations／出力anchor（図内部等で独立出力しないblockはnull）。`units`は実際の翻訳入力unit全fieldと出力anchor。split時も親unit・元marker文字範囲を保持し、順に組み立てます。EPUBのanchorはsnapshot-bound node位置に対応し、文字精度を主張しません。
 - **QA**: sourceの機械検査、保存入力検証、両言語の実unit到達・anchor一意性／内部参照／local assets検査を分けます。`uncertainties`は元recordに`block_ids/unit_ids/output_anchors`を追加し、render由来の安全fallback／未訳も記録します。目印は表示だけの`※`で、code／formula内部に入れません。
-- **内容確認**: `content_review.records`はsource snapshotの確認記録、`unreviewed_source_unit_ids`はその対象外、`translation_records: []`と`unreviewed_translation_unit_ids`は未実装の訳文内容reviewを混同しないための別範囲です。`meaning_quality_approved`／`viewer_display_checked`はfalseです。
+- **内容確認**: `content_review.records`はsource snapshotの確認記録、`translation_records`は現行source／translation hashに結び付いた独立review記録です。`review_history`は過去版も含む不変review全記録で、旧hashやstaleな訳の記録を現行確認に数えません。`unreviewed_source_unit_ids/unreviewed_source_block_ids`と`unreviewed_translation_unit_ids`を別記します。unitだけの照合で所属block全体の構造まで確認済みにせず、`meaning_quality_approved`／`viewer_display_checked`はfalseです。
 - **summary**: 正本hash、`processing.status: completed | partial`、unitの`output_reached/not_processed/failed/render_failed`、`output_reached_blocks`、source処理状態、機械検査、要確認／原本欠損件数、内容確認、usage、成果物pathと`render_elapsed_seconds`を持ちます。要確認のみで失敗にはしません。`scope.ownership_records`は保存済みPDF所有記録そのもの、`pages_with_source_blocks`は本文位置で、参照ページやPDF全文被覆とはみなしません。
 - **usage**: `stages.preparation/correction/translation/review`にworkspace内の保存済み全attempt artifact／hash／raw recordを列挙します。失敗・retry・未採用も含め、raw provider usageや要求／確認済み設定・時間・終了を失いません。source/translation採用runだけに絞りません。段階ごとの意味の異なるtoken値を合算せず、reasoningを二重加算しません。過去ローカル処理時間・全体wall time・実請求は保存情報がなくnull／unknownのまま、今回のrender時間と分離します。
 

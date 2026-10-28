@@ -46,65 +46,71 @@ faux.setResponses([
     if (settings.delay_phase === input.context.phase) {
       await new Promise((resolve) => setTimeout(resolve, settings.delay_ms));
     }
-    const answer = input.context.owned_pages
-      ? {
-          schema_version: 1,
-          draft_sha256: input.context.draft_sha256,
-          owned_pages: input.context.owned_pages,
-          blocks:
-            settings.correction_blocks ??
-            input.context.owned_pages.map((page) => ({
-              block_id: `page-${page}`,
-              kind: "body",
-              text: `Page ${page} source.`,
-              evidence: [
-                {
-                  page,
-                  ref: null,
-                  position: "center",
-                  reason: "Synthetic visible paragraph.",
-                },
-              ],
-            })),
-          exclusions: settings.correction_exclusions ?? [],
-          uncertainties: [],
-        }
-      : input.context.phase === "collect"
-        ? {
-            context: "Artificial section.",
-            candidates: settings.candidate
-              ? [
-                  {
-                    term: "Original",
-                    translation: "自動",
-                    evidence: [{ unit_id: "unit-1", quote: "Original" }],
-                  },
-                ]
-              : [],
-          }
-        : input.context.phase === "organize"
+    const answer =
+      input.context.phase === "review"
+        ? { findings: settings.review_findings ?? [] }
+        : input.context.owned_pages
           ? {
-              context: "Artificial document.",
-              terms: settings.candidate ? { Original: "自動" } : {},
+              schema_version: 1,
+              draft_sha256: input.context.draft_sha256,
+              owned_pages: input.context.owned_pages,
+              blocks:
+                settings.correction_blocks ??
+                input.context.owned_pages.map((page) => ({
+                  block_id: `page-${page}`,
+                  kind: "body",
+                  text: `Page ${page} source.`,
+                  evidence: [
+                    {
+                      page,
+                      ref: null,
+                      position: "center",
+                      reason: "Synthetic visible paragraph.",
+                    },
+                  ],
+                })),
+              exclusions: settings.correction_exclusions ?? [],
+              uncertainties: [],
             }
-          : {
-              translations: JSON.parse(input.text).map((unit) => ({
-                unit_id: unit.unit_id,
-                text: `訳:${unit.source_text}`,
-                uncertainties: settings.attention
+          : input.context.phase === "collect"
+            ? {
+                context: "Artificial section.",
+                candidates: settings.candidate
                   ? [
                       {
-                        reason: "Artificial ambiguity.",
-                        origin: "undetermined",
+                        term: "Original",
+                        translation: "自動",
+                        evidence: [{ unit_id: "unit-1", quote: "Original" }],
                       },
                     ]
                   : [],
-              })),
-            };
+              }
+            : input.context.phase === "organize"
+              ? {
+                  context: "Artificial document.",
+                  terms: settings.candidate ? { Original: "自動" } : {},
+                }
+              : {
+                  translations: JSON.parse(input.text).map((unit) => ({
+                    unit_id: unit.unit_id,
+                    text: `訳:${unit.source_text}`,
+                    uncertainties: settings.attention
+                      ? [
+                          {
+                            reason: "Artificial ambiguity.",
+                            origin: "undetermined",
+                          },
+                        ]
+                      : [],
+                  })),
+                };
     const message = fauxAssistantMessage(
       JSON.stringify(answer),
       input.context.owned_pages?.includes(settings.correction_fail_page) ||
-        (settings.fail_stage === "prepare" && input.context.phase) ||
+        (settings.fail_stage === "review" &&
+          input.context.phase === "review") ||
+        (settings.fail_stage === "prepare" &&
+          ["collect", "organize"].includes(input.context.phase)) ||
         (settings.fail_stage === "translation" &&
           !input.context.phase &&
           !input.context.owned_pages)
