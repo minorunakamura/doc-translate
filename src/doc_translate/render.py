@@ -17,6 +17,7 @@ from doc_translate.snapshot import (
     SourceSnapshot,
     _atomic_write,
     load_source_snapshot,
+    source_snapshot_sha256,
 )
 from doc_translate.translation import load_translation
 from doc_translate.units import TranslationUnit, generate_translation_units
@@ -52,7 +53,7 @@ def _fence(text: str, language: str = "") -> str:
 
 def _inputs(workspace: Path):
     source = load_source_snapshot(workspace)
-    source_digest = _hash(source.model_dump_json().encode())
+    source_digest = source_snapshot_sha256(workspace)
     translation = None
     translation_digest = None
     stale = False
@@ -62,7 +63,32 @@ def _inputs(workspace: Path):
         ).sha256
         translation = load_translation(workspace, translation_digest)
         stale = translation.source_snapshot_sha256 != source_digest
-    units = generate_translation_units(source)
+        from doc_translate.preparation import (
+            PreparationEvidence,
+            _read,
+            load_preparation,
+        )
+
+        preparation = load_preparation(workspace, translation.preparation_sha256)
+        if (workspace / "preparation-snapshot.json").exists():
+            current = load_preparation(workspace)
+            stale |= (
+                current.translation_inputs_sha256
+                != preparation.translation_inputs_sha256
+            )
+        if (workspace / "run.json").exists():
+            from doc_translate.run import RunManifest
+
+            run = RunManifest.model_validate_json((workspace / "run.json").read_bytes())
+            evidence = PreparationEvidence.model_validate(
+                _read(workspace, "preparation/evidence", preparation.evidence_sha256)
+            )
+            stale |= (
+                run.policy != preparation.policy
+                or run.user_terms != evidence.user_terms
+                or run.translation != translation.config
+            )
+    units = generate_translation_units(source, source_sha256=source_digest)
     if translation is not None and not stale:
         units = [u for chunk in translation.chunks for u in chunk.units]
     return source, source_digest, translation, translation_digest, stale, units
@@ -77,6 +103,7 @@ class _Markdown:
         translation,
     ):
         self.source = source
+        self.source_digest = source_snapshot_sha256(workspace)
         self.assets = RenderAssets(workspace, source)
         self.current_block = source.blocks[0] if source.blocks else None
         self.node_anchors = {}
@@ -721,7 +748,7 @@ class _Markdown:
 
     def fallback(self, block, reason: str) -> str:
         self.problem(block, reason)
-        digest = _hash(self.source.model_dump_json().encode())
+        digest = self.source_digest
         return f"[source data](../../snapshots/source/{digest}.json)※"
 
     def table(self, cells: list[dict], japanese: bool) -> str:
@@ -927,7 +954,7 @@ def _build(workspace: Path):
                 block,
                 "Translation unavailable"
                 + (
-                    "; saved translation belongs to another source snapshot"
+                    "; saved translation belongs to different source or translation inputs"
                     if stale
                     else ""
                 ),
@@ -1081,7 +1108,17 @@ def _build(workspace: Path):
         if run.document != source.document:
             raise ValueError("Run manifest/document mismatch")
         summary["scope"]["run"] = run.model_dump(mode="json")
-        if run.error is not None:
+        from doc_translate.run import source_adoption_status
+
+        summary["scope"]["adopted_source"] = (
+            source.machine_inputs.model_dump(mode="json")
+            if source.machine_inputs
+            else None
+        )
+        adoption = source_adoption_status(workspace, run)
+        if adoption is not None:
+            summary["source_adoption"] = adoption
+        if run.error is not None or adoption is not None:
             summary["processing"]["status"] = "partial"
     files = {
         "japanese.md": japanese.encode(),
@@ -1101,6 +1138,7 @@ def render_document(workspace: Path) -> dict:
         summary, files = _build(workspace)
         summary["render_elapsed_seconds"] = time.monotonic() - started
         summary["render_current"] = True
+        summary["adopted_output_current"] = not summary["stale_translation"]
         digest = _hash(
             _json(
                 {
@@ -1152,6 +1190,7 @@ def workspace_status(workspace: Path) -> dict:
     pointer = workspace / "render.json"
     summary["artifacts"] = {}
     summary["render_current"] = False
+    summary["adopted_output_current"] = False
     if pointer.exists():
         manifest = RenderReference.model_validate_json(pointer.read_bytes())
         if manifest.summary not in manifest.files:
@@ -1164,7 +1203,13 @@ def workspace_status(workspace: Path) -> dict:
             ):
                 raise ValueError("Render artifact path/hash mismatch")
         saved = json.loads((workspace / manifest.summary).read_bytes())
-        if all(
+        summary["adopted_output_current"] = (
+            saved["source_snapshot_sha256"] == summary["source_snapshot_sha256"]
+            and saved["translation_snapshot_sha256"]
+            == summary["translation_snapshot_sha256"]
+            and not summary["stale_translation"]
+        )
+        if saved.get("source_adoption") == summary.get("source_adoption") and all(
             saved[key] == summary[key]
             for key in (
                 "source_snapshot_sha256",
@@ -1174,7 +1219,10 @@ def workspace_status(workspace: Path) -> dict:
                 "processing",
             )
         ):
-            summary = saved
+            summary = {
+                **saved,
+                "adopted_output_current": summary["adopted_output_current"],
+            }
         else:
             summary["previous_artifacts"] = saved["artifacts"]
     return summary

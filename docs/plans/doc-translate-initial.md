@@ -38,6 +38,16 @@
 - 既存Work Itemの分割・依存関係・種別を維持し、Issue #2および後続のopen Work Itemは本改訂Planを参照する。Issue #18のremote CI実行・成功確認要件も除外する。完了済みIssue #1の過去の受け入れ記録は書き換えず、再openしない。
 - この再計画では正式Planと確認済みWork Itemの更新のみを行い、既存の未コミット変更・部分実装はそのまま保持する。Implementationは別の新しいRootセッションで再開し、過去のチェック・Review・Code Review Approveを変更後の検証や承認として流用しない。
 
+### PDF原文修正後の補正成果採用の改訂（Issue #16の再計画）
+
+- 対象は https://github.com/minorunakamura/doc-translate/issues/16 。変更前Plan SHA-256は `a8b9e7c77ae29f0d4d02cf4ae0b5dccbcb3a41d23f403d25606abb28ae843f1c`。基点付きsource／translation修正、glossary／policy変更、履歴保持・実入力一致による再利用の既存要件は維持する。
+- 元PDFを編集するのではなく、PDFから生成した「翻訳前原文」の任意の利用者訂正と、その後の補正成果を扱う。通常利用で手修正を必須にしない。
+- **ユーザー確認済みの方式は、自動併合なしの「旧修正版と新候補を両方保存 → 採用待ちで停止 → 既存の `revise --source` で明示採用 → resume」。** 新候補未採用のまま旧版で準備・翻訳を続ける操作は追加しない。手修正なしの通常再開と、取り込み済み補正結果に変化のない再開には、この確認を挟まない。
+- 現部分実装はrevisionがあるとPDF工程全体をskipし、partialの不足ページと明示correction変更を反映できない。skipを単純に外すと再組立によって訂正を失い得る。block／unit IDは再採番されるため、ID一致だけで対応を決めない。
+- 自動併合は不可能ではないが、独立した末尾追加等の限定自動適用だけでは補正設定変更・段落接続・削除・再分割を扱えず、候補の明示採用が別途必要なため今回は含めない。LLM併合、安定IDの全面再設計、汎用merge基盤・新CLIコマンドは対象外。
+- **文書更新はIssue #16のImplementationで行う。** 基本設計§14（必要に応じ関連する§13・§19）、artifact契約、README・CLI help、CONTRIBUTINGの該当箇所だけを整合させる。Planning中は編集しない。更新完了まで本節と実装方針7.1を優先する。原資料不変・省略禁止・既存安全境界は変更せず、GLOSSARY・ADR・専用差分管理文書は増やさない。
+- Planningでは正式Planと個別確認済みWork Itemだけを更新する。既存未コミット変更・部分実装を変更・commit／stash／破棄しない。Issue #16と後続open Issue #17／#18の参照整合をticket手順で確認し、既存種別・責務・依存関係を無断で変更せず、完了Issueは再openしない。Implementationは別の新しいRootセッションで再開し、過去の検証・Review・Code Review Approveを変更後へ流用しない。
+
 ### 入力設計との差分と更新の合意
 
 Pi CLIを経由しないことは基本設計からの合意済み変更である。目的・翻訳／補正の内容契約・原資料／snapshot・PDF／EPUB受理範囲・Python Workflowの文書処理責務は維持し、推論の接続方法だけを次のように置き換える。
@@ -205,6 +215,50 @@ workspaceは原資料、取得下書き、ページ画像／assets、snapshots�
 - 準備方式だけの変更で採用glossary・context等が同じなら再翻訳しない。
 - reviewは明示範囲のfindingsと確認手段を記録するだけで、空の指摘やmodel自己申告を品質承認としない。修正はreviseの検証・履歴保存を経る。全文の追加LLM reviewは既定にしない。
 
+### 7.1 PDF原文修正後の新補正候補と明示採用（Issue #16）
+
+#### 基点・再開・候補
+
+- 本節の説明用記号として、`B`＝採用版が取り込み済みの機械生成原文、`H`＝現在採用中の利用者修正版、`C`＝現在の取得・補正入力から再組立した機械生成候補、`K`＝利用者が明示採用する全snapshot、とする。各版は不変artifactのSHA-256で識別する。
+- 修正履歴の親と取り込み済み機械基点を分離する。`K.previous_snapshot_sha256 = H`と理由を残し、別の検証可能なprovenanceとして機械基点が`C`へ進んだことを採用snapshotに記録する。以後の通常source修正はその機械基点を継承する。chain最古の版との比較を永続的な基点判定にしない。
+- PDF工程を進める前に`H/B`を検証する。旧基点を更新後のrun progress／chunk一覧から再構築しない。既存revisionは不変履歴・旧source・chunk・保存scopeから基点を一意に検証できる場合に互換読込みする。不明・循環・欠落・hash不一致は送信前に拒否する。旧artifactを書換える一括migrationや独自修復操作は追加しない。
+- `run.py`が工程再開と採用判断、`pdf_source.py`が検証済みchunkからの再組立、snapshot保存が不変保存と採用参照、`revise.py`が利用者入力検証・明示採用を所有する。既存保存処理を小さく分離し、候補保存だけで`source-snapshot.json`を切り替えない。workspace lock・atomic write・hash検証を再利用する。
+- revisionの有無にかかわらず、既存resumeの規則で保存draft／画像／実入力一致chunk／受理可能attemptを再利用し、不足所有ページだけを補正する。明示correction provider／model／thinking等の実入力変更は旧chunkと区別して再補正する。設定を保存しただけで実行せず適用済みと表示しない。取得入力が同じなら補正設定変更だけでDoclingを再実行しない。glossary／文体policyだけの変更で取得・補正を無効化せず、所有／参照許可を拡張しない。
+- 手修正なしは従来どおり機械生成版を採用する。手修正ありで`C == B`なら`H`を保持して通常続行する。履歴／基点metadataを機械生成内容差と混同せず、入力不変の再開で不要な採用待ちにしない。`C != B`なら候補を不変保存し、旧source／preparation／translation／render参照を維持して、準備・翻訳の前で停止する。
+- 候補記録は`H/B/C`のhash、原本、取得・補正実入力／chunk／設定、所有／参照scopeと成功／失敗／未処理範囲に結び付ける。既存の不変artifactへの参照を優先し、秘密・不要な情報複製・別DB／汎用状態管理を追加しない。部分候補は失敗／未処理を保持し、成功chunkが一つもなければ工程失敗として旧採用版を維持する。
+
+#### 対応・利用者判断・採用
+
+- 自動併合・修正転写は行わず、「利用者修正あり、かつ取り込み済み機械基点から候補変更あり」を保守的な採用確認条件とする。これを意味的衝突の断定としない。
+- `B/H/C`のJSON pathとhash、新旧補正scope・設定・追加／置換ページの概要、新候補を元にした修正envelopeの雛形と次の操作を提示する。対応根拠はsnapshot・原本位置・不変chunk由来情報であり、同じ`pdf-N`／`unit-N`を同じ内容と表示しない。曖昧なblock／cell対応を推測した一覧は作らず、段落接続・分割／統合・表／図所属・参照変更を利用者が全snapshotで照合する。
+- 公開操作は `revise DIR --source FILE --reason TEXT` を維持する。通常の現在source基点に加え、候補採用時だけ選択候補記録hashを明示するfieldをsource envelopeに追加する。雛形は`C`をsourceとして含み、利用者は新候補をそのまま使うか、旧訂正を反映して`K`に編集するかを決め、同じ操作で明示採用する。
+- 採用前に現在source=`H`のCAS、候補と`B/C`・原本・現在の有効補正入力／scopeとの対応、全snapshotのschema・根拠・assets・構造・参照を検証する。未知／古い候補、変更済み採用基点、別入力世代、hash不一致、不正構造を拒否する。機械基点・候補provenance・工程scopeは利用者JSONから無条件に信用せず、検証済み候補からアプリ側で設定する。
+- 通常reviseで`H`を再修正しただけでは候補採用済みにしない。旧envelopeはstaleとして拒否し、次のresumeでは保存済み`C`を再利用して現在sourceに結び直した記録／雛形を提示する。候補待ち中に補正実入力が変われば新版候補を生成し、旧入力の候補採用を拒否する。旧記録は削除しない。
+- 候補採用はLLM／Node／認証なしで行い、訳文を自動上書きしない。全snapshotの採用は利用者判断であり、人の訂正が意味的にすべて維持されたとの機械的認定ではない。後続resumeで準備・unit・訳文・QA／出力を更新する。旧訳・手修正訳は実request全体一致の場合だけ再利用し、IDだけの転用や曖昧な分割／接合はしない。再利用しない旧訳も履歴保持する。
+
+#### 表示・中断復旧
+
+- status／render／resume summaryでは採用sourceのscopeと新補正候補の進捗を分離し、採用待ちの理由・各hash／path・雛形・次の操作を表示する。候補の全ページ補正成功を旧修正版への取込み完了／翻訳完了と表示しない。採用版に対する出力鮮度と、新補正が未採用である状態を区別する。
+- 採用待ちは全体partialとしてresume／renderはexit1、statusは検査成功ならexit0、入力不正は従来どおりexit2。status／renderは旧採用版だけを使い、新候補を黙って出力に使わない。機械的coverage／工程状態は検証済み記録から求め、利用者の処理完了自己申告で失敗／未処理を消さない。
+- 同じ入力での候補再確認は受理済み補正を再送しない。partial候補の再resumeは未成功ページだけを再試行でき、新候補ができれば古い雛形をstaleとする。採用待ち中は準備・翻訳requestを送らない。
+- 候補・provenance・新snapshotを先に不変保存し、source参照切替を採用の確定点とする。run側候補参照の清掃とsource切替の二ファイル同時成功を要求せず、採用source自身のprovenanceから採用済みを判定する。切替後・progress更新前のcrashで二重採用・旧版巻戻し・不要な再待機を起こさない。
+- 保存途中artifactは採用しない。補正確定後・候補公開前の中断では不変入力とhashを検証して候補を再構成／再公開し、受理済み補正は再送しない。既存のwriter排他・取消drain・exactly-once課金非保証を維持する。
+
+#### 到達範囲・検証
+
+- 主な対象は `src/doc_translate/run.py`、`revise.py`、`snapshot.py`、`render.py`、CLI help／summary、必要最小限のPDF再組立・翻訳接続、関連tests・上記文書。schema拡張後も旧snapshotのbyte列／hashを変えず読めること。参照hashをmodel再serializeだけで取り違えず、既存EPUB・通常のsource／translation修正JSONを壊さない。
+- TDD Skillで公開CLI→workspace／status／出力と、補正回答→接続済みsourceの既存seamを使い、1動作ずつred→greenにする。`tests/test_run.py`・`test_revise.py`・`test_resume.py`を中心に、必要ならsnapshot／render／pdf_source／translationの公開境界テストを更新する。人工PDF・固定人工応答・実Node helper＋公開faux providerを使い、外部Docling変換境界以外に内部workflow mockを増やさない。
+- 必須検証：
+  1. 完了PDF修正後の入力不変resume・glossary／文体policy変更で、訂正保持・取得／補正再送なし。
+  2. partial PDF修正後の不足ページのみ補正、新候補保存、旧source／下流参照保持、採用待ち・進捗分離。採用前の準備／翻訳requestは0件、再resumeで成功chunkの再送なし。
+  3. 明示correction provider／model／thinking変更を無視せず、旧chunk誤再利用・不要な取得・許可外送信をしない。
+  4. 前方ページ回復によるIDずれ、境界接続、分割／統合、削除・並替え、表／list／caption／図所属・参照変更で、修正を勝手に転写・復活・上書きしない。
+  5. 候補そのまま／利用者統合版の明示採用、複数revision→候補採用→通常revision→resumeで機械基点を保持。stale source／candidate・入力世代違い・不正構造／ref／hash拒否と旧hash保持。revise／status／renderはNode・認証不要。
+  6. 補正確定後・候補公開前、候補確定後・source切替前、source切替後・候補参照更新前のSIGINT／SIGKILL相当の中断を既存外部process境界で検証。未確定非採用、旧hash不変、受理済み補正再送なし、採用済みの正しい回復、候補破損の事前拒否・writer排他。
+  7. 採用後の実入力一致／不一致による旧訳・手修正訳の再利用／再翻訳とstale表示、codeだけの変更による本文再送不要、QA／出力更新、EPUB修正の回帰。
+- Planningの観測は、静的調査、既存修正保持テスト3件成功、小さなoffline Probeで「2–7ページ中7ページ失敗→成功部分を訂正→resumeでも新補正requestは0件、修正版を保持したpartialのまま」を確認したことに限る。新採用方式の実装・安全性は未検証。Probeは一時directoryのみで実行・削除し、既存差分は変更していない。
+- Issue #16では関連pytestに加え全pytest、Ruff check／format check、ty checkをローカルで実行する。Node fixture変更時はNode format／lint／Vitestと必要なhelper buildも行う。依存／lock／配布資材を変更しなければ両manager導入検証をこの変更だけのために重複させない。初期版全体のbuild／導入・個別承認付き実LLM検証は既存統合Work Itemの責務として維持し、remote CI実行は必須にしない。
+
 ### 8. Markdown・QA・利用量
 
 - 保存した原文・訳文・構造・assetsからPythonで日本語／英語Markdownを生成する。code／formulaは原文snapshotを使い、code calloutはfence外、図は原画像／保持assetを使用する。
@@ -247,7 +301,7 @@ workspaceは原資料、取得下書き、ページ画像／assets、snapshots�
 3. 図内部textの二重翻訳防止、ページを越すlist親子、脚注を挟む本文継続、code改行、表cell／span、inline／literal保護がfixtureで確認できる。
 4. 範囲外参照の無断送信、秘密の永続log混入、tool／extension実行、EPUBのpath逸脱／過大展開／外部取得／active markupを防ぐ検査がある。対象外入力・不正応答を成功扱いしない。
 5. SIGINT／強制終了・保存途中・provider失敗後も旧成果物を失わず、検証済み結果を再送せず再開できる。重複writerを拒否し、未完了結果やhash不一致を無条件採用しない。
-6. glossary／policy／source／訳文の局所変更を履歴付きで扱い、stale patchを拒否する。取得・補正を不要に再実行しない。renderはLLMを呼ばない。
+6. glossary／policy／source／訳文の局所変更を履歴付きで扱い、stale patchを拒否する。取得・補正を不要に再実行しない。renderはLLMを呼ばない。 PDF原文修正後のpartial再開・明示correction変更は実装方針7.1に従い、旧修正版を保持して新候補を明示採用でき、採用待ち・新旧進捗・中断復旧を検証する。
 7. 指定範囲の処理到達・機械検査と内容品質の確認範囲を分けて報告し、部分出力や要確認を隠さない。
 8. GitHub Actionsに下記のoffline正式チェック・build／導入検証（Python: Ruff／ty／pytest、Node: Biome／oxlint／oxlint-tsgolint／Vitest）を設定し、対応するローカル正式チェック・build／導入検証を完了する。lint警告は0件とする。remote CIの実行・成功確認・実行ref／run URLの記録は今回および後続Work Itemの受け入れ条件ではなく、未公開／未実行だけでは未完了としない。CI workflow・smoke検査は維持する。
 9. 下記の正式チェックと、実行時に別途承認された小範囲実LLM検証（OpenAIのChatGPT subscription OAuthを含む）を完了し、条件・観測・限界を記録する。有料検証が未承認／未実行なら、その受け入れ条件を未完了と報告する。

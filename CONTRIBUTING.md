@@ -1,12 +1,12 @@
 # 開発ガイド
 
-対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13の安全Markdown・対応表・QA・summaryとoffline render/status、Issue #14のPDF／EPUB新規run接続、Issue #15のresume／障害復旧です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13の安全Markdown・対応表・QA・summaryとoffline render/status、Issue #14のPDF／EPUB新規run接続、Issue #15のresume／障害復旧、Issue #16の基点付きrevise・PDF補正候補の明示採用です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
 
 ## 構成・環境
 
-- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）・原文組立adapter（`pdf_source.py`）、共通unit生成・inline保護・workflow分割（`units.py`）、固定context／glossary準備と根拠・実行記録（`preparation.py`）、翻訳chunk・検証・部分採用と再利用（`translation.py`）、原文snapshot、workspace OS lock、JSONL codec。
+- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）・原文組立adapter（`pdf_source.py`）、共通unit生成・inline保護・workflow分割（`units.py`）、固定context／glossary準備と根拠・実行記録（`preparation.py`）、翻訳chunk・検証・部分採用と再利用（`translation.py`）、原文snapshot、基点付きJSON修正と候補採用（`revise.py`）、workspace OS lock、JSONL codec。
 - `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証／generation helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`、独立推論のpreflight／stream接続（`generation.ts`）。`ai/tests/`の`.mjs`は公開APIとcompile済みhelperを使うテスト専用processです。
-- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。`tests/test_preparation.py`は保存原文→実helper／faux→固定準備artifactの公開prepare/loadを検査します。`tests/test_translation.py`は保存原文／固定準備→実helper／faux→翻訳の公開translate/loadを検査します。`tests/test_render.py`は正本→Markdown／対応表／QAと実CLI render/statusを検査します。`tests/test_run.py`はPDF／EPUBの公開CLIからworkspace・出力・statusまでを検査します。新規`run`と`resume`は実装済みで、`revise`／`review`は未実装です。
+- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。`tests/test_preparation.py`は保存原文→実helper／faux→固定準備artifactの公開prepare/loadを検査します。`tests/test_translation.py`は保存原文／固定準備→実helper／faux→翻訳の公開translate/loadを検査します。`tests/test_render.py`は正本→Markdown／対応表／QAと実CLI render/statusを検査します。`tests/test_run.py`はPDF／EPUBの公開CLIからworkspace・出力・statusまでを検査します。新規`run`／`resume`／`revise`は実装済みで、`review`は未実装です。`tests/test_revise.py`はsource全置換・訳文patchとpolicy改版、`tests/test_pdf_candidate_acceptance.py`は実CLIから候補比較・採用・後続更新を検査します。
 - `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、および別venvにinstallしたwheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
 
 実動基準：macOS 26.7.1 arm64、Python 3.14.9、Node 24.21.0、pnpm 12.10.1、npm 11.19.0。CIはGitHub-hosted macos-15 ARM64、Python 3.14／Node 24です。別OSやmacOSの最低versionは未保証です。
@@ -221,6 +221,48 @@ PY_RUN
 ```
 
 最初のrunはstderrへprepare×2／translation×1の送信前通知、stdoutへsummaryを表示します。`artifacts`から日本語側の`訳:Original`とinline保持、英語原文、source map、QA／usageを確認できます。PDFのsynthetic直接確認は`.venv/bin/pytest -s tests/test_run.py -k 'owns_requested or partial_pdf or without_pages'`で同じ公開CLIを使い、置き換えるのはDocling外部APIとfaux providerだけです。fixtureの取得成功は実PDFの完全抽出や実LLM意味品質・viewer表示の保証ではありません。汎用resume／revise／review・remote CIの実行はこのIssueでは行いません。
+
+## 基点付き修正・PDF補正候補採用の検証境界
+
+Issue #16は公開`revise`／`resume`／`status`／`render`→workspace参照・保存hash・出力と、補正回答→接続済みsourceの既存seamを使います。新しいコマンド・汎用merge基盤は追加しません。契約は[artifact契約](docs/reference/artifacts.md#基点付き修正pdf補正候補採用issue-16)、利用者操作は[README](README.md#原文訳文を修正する推論なし)を参照してください。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/pytest tests/test_cli.py tests/test_revise.py tests/test_run.py tests/test_pdf_candidate_acceptance.py
+# 変更境界の確認後は上記「正式チェック」の全pytest・Ruff・tyも実行
+```
+
+`tests/test_run.py`／`test_pdf_candidate_acceptance.py`は既存の人工PDF draft／PNG・Docling公開converter／page backend境界と、実Node helper／公開faux providerを再利用します。内部workflow／validatorのmockを増やさず、送信request・採用参照・旧hash・成果物を確認します。外部process故障注入は既存`tests/fixtures/resume_process.py`のatomic replace境界を使います。`ai/tests/run-process.mjs`を変更した場合は既存のNode format／lint／testも実行し、helper source変更時だけ明示buildを行います。
+
+- 完了修正後の入力不変／glossary・文体改版、partialの不足ページだけの補正、補正provider／model／thinking明示変更と不要な取得なしを確認します。
+- 候補待ちで下流requestが0件、H/B/Cと新旧scope分離、旧参照／hash保持、IDずれ・段落接続／分割／統合・削除／並替え・table／list／caption／図所属／参照変更で訂正の自動転写なしを確認します。
+- Cそのまま／編集Kのオフライン採用、複数revision後の機械基点継承、stale source／candidate・別入力世代・不正構造／ref／hashの拒否を検査します。候補公開前／採用参照切替前後のSIGINT／SIGKILL相当中断、未確定非採用・再送なし・採用済み復帰・排他も検査します。
+- 採用後の旧訳／手修正訳は実request全体一致だけで再利用し、code-only無再送と不一致の再翻訳、QA／出力更新、旧byte列hashの互換読込み、EPUB回帰を確認します。
+
+直接の人工入力確認には、既存「新規runの検証境界」の`RUN_FIXTURE/new`を作成後、次の訳文patchを使えます。実provider・実認証・model・既存書籍は不要です。
+
+```sh
+.venv/bin/python - <<'PY'
+import json, os
+from pathlib import Path
+root = Path(os.environ['RUN_FIXTURE'])
+workspace = root / 'new'
+source = json.loads((workspace / 'source-snapshot.json').read_bytes())['sha256']
+translation = json.loads((workspace / 'translation-snapshot.json').read_bytes())['sha256']
+snapshot = json.loads((workspace / f'snapshots/translation/{translation}.json').read_bytes())
+item = snapshot['chunks'][0]['answer']['translations'][0]
+item['text'] = item['text'].replace('Original', '手動確認')
+(root / 'patch.json').write_text(json.dumps({
+    'schema_version': 1, 'base_source_sha256': source,
+    'base_translation_sha256': translation, 'translations': [item]}))
+PY
+PATH='' "$PWD/.venv/bin/doc-translate" revise "$RUN_FIXTURE/new" \
+  --translations "$RUN_FIXTURE/patch.json" --reason '人工訳文patchの確認'
+PATH='' "$PWD/.venv/bin/doc-translate" render "$RUN_FIXTURE/new"
+PATH='' "$PWD/.venv/bin/doc-translate" status "$RUN_FIXTURE/new"
+```
+
+PDF候補も同じ公開CLIを通す直接入口は`.venv/bin/pytest -s tests/test_run.py -k 'candidate_offline_adoption or revised_partial_pdf'`です。旧訂正版Hの保持、新候補Cの雛形コピーと任意のK編集、Nodeなしの明示採用→resume、元hash不変を検査します。検査対象は機械的な構造・scope・保存・再利用契約であり、意味的な訂正の完全保持・実LLM／Docling品質・viewer表示・remote CI成功ではありません。関連検査の成功を全体受入れや実provider検証の完了としません。
 
 ## wheelの明示buildと導入検査
 

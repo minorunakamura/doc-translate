@@ -790,3 +790,85 @@ def test_translation_revalidates_orphan_runs_before_reusing(
     digest = translate(tmp_path, workspace)
     assert load_translation(workspace, digest).processing.status == "completed"
     assert len(requests(tmp_path)) == len(sent) + 1
+
+
+@pytest.mark.parametrize(
+    "corrupt_directory",
+    ["snapshots/translation", "translations/chunks", "attempts/translation"],
+)
+def test_manual_history_load_verifies_each_snapshot_once_per_call(
+    tmp_path, monkeypatch, capsys, corrupt_directory
+):
+    from collections import Counter
+
+    from doc_translate.cli import main
+
+    workspace, candidates = source(tmp_path)
+    original = load_source_snapshot(workspace)
+    original.blocks.append(
+        original.blocks[0].model_copy(
+            update={"block_id": "second", "text": "Another paragraph."}
+        )
+    )
+    save_source_snapshot(workspace, original)
+    prepare(tmp_path, workspace, candidates)
+    translate(tmp_path, workspace, max_source_chars=60)
+    loaded = load_translation(workspace)
+    assert len(loaded.chunks) == 2
+    historical_digest = {
+        "snapshots/translation": json.loads(
+            (workspace / "translation-snapshot.json").read_bytes()
+        )["sha256"],
+        "translations/chunks": loaded.chunks[0].artifact_sha256,
+        "attempts/translation": loaded.runs[0],
+    }[corrupt_directory]
+    historical = workspace / corrupt_directory / f"{historical_digest}.json"
+    for revision in range(5):
+        changes = [item.model_dump(mode="json") for item in loaded.translations]
+        for item in changes:
+            item["text"] = f"修正{revision} " + item["text"]
+        patch = tmp_path / "patch.json"
+        patch.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "base_source_sha256": loaded.source_snapshot_sha256,
+                    "base_translation_sha256": json.loads(
+                        (workspace / "translation-snapshot.json").read_bytes()
+                    )["sha256"],
+                    "translations": changes,
+                }
+            )
+        )
+        main(
+            [
+                "revise",
+                str(workspace),
+                "--translations",
+                str(patch),
+                "--reason",
+                "Compared",
+            ]
+        )
+        capsys.readouterr()
+        loaded = load_translation(workspace)
+
+    reads = Counter()
+    read_bytes = Path.read_bytes
+
+    def observe_read(path):
+        if path.parent == workspace / "snapshots/translation":
+            reads[path] += 1
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", observe_read)
+    assert load_translation(workspace) == loaded
+    assert len(reads) == 6
+    assert set(reads.values()) == {1}
+    reads.clear()
+    assert load_translation(workspace) == loaded
+    assert len(reads) == 6
+    assert set(reads.values()) == {1}
+    historical.write_bytes(historical.read_bytes() + b" ")
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        load_translation(workspace)

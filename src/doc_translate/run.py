@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import shlex
 import signal
 import threading
 from collections.abc import Generator, Sequence
@@ -25,13 +26,18 @@ from doc_translate.snapshot import (
     Contract,
     MachineCheck,
     PDFLocation,
+    PDFSourceInputs,
     Processing,
+    SnapshotReference,
+    SourceCandidate,
     SourceDocument,
     SourceSnapshot,
     Uncertainty,
     _atomic_write,
     load_source_snapshot,
     save_source_snapshot,
+    source_snapshot_sha256,
+    store_source_snapshot,
 )
 from doc_translate.workspace import _workflow_lock
 
@@ -160,6 +166,7 @@ def resume_document(
     translation: GenerationConfig | Selection | None = None,
     correction: GenerationConfig | Selection | None = None,
     shared: Selection | None = None,
+    policy: StylePolicy | None = None,
     artifacts_path: Path | None = None,
     user_terms: dict[str, str] | None = None,
     process_command: Sequence[str] | None = None,
@@ -179,6 +186,11 @@ def resume_document(
         _original(workspace, manifest)
         # Validate old adopted references before any possible paid request or replacement.
         workspace_status(workspace)
+        if (workspace / "source-snapshot.json").exists() and load_source_snapshot(
+            workspace
+        ).previous_snapshot_sha256 is not None:
+            source_revision_base(workspace, manifest.document)
+        load_source_candidate(workspace, manifest)
         if (workspace / "preparation-snapshot.json").exists():
             load_preparation(workspace)
         if (workspace / "translation-snapshot.json").exists():
@@ -206,6 +218,8 @@ def resume_document(
             manifest.artifacts_path = str(artifacts_path.resolve())
         if user_terms is not None:
             manifest.user_terms = user_terms
+        if policy is not None:
+            manifest.policy = StylePolicy.model_validate(policy.model_dump())
         manifest.error = "Run in progress; resume to finish saved inputs"
         manifest.error_code = None
         _save_run(workspace, manifest)
@@ -224,10 +238,325 @@ def _original(workspace: Path, manifest: RunManifest) -> bytes:
     return data
 
 
+def _source_payload(source):
+    return source.model_dump(
+        mode="json",
+        exclude={
+            "snapshot_id",
+            "previous_snapshot_sha256",
+            "change_reason",
+            "machine_base_sha256",
+            "adopted_candidate_sha256",
+            "machine_inputs",
+        },
+    )
+
+
+def _source_content(source):
+    data = _source_payload(source)
+    for block in data["blocks"]:
+        block["structure"].pop("fragments", None)
+    data["checks"] = [
+        check for check in data["checks"] if check["name"] != "pdf_chunk_ownership"
+    ]
+    return data
+
+
+def _machine_source(workspace, source):
+    """Prove the baseline from immutable chunks and its saved scope, never run progress."""
+    from types import SimpleNamespace
+
+    from doc_translate.pdf_correction import _load_pdf_correction
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    drafts = {}
+    inputs = source.machine_inputs
+    if inputs is None:
+        scopes = [
+            json.loads(check.details)
+            for check in source.checks
+            if check.name == "pdf_run_scope"
+        ]
+        chunks = list(
+            dict.fromkeys(
+                check.details.split(";", 1)[0].removeprefix("chunk=")
+                for check in source.checks
+                if check.name == "pdf_chunk_ownership"
+            )
+        )
+        if len(scopes) != 1 or not chunks:
+            raise ValueError(
+                "Source revision baseline has no provable immutable PDF scope"
+            )
+        records = [_load_pdf_correction(workspace, digest, drafts) for digest in chunks]
+        configs = [
+            json.loads((workspace / chunk.run.artifact).read_bytes())
+            for chunk in records
+        ]
+        inputs = PDFSourceInputs(
+            draft_sha256=records[0].draft_sha256,
+            chunk_sha256s=chunks,
+            correction=configs[0]["config"],
+            correction_policy=configs[0]["request"]["policy"],
+            **scopes[0],
+        )
+    records = [
+        _load_pdf_correction(workspace, digest, drafts)
+        for digest in inputs.chunk_sha256s
+    ]
+    pages = [page for chunk in records for page in chunk.owned_pages]
+    if (
+        len(pages) != len(set(pages))
+        or sorted(pages) != inputs.corrected_pages
+        or set(inputs.owned_pages)
+        != set(pages + inputs.failed_pages + inputs.not_processed_pages)
+        or len(inputs.owned_pages)
+        != len(pages + inputs.failed_pages + inputs.not_processed_pages)
+        or not set(inputs.reference_pages).isdisjoint(inputs.owned_pages)
+    ):
+        raise ValueError("Machine source scope/coverage mismatch")
+    for chunk in records:
+        record = json.loads((workspace / chunk.run.artifact).read_bytes())
+        if (
+            chunk.draft_sha256 != inputs.draft_sha256
+            or record["config"] != inputs.correction.model_dump(mode="json")
+            or record["request"]["policy"] != inputs.correction_policy
+            or not set(chunk.reference_pages)
+            <= set(inputs.owned_pages + inputs.reference_pages)
+        ):
+            raise ValueError("Machine source correction inputs mismatch")
+    expected = assemble_pdf_source(
+        workspace=workspace, chunk_sha256s=inputs.chunk_sha256s, snapshot_id="source-1"
+    )
+    expected = _pdf_scope(
+        expected, SimpleNamespace(**inputs.model_dump(), document=source.document)
+    )
+    expected_payload = _source_payload(expected)
+    saved_payload = _source_payload(source)
+    if source.machine_inputs is None:
+        # Legacy ownership checks named fragments before page-boundary joining.
+        aliases = {
+            fragment["id_map"][fragment["block"]["block_id"]]: block["block_id"]
+            for block in expected_payload["blocks"]
+            for fragment in block["structure"]["fragments"]
+        }
+        for check in saved_payload["checks"]:
+            if check["name"] == "pdf_chunk_ownership":
+                check["target_ids"] = list(
+                    dict.fromkeys(aliases.get(key, key) for key in check["target_ids"])
+                )
+    if expected_payload != saved_payload:
+        raise ValueError(
+            "Source revision baseline differs from immutable acquisition inputs"
+        )
+    return inputs
+
+
+def source_revision_base(workspace, document):
+    """Validate the complete revision chain and the separately incorporated machine base."""
+    head = load_source_snapshot(workspace)
+    chain = []
+    seen = set()
+    digest = source_snapshot_sha256(workspace)
+    current = head
+    while True:
+        if digest in seen:
+            raise ValueError("Cyclic source revision chain")
+        seen.add(digest)
+        if current.document != document:
+            raise ValueError("Source revision document mismatch")
+        chain.append((digest, current))
+        if current.previous_snapshot_sha256 is None:
+            break
+        digest = current.previous_snapshot_sha256
+        current = load_source_snapshot(workspace, digest)
+    base_digest = head.machine_base_sha256 or chain[-1][0]
+    base = load_source_snapshot(workspace, base_digest)
+    if base.document != document or base.previous_snapshot_sha256 is not None:
+        raise ValueError("Invalid machine source baseline")
+    if document.format == "pdf":
+        _machine_source(workspace, base)
+    else:
+        expected = extract_epub_source(
+            read_epub(workspace / document.artifact),
+            document=document,
+            snapshot_id="source-1",
+        )
+        if _source_content(base) != _source_content(expected):
+            raise ValueError("Source revision baseline differs from saved original")
+    # Every ordinary edit must inherit its parent's machine base; only verified adoption advances it.
+    for index, (item_digest, item) in enumerate(chain[:-1]):
+        parent_digest, parent = chain[index + 1]
+        parent_base = parent.machine_base_sha256 or chain[-1][0]
+        item_base = item.machine_base_sha256 or chain[-1][0]
+        if item_base != parent_base:
+            from doc_translate.translation import _read
+
+            if item.adopted_candidate_sha256 is None:
+                raise ValueError("Machine base changed without candidate adoption")
+            candidate = SourceCandidate.model_validate(
+                _read(workspace, "candidates/source", item.adopted_candidate_sha256)
+            )
+            if (
+                candidate.head_sha256 != parent_digest
+                or candidate.base_sha256 != parent_base
+                or candidate.source_sha256 != item_base
+                or candidate.document != document
+            ):
+                raise ValueError("Source adoption provenance mismatch")
+        if item_digest == item_base:
+            raise ValueError("Cyclic source machine baseline")
+    return head, base_digest, base
+
+
+def _saved_source_revision(workspace, manifest) -> SourceSnapshot | None:
+    if not (workspace / "source-snapshot.json").exists():
+        return None
+    if load_source_snapshot(workspace).previous_snapshot_sha256 is None:
+        return None
+    adopted, _, _ = source_revision_base(workspace, manifest.document)
+    return adopted
+
+
+def load_source_candidate(workspace, manifest=None):
+    """Verify a published candidate and its immutable input evidence before any send."""
+    from doc_translate.translation import _read
+
+    path = workspace / "source-candidate.json"
+    if not path.exists():
+        return None
+    digest = SnapshotReference.model_validate_json(path.read_bytes()).sha256
+    candidate = SourceCandidate.model_validate(
+        _read(workspace, "candidates/source", digest)
+    )
+    source = load_source_snapshot(workspace, candidate.source_sha256)
+    base = load_source_snapshot(workspace, candidate.base_sha256)
+    head = load_source_snapshot(workspace, candidate.head_sha256)
+    if any(item.document != candidate.document for item in (source, base, head)):
+        raise ValueError("Candidate document mismatch")
+    if _machine_source(workspace, source) != candidate.inputs:
+        raise ValueError("Candidate machine inputs mismatch")
+    _machine_source(workspace, base)
+    if (
+        candidate.inputs.generation_sha256(candidate.document)
+        != candidate.generation_sha256
+    ):
+        raise ValueError("Candidate input generation mismatch")
+    if manifest is not None and manifest.document != candidate.document:
+        raise ValueError("Candidate original mismatch")
+    return digest, candidate
+
+
+def candidate_is_adopted(workspace, digest):
+    current = load_source_snapshot(workspace)
+    return current.adopted_candidate_sha256 == digest
+
+
+def _candidate_current_generation(workspace, manifest):
+    return PDFSourceInputs(
+        draft_sha256=SnapshotReference.model_validate_json(
+            (workspace / "pdf-draft.json").read_bytes()
+        ).sha256,
+        chunk_sha256s=manifest.chunk_sha256s,
+        correction=manifest.correction,
+        correction_policy=CORRECTION_POLICY,
+        owned_pages=manifest.owned_pages,
+        reference_pages=manifest.reference_pages,
+        corrected_pages=manifest.corrected_pages,
+        failed_pages=manifest.failed_pages,
+        not_processed_pages=manifest.not_processed_pages,
+    )
+
+
+def _publish_source_candidate(workspace, manifest, head, base_digest, source):
+    from doc_translate.translation import _store
+
+    source_digest = store_source_snapshot(workspace, source)
+    candidate = SourceCandidate(
+        document=manifest.document,
+        head_sha256=source_snapshot_sha256(workspace),
+        base_sha256=base_digest,
+        source_sha256=source_digest,
+        generation_sha256=source.machine_inputs.generation_sha256(manifest.document),
+        inputs=source.machine_inputs,
+    )
+    digest = _store(workspace, "candidates/source", candidate)
+    envelope = {
+        "schema_version": 1,
+        "base_source_sha256": candidate.head_sha256,
+        "candidate_sha256": digest,
+        "source": source.model_dump(mode="json"),
+    }
+    template = workspace / "candidates/source" / f"{digest}.envelope.json"
+    if not template.exists():
+        _atomic_write(
+            template, json.dumps(envelope, ensure_ascii=False, indent=2).encode()
+        )
+    _atomic_write(
+        workspace / "source-candidate.json",
+        SnapshotReference(sha256=digest).model_dump_json().encode(),
+    )
+
+
+def source_adoption_status(workspace, manifest):
+    saved = load_source_candidate(workspace, manifest)
+    if saved is None:
+        return None
+    digest, candidate = saved
+    if candidate_is_adopted(workspace, digest):
+        return None
+    _head, base_digest, base = source_revision_base(workspace, manifest.document)
+    old = _machine_source(workspace, base)
+    old_pages = set(old.corrected_pages)
+    new_pages = set(candidate.inputs.corrected_pages)
+
+    def reference(value):
+        return {"sha256": value, "path": f"snapshots/source/{value}.json"}
+
+    return {
+        "status": "pending",
+        "candidate_sha256": digest,
+        "H": reference(source_snapshot_sha256(workspace)),
+        "B": reference(base_digest),
+        "C": reference(candidate.source_sha256),
+        "old_inputs": old.model_dump(mode="json"),
+        "new_inputs": candidate.inputs.model_dump(mode="json"),
+        "page_changes": {
+            "added": sorted(new_pages - old_pages),
+            "removed": sorted(old_pages - new_pages),
+            "reassembled": sorted(new_pages & old_pages),
+            "note": "Compare full snapshots and immutable page evidence; block/unit IDs are not content correspondence.",
+        },
+        "envelope": f"candidates/source/{digest}.envelope.json",
+        "next_operation": shlex.join(
+            [
+                "doc-translate",
+                "revise",
+                str(workspace.resolve()),
+                "--source",
+                str(
+                    (workspace / f"candidates/source/{digest}.envelope.json").resolve()
+                ),
+                "--reason",
+                "TEXT",
+            ]
+        )
+        + " && "
+        + shlex.join(["doc-translate", "resume", str(workspace.resolve())]),
+        "stale": candidate.head_sha256 != source_snapshot_sha256(workspace)
+        or candidate.base_sha256 != base_digest
+        or candidate.generation_sha256
+        != _candidate_current_generation(workspace, manifest).generation_sha256(
+            manifest.document
+        ),
+    }
+
+
 def _continue_run(workspace, manifest, process_command, before_send, cancelled) -> dict:
     from doc_translate.render import render_document
     from doc_translate.translation import load_translation, translate_document
 
+    revision = _saved_source_revision(workspace, manifest)
     if manifest.document.format == "pdf":
         try:
             source_snapshot = _pdf_source(
@@ -244,7 +573,13 @@ def _continue_run(workspace, manifest, process_command, before_send, cancelled) 
         except RuntimeError:
             manifest.error = "PDF acquisition/correction failed; inspect saved original, draft and attempts"
             _save_run(workspace, manifest)
+            if (workspace / "source-snapshot.json").exists():
+                from doc_translate.render import workspace_status
+
+                return workspace_status(workspace)
             return failed_run_summary(workspace, manifest)
+    elif revision is not None:
+        source_snapshot = revision
     else:
         source_snapshot = extract_epub_source(
             read_epub(workspace / manifest.document.artifact),
@@ -255,9 +590,27 @@ def _continue_run(workspace, manifest, process_command, before_send, cancelled) 
         previous = load_source_snapshot(workspace)
         if previous.document != manifest.document:
             raise ValueError("Run source/document mismatch")
-        if manifest.document.format == "epub" and previous != source_snapshot:
+        if (
+            revision is None
+            and manifest.document.format == "epub"
+            and previous != source_snapshot
+        ):
             raise ValueError("EPUB source differs from saved original/extractor inputs")
-    save_source_snapshot(workspace, source_snapshot)
+    if revision is not None and manifest.document.format == "pdf":
+        _, base_digest, base = source_revision_base(workspace, manifest.document)
+        if _source_content(source_snapshot) != _source_content(base):
+            _publish_source_candidate(
+                workspace, manifest, revision, base_digest, source_snapshot
+            )
+            manifest.error = "PDF machine source changed; explicit source candidate adoption required"
+            _save_run(workspace, manifest)
+            from doc_translate.render import workspace_status
+
+            return workspace_status(workspace)
+        # The current verified machine content supersedes any obsolete pending pointer.
+        (workspace / "source-candidate.json").unlink(missing_ok=True)
+    else:
+        save_source_snapshot(workspace, source_snapshot)
     stage = "prepare"
     try:
         if cancelled.is_set():
@@ -470,6 +823,12 @@ def _pdf_source(
         chunk_sha256s=manifest.chunk_sha256s,
         snapshot_id="source-1",
     )
+    source = _pdf_scope(source, manifest)
+    source.machine_inputs = _candidate_current_generation(workspace, manifest)
+    return source
+
+
+def _pdf_scope(source, manifest):
     source.checks.append(
         MachineCheck(
             name="pdf_run_scope",

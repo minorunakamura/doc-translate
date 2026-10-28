@@ -26,6 +26,26 @@ def test_cli_help_is_available_without_pdf_or_node(tmp_path, command):
     assert "JSON" in result.stdout
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("revise", ["Offline", "candidate_sha256", "CAS", "inference", "exit 2"]),
+        ("resume", ["candidate", "before preparation/translation", "exits 1"]),
+        ("render", ["adopted source H", "pending adoption", "exits 1"]),
+        ("status", ["adopted source H", "pending candidate C", "exits 0"]),
+    ],
+)
+def test_cli_revision_and_candidate_help_is_available_offline(
+    tmp_path, command, expected
+):
+    result = cli(command, "--help", env={**os.environ, "PATH": str(tmp_path)})
+    assert result.returncode == 0
+    output = " ".join(result.stdout.split())
+    assert all(text in output for text in expected)
+    if command == "resume":
+        assert "validated data, never code" in output
+
+
 def test_cli_workflow_does_not_pretend_to_succeed(tmp_path):
     workspace = tmp_path / "workspace"
     result = cli("run", "artificial.epub", "--workspace", str(workspace))
