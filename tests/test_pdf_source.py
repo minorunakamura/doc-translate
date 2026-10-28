@@ -85,6 +85,10 @@ def test_body_continuation_skips_but_preserves_footnote_and_round_trips(
     assert len(structure["page_images"]) == 2
     assert loaded.document == draft[2].document
     assert loaded.uncertainties == []
+    assert [check.target_ids for check in loaded.checks] == [
+        ["pdf-1", "pdf-2"],
+        ["pdf-1"],
+    ]
     assert loaded.content_reviews == []
 
 

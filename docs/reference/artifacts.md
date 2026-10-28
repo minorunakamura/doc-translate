@@ -1,6 +1,6 @@
 # 初期artifact／JSONL契約（schema version 1）
 
-Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13のoffline render/status・Markdown／対応表／QA、Issue #14の新規run接続を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。新規runの原資料コピー・取得・翻訳・出力CLIは実装済みです。再開・修正JSON・reviewの公開CLIは後続Issueです。現時点で架空の修正envelopeは定義しません。認証とNode generation operationは以下に実装済みの語彙を記述します。
+Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13のoffline render/status・Markdown／対応表／QA、Issue #14の新規run接続、Issue #15のresume／復旧、Issue #16の基点付き修正・PDF補正候補の明示採用を記述します。[基本設計](../design/doc-translate.md)の全成果物を実装済みとする文書ではありません。新規runの原資料コピー・取得・翻訳・出力CLIは実装済みです。resume／reviseは実装済み、reviewは未実装です。修正envelopeと候補採用は以下の公開契約を使います。認証とNode generation operationは以下に実装済みの語彙を記述します。
 
 ## 新規run（Issue #14）
 
@@ -18,7 +18,7 @@ WORKSPACE/
   ...                             # 既存のdraft／attempt／snapshot／render契約
 ```
 
-`run.json`は`schema_version: 1/document/source_name/owned_pages/reference_pages/correction/translation/policy/user_terms/corrected_pages/failed_pages/not_processed_pages/chunk_sha256s/artifacts_path/error/error_code`です。`document`は`SourceDocument`、段階設定は既存`GenerationConfig`、`policy`は既存`StylePolicy`です。EPUBの`owned_pages`／`correction`はnull、ページ集合は空です。PDF全体を指定したときの`owned_pages`は取得前null、取得後に実ページ番号を固定します。明示所有範囲は取得前から保持します。参照指定と補正済み／失敗／未処理ページ、採用chunk digestは区別し、進行に応じatomicに更新します。credential・raw環境・秘密値・raw例外は保存しません。`error_code`は観測できた既存推論分類で、分類未観測時はnull、`error`は非秘密の工程失敗案内です。これだけでresume／途中artifact復旧を実装済みとはしません。
+`run.json`は`schema_version: 1/document/source_name/owned_pages/reference_pages/correction/translation/policy/user_terms/corrected_pages/failed_pages/not_processed_pages/chunk_sha256s/artifacts_path/error/error_code`です。`document`は`SourceDocument`、段階設定は既存`GenerationConfig`、`policy`は既存`StylePolicy`です。EPUBの`owned_pages`／`correction`はnull、ページ集合は空です。PDF全体を指定したときの`owned_pages`は取得前null、取得後に実ページ番号を固定します。明示所有範囲は取得前から保持します。参照指定と補正済み／失敗／未処理ページ、採用chunk digestは区別し、進行に応じatomicに更新します。credential・raw環境・秘密値・raw例外は保存しません。`error_code`は観測できた既存推論分類で、分類未観測時はnull、`error`は非秘密の工程失敗案内です。resume／途中artifact復旧の検証規則は次節を参照してください。
 
 CLIの送信前表示は新しいpreflightを重ねず、既存推論の**preflight→generate境界**を使います。`generate`と各stage公開APIに任意の`before_send: BeforeSend | None = None`を追加し、`BeforeSend = Callable[[GenerationConfig, GenerationInput, Preflight], None]`です。検証済みpreflightと画像を確認した後、実際のgenerate recordを送る直前に毎回（retryを含む）呼びます。CLIはstderrへ入力名／hash、意図範囲、実requestの送信範囲・内容、段階provider／model／thinking、実`Preflight.auth.source/type`をflushします。原本fileや画像は準備／翻訳へ送らず、provider／model／認証fallbackやproductionのfake環境flagはありません。`cli.main(argv=None, *, process_command=None)`の明示process指定は既存adapterと同じ外部processテストseamだけです。productionは検証済み導入済みruntimeを使います。
 
@@ -34,22 +34,64 @@ CLIの送信前表示は新しいpreflightを重ねず、既存推論の**prefli
 
 ## 再開（Issue #15）
 
-公開CLIは`doc-translate resume DIR`、Python入口は`doc_translate.run.resume_document(*, workspace, translation=None, correction=None, shared=None, artifacts_path=None, user_terms=None, process_command=None, before_send=None)`です。保存済み`RunManifest`を既定にし、CLIの明示stage設定 > 明示共通設定 > 保存値の順で解決します。resumeにPI環境の設定fallback・新たなページ許可optionはありません。明示変更は`run.json`へatomic保存し、旧不変artifactを保持します。
+公開CLIは`doc-translate resume DIR`、Python入口は`doc_translate.run.resume_document(*, workspace, translation=None, correction=None, shared=None, policy=None, artifacts_path=None, user_terms=None, process_command=None, before_send=None)`です。保存済み`RunManifest`を既定にし、CLIの明示stage設定 > 明示共通設定 > 保存値の順で解決します。resumeにPI環境の設定fallback・新たなページ許可optionはありません。明示変更は`run.json`へatomic保存し、旧不変artifactを保持します。
 
 - `artifacts_path`はPDF再取得時だけ必要な非秘密local path（旧manifestでは省略／null可）。元INPUT名は表示・book名用で、再開はworkspace内の原本hash／pathを検査します。
 - EPUBは保存原本と現行reader／extractorの入力から原文を再構築し、採用済みsourceとの対応を検査します。PDF依存は読み込みません。
 - PDFは原本・raw・全PNGを`load_pdf_draft`で検査し、取得version／設定と必須成功check・画像被覆を比較します。単にdraft pointerがあるだけでは取得完了としません。必要なら保存／明示model pathで再取得します。検証済みchunkの所有を照合し、進捗manifestの直前に確定したchunkも回収して不足所有だけを補正します。部分source pointerの存在を全所有完了とみなしません。
 - 旧採用source／preparation／translation／render参照とattempt hashを送信前に検査します。hash不一致は停止し、破損artifactを上書き・黙って破棄しません。
 - 補正・準備・翻訳は実request／config／画像metadata・terminal／helper終了と回答domain検証を再度照合し、確定した受理可能結果だけを再利用します。回答保存後・採用pointer前の中断でも再送せず復帰できます。翻訳の上限縮小／分割結果も元入力に照合して再利用します。
-- glossary変更は準備の整理と影響する翻訳を更新し、収集・PDF取得／補正を無効化しません。model等の明示変更は該当stageの実入力として比較します。
+- glossary／文体policy変更は固定準備入力と影響する翻訳を更新し、PDF取得／補正を無効化しません。`resume --policy FILE`は`StylePolicy(version, text)`の検証済みデータであり、コードとして実行しません。model等の明示変更は該当stageの実入力として比較します。原文revisionがあっても不足ページ・補正設定変更を検査し、取得入力が同じなら補正設定変更だけでDoclingを再実行しません。新機械生成内容が取り込み済み基点と異なるときの停止・採用は次節によります。
 - `workspace_lock`の公開手動取得は非再入のままです。内部のrun／resume所有権だけを同PID／threadのstageに限定して貸し、直接stage／renderや別process／threadは通常のflockで拒否します。crash／kill後はOS解放を利用します。
 - 一時fileは採用参照／回答として扱いません。送信後の応答損失を全て記録できる保証はなく、summaryの`usage.note`とusage artifactは常にusage不明・再送による重複課金の可能性を明示します。sourceが無い失敗summaryにも段階attempt件数・同じ注意を返します。
 
 全体のSIGINT／SIGTERM handlerは共有cancel eventを設定し、local／interstage中断後の新規paid requestを止めます。推論helperの既存30秒drainは変更しません。SIGKILLでOAuth refresh保存やexactly-once課金を保証しません。成功時はstaleなrun errorと失敗ページ状態を更新し、残る失敗／未処理は部分出力です。
 
+## 基点付き修正・PDF補正候補採用（Issue #16）
+
+公開CLIは`revise DIR --source FILE --reason TEXT`または`revise DIR --translations FILE --reason TEXT`です。Python入口は`doc_translate.revise.revise_document(*, workspace: Path, translations: Path | None = None, source: Path | None = None, reason: str) -> dict`です。片方だけを指定し、理由は空白だけでない文字列を要求します。workflow lock下で検証・不変保存・参照更新を行い、Node・認証・推論・PDF modelを使いません。PDF候補採用も保存draftのcore検証を使い、Docling変換を起動しません。
+
+| envelope | 必須field（いずれも`schema_version: 1`） | 検証と採用 |
+| --- | --- | --- |
+| `SourceReplacement` | `base_source_sha256`、`source: SourceSnapshot` | 現在採用sourceとのCAS、原本文書の一致、全snapshotのschema・unit・構造・根拠・assets・参照を検証して全置換 |
+| `TranslationPatch` | `base_source_sha256`、`base_translation_sha256`、空でない`translations: list[UnitTranslation]` | 両採用参照とのCAS、現在原文・準備・設定との対応、unit IDの既知／一意性、非空訳・保護markerを検証して指定unitのみ変更 |
+
+`SourceReplacement.candidate_sha256`は候補採用時だけ指定する任意の候補記録digestです。省略／nullの通常原文修正では現在版の機械基点・候補provenance・scopeを継承し、採用待ち候補を取り込んだ扱いにしません。理由と親はアプリが`change_reason`／`previous_snapshot_sha256`へ設定します。機械基点・provenanceとPDF工程scope（`processing`、`pdf_run_scope` check、correctionのuncertainty）は利用者の値ではなく検証済み機械版から設定します。利用者の完了自己申告で未処理／失敗を消しません。
+
+訳文patchは既存`UnitTranslation(unit_id, text, uncertainties)`を使います。変更chunkは`translations/chunks/<sha256>.json`に`request/config/answer/manual_revision`を保存し、`manual_revision`は`base_translation_sha256/base_chunk_index/reason`です。旧attempt／raw回答・旧chunk／snapshot・出力を保持して、`translation-snapshot.json`を最後に更新します。返却JSONはsource修正時`source_snapshot_sha256/reason/base_source_sha256`、訳文修正時`translation_snapshot_sha256/reason/base_translation_sha256`です。成功exit0、stale基点・不正入力exit2、保存等の実行失敗exit1。操作例・envelopeの作り方は[README](../../README.md#原文訳文を修正する推論なし)を参照してください。
+
+### 候補・実入力・採用の確定点
+
+`B`＝取り込み済み機械生成原文、`H`＝現在採用中の利用者修正版、`C`＝現在の補正成果から再組立した機械生成候補、`K`＝利用者が採用する全snapshotです。`C`と`B`の内容が同じならHを保持して続行し、履歴・基点metadataの差だけで採用待ちにしません。利用者修正があり内容が異なるときは、**自動併合せず候補を保存し、準備・翻訳の前で停止**します。IDはsnapshot内のidentityであり、同じ`pdf-N`／`unit-N`を内容対応とみなしません。部分候補も成功／失敗／未処理を保持し、成功chunkなしは工程失敗です。
+
+`PDFSourceInputs`は`draft_sha256/chunk_sha256s/correction/correction_policy/owned_pages/reference_pages/corrected_pages/failed_pages/not_processed_pages`を持ち、`correction`は既存`GenerationConfig`です。`generation_sha256(document)`はdocumentと、chunk digest・成功／失敗／未処理ページを除いた入力のsorted JSON SHA-256です。世代hashは入力設定・許可範囲を識別し、進捗も含む完全な`inputs`の一致検証を代替しません。
+
+`SourceCandidate`は`schema_version: 1/document/head_sha256/base_sha256/source_sha256/generation_sha256/inputs`です。`head_sha256`はH、`base_sha256`はB、`source_sha256`はCの**保存byte列hash**を指し、候補記録自身のhash（`candidate_sha256`）とは別です。`run.load_source_candidate(workspace, manifest=None)`は公開参照・不変記録・H/B/C・原本・実入力／世代・保存chunk／scopeを再検証します。
+
+```text
+WORKSPACE/
+  snapshots/source/<sha256>.json              # B/H/C/K、旧版も不変保存
+  candidates/source/<candidate_sha256>.json   # SourceCandidate
+  candidates/source/<candidate_sha256>.envelope.json  # Cをsourceに含む採用雛形
+  source-candidate.json                       # SnapshotReference、候補公開参照
+  source-snapshot.json                        # SnapshotReference、採用版のみ
+```
+
+雛形は`schema_version/base_source_sha256/candidate_sha256/source`です。利用者はコピーを編集してCのまま／訂正統合版Kを選択します。候補採用ではsourceのCASに加え、選択候補のH/B/C・原本・現在有効な世代と完全なscope／進捗を照合します。未知／古い候補、入力世代違い、hash不一致、不正構造は拒否します。Kの親はH、`machine_base_sha256`はC、`adopted_candidate_sha256`は候補記録hash、`machine_inputs`は検証済み候補入力です。以後の通常revisionもこの機械基点を継承します。
+
+候補保存は採用参照を変えません。候補・provenance・Kの不変artifact確定後、`source-snapshot.json`のatomic切替だけが採用commitです。候補公開参照との二ファイル同時成功を要求せず、切替後・run進捗更新前に中断しても採用source自身のprovenanceで判断します。候補公開前の中断は受理済みchunkを検証して再構成／公開し、保存途中は採用せず、受理済み補正を再送しません。旧snapshot／候補／理由／raw回答は削除しません。
+
+### 状態表示・後続更新
+
+`source_adoption`は`status: pending`と`candidate_sha256/H/B/C/old_inputs/new_inputs/page_changes/envelope/next_operation/stale`を表示します。H/B/Cは`sha256/path`、`page_changes`は`added/removed/reassembled/note`で、成功所有ページ集合の差と共通部分を示す概要です。意味差分やblock対応表ではなく、全snapshot・原本位置・不変chunkを照合します。`envelope`と各pathはworkspace相対、CLI引数はcurrent directory基準です。`next_operation`は絶対path付き`revise … --reason TEXT && … resume …`で、TEXTを実際の理由に置換します。
+
+採用待ちは全体`processing.status=partial`、resume／render exit1、検査成功のstatus exit0、入力不正exit2です。status／renderはHだけを使います。`scope.adopted_source`は採用sourceの`machine_inputs`（ない場合null）、`scope.run`は現在のRunManifestであり、新候補の補正成功を採用・翻訳完了にしません。`adopted_output_current`は保存出力のsource／translation hash一致と訳文非staleを表し、`render_current`は候補状態・scope・usage・処理状態を含むsummaryの鮮度です。内容品質の判定とは別です。
+
+通常reviseでHを再修正すると旧雛形はstaleになり、resumeが保存済みCを現在Hへ結び直して再公開します。補正実入力変更／partial候補の回復で新版ができた場合も旧候補は残したまま古い採用を拒否します。採用待ち中は準備・翻訳requestを送らず、同じ入力の再確認では成功済み補正を再送しません。採用後のresumeで準備・unit・訳文・QA／出力を更新し、旧訳／手修正訳は**実request全体一致**の場合だけ再利用します。codeだけの変更で本文requestが同じなら本文を再送せず、不一致や曖昧な分割／統合は必要範囲を再翻訳します。
+
 ## 原文snapshot
 
-公開Python APIは`doc_translate.snapshot.SourceSnapshot`と、`save_source_snapshot(workspace: Path, snapshot: SourceSnapshot) -> str`、`load_source_snapshot(workspace: Path, sha256: str | None = None) -> SourceSnapshot`です。返り値のdigestは保存byte列のSHA-256です。省略時は採用参照を読みます。明示digestなら旧版を読み込めます。
+公開Python APIは`doc_translate.snapshot.SourceSnapshot`と、`store_source_snapshot(workspace: Path, snapshot: SourceSnapshot) -> str`（不変保存のみ）、`save_source_snapshot(workspace: Path, snapshot: SourceSnapshot) -> str`（保存後に採用参照を切替）、`source_snapshot_sha256(workspace: Path) -> str`（採用参照のdigest取得）、`load_source_snapshot(workspace: Path, sha256: str | None = None) -> SourceSnapshot`です。保存の返り値は保存byte列のSHA-256です。loadでdigest省略時は採用参照を読み、明示時は旧版／未採用候補も読み込めます。
 
 すべてのmodelは余分なfieldと非有限数値を拒否します。位置unionは`format`をdiscriminatorとし、文書形式と一致させます。
 
@@ -59,6 +101,9 @@ CLIの送信前表示は新しいpreflightを重ねず、既存推論の**prefli
 | `snapshot_id` | 空でないsnapshot識別子。artifact hashとは別 |
 | `previous_snapshot_sha256` | 旧snapshotの64桁小文字hex、初版はnull。指定時は空でない`change_reason`必須 |
 | `change_reason` | 変更理由またはnull |
+| `machine_base_sha256` | 取り込み済み機械原文のdigest。revisionの親とは別。省略可 |
+| `adopted_candidate_sha256` | 明示採用した候補記録のdigest。通常revisionへ継承。省略可 |
+| `machine_inputs` | 検証済み`PDFSourceInputs`。scope／補正実入力・進捗のprovenance。省略可 |
 | `document` | `format: pdf | epub`、`sha256: 64桁小文字hex`、`artifact: 空でない参照文字列` |
 | `blocks` | 原文block配列。配列順が読み順。block IDはsnapshot内で一意 |
 | `uncertainties` | 理由・対象・位置・工程・原本欠損か処理問題かを分離して保持（既定空） |
@@ -68,7 +113,7 @@ CLIの送信前表示は新しいpreflightを重ねず、既存推論の**prefli
 
 blockは`block_id`／`kind`（非空）、`text`、1件以上の`locations`、`structure`（JSON object、既定空）を持ちます。`structure`は見出し／list階層、table cell／span、caption／脚注／注釈、assets、数式、inline等を保持するためのJSONです。共通model自体はkindごとの意味、参照先の存在、構造の整合性を検査しません。EPUB adapterが生成・検査する具体的な構造は下記「EPUB原文snapshot抽出」に記述します。構造objectを保存できたことを抽出・補正・coverage検査の成功にしません。
 
-`uncertainties`の要素は`reason`（非空）、`target_ids`（非空文字列の配列）、`locations`、`stage`（非空）、`origin: original | processing | undetermined`です。`checks`は`name`（非空）／`target_ids`／`passed`（bool）／`details`（既定空文字列）、`content_reviews`は`reviewer`／`method`／`details`（いずれも非空）と`target_ids`です。対象IDの意味検証・内容品質認定はまだ行いません。
+`uncertainties`の要素は`reason`（非空）、`target_ids`（非空文字列の配列）、`locations`、`stage`（非空）、`origin: original | processing | undetermined`です。`checks`は`name`（非空）／`target_ids`／`passed`（bool）／`details`（既定空文字列）、`content_reviews`は`reviewer`／`method`／`details`（いずれも非空）と`target_ids`です。共通modelだけでは対象IDの存在・意味を検査しません。reviseは対象参照も検証しますが、内容品質認定は行いません。
 
 ### PDF位置
 
@@ -103,20 +148,22 @@ WORKSPACE/
   snapshots/source/<sha256>.json  # 不変の原文snapshot
 ```
 
-保存はmodel再検証→UTF-8 JSON byte列のhash→OS lock取得→同filesystemの一時fileにwrite／flush／fsync→atomic replace／directory fsync→採用参照のatomic更新の順です。artifact確定後に参照を切り替え、旧版を削除しません。既存digestはhashとschemaを検査します。loadもhashとschemaを検査し、不一致を採用しません。原資料本体の取得・コピー・hash照合は本APIの責務ではありません。
+store／saveはOS lock取得下でmodel再検証→UTF-8 JSON byte列のhash→同filesystemの一時fileにwrite／flush／fsync→atomic replace／directory fsyncの順で不変保存します。saveだけが最後に採用参照をatomic更新します。artifact確定後に参照を切り替え、旧版を削除しません。既存digestはhashとschemaを検査します。loadもhashとschemaを検査し、不一致を採用しません。原資料本体の取得・コピー・hash照合は本APIの責務ではありません。
 
-`doc_translate.workspace.workspace_lock(Path)`は非blockingのPOSIX flockでwriter重複を拒否します（`WorkspaceLockedError`）。`save_source_snapshot`は自身でlockを取るため、その外側から同じlockを二重取得しません。lock fileの残存は所有を意味せず、process終了でOS lockが解放されます。参照切替前に中断したartifactが残っても、自動で採用しません。run／resumeの所有権と検証済みattempt復旧は上記「再開」を参照してください。
+`doc_translate.workspace.workspace_lock(Path)`は非blockingのPOSIX flockでwriter重複を拒否します（`WorkspaceLockedError`）。`store_source_snapshot`／`save_source_snapshot`は自身でlockを取るため、その外側から同じlockを二重取得しません。lock fileの残存は所有を意味せず、process終了でOS lockが解放されます。参照切替前に中断したartifactが残っても、自動で採用しません。run／resumeの所有権と検証済みattempt復旧は上記「再開」を参照してください。
+
+旧schema version 1で新provenance fieldがないsnapshotも、保存済みbyte列のhashを維持して読み込みます。load時のmodel再serializeで参照hashを置き換えず、一括migrationもしません。PDF revisionの旧機械基点は、不変履歴・旧source／chunk・保存scopeから一意に検証できる場合だけ復元し、不明・循環・欠落・hash不一致は送信前に拒否します。
 
 ## 共通翻訳unit生成（Issue #10）
 
-公開APIは`doc_translate.units.generate_translation_units(snapshot: SourceSnapshot) -> list[TranslationUnit]`、`split_translation_units(units: Sequence[TranslationUnit], *, max_source_chars: int) -> list[TranslationUnit]`、`validate_unit_text(unit: TranslationUnit, text: str) -> None`です。受理済み翻訳前原文からPythonだけで生成します。workspace書込み・LLM・renderer・CLI・翻訳engine・glossary準備は行いません。既存のsnapshot保存契約は変更しません。
+公開APIは`doc_translate.units.generate_translation_units(snapshot: SourceSnapshot, *, source_sha256: str | None = None) -> list[TranslationUnit]`、`split_translation_units(units: Sequence[TranslationUnit], *, max_source_chars: int) -> list[TranslationUnit]`、`validate_unit_text(unit: TranslationUnit, text: str) -> None`です。受理済み翻訳前原文からPythonだけで生成します。workspace書込み・LLM・renderer・CLI・翻訳engine・glossary準備は行いません。既存のsnapshot保存契約は変更しません。
 
 ```python
 from doc_translate.snapshot import load_source_snapshot
 from doc_translate.units import generate_translation_units, split_translation_units
 
 source = load_source_snapshot(workspace, source_digest)
-units = generate_translation_units(source)
+units = generate_translation_units(source, source_sha256=source_digest)
 inputs = split_translation_units(units, max_source_chars=12000)
 for unit in inputs:
     print(unit.unit_id, unit.block_id, unit.cell_id, unit.node_path, unit.source_text)
@@ -135,7 +182,7 @@ for unit in inputs:
 | `source_hash` | marker原文とtokenのkind／保護値のcanonical JSON SHA-256。位置・snapshot-boundな参照解決先は含めず、literal／link target等の変更を含める |
 | `context`／`context_hash` | 見出しpath、table行列・span・関連する採用見出しcell、list祖先・depth／marker／親、caption対象／callout行、EPUB role等と、そのcanonical JSON SHA-256 |
 | `locations` | 所有blockの元位置、またはEPUBのunit node位置。PDF cellにはtable位置とcell ID／行列／根拠を併用し、存在しない文字単位の精度を作らない |
-| `snapshot_id`／`source_snapshot_sha256`／`document_sha256` | 参照snapshot ID、既存save APIと同じmodel JSON byte列のhash、原本文書hash |
+| `snapshot_id`／`source_snapshot_sha256`／`document_sha256` | 参照snapshot ID、原文artifactのhash、原本文書hash。保存版から生成するときは検証済み保存hashを任意引数`source_sha256`で渡す。省略時はmodel JSONのhashを計算するため、旧byte列との同一性を推定しない |
 | `parent_unit_id`／`parent_source_hash`／`source_range` | 未分割時null。分割時は元unitのidentity／hashと、元のmarker付き`source_text`に対する半開区間`{start,end}`（Python文字offset）。PDF／XML byte位置ではない |
 
 PDFでは採用`blocks`と確定tableの`cells`だけを扱い、`fragments/retained_blocks/retained_cells`から本文を再採用しません。code／formula／picture本体はunitにせず、図のconfirmedなblock／cell所属も除外します。pictureの`members`は補正時の提案も残すため、採用snapshotのuncertainty対象やuncertain／partialの対象をconfirmed提案だけで再除外しません。不確実cellを持つ採用tableも全体所属の提案だけでは消しません。refによる所属はpage・draft・selectorを照合し、部分spanを広いblock全体の削除根拠にせず、draftを一意にできない参照からも除外しません。caption・脚注・外側／uncertain／partialの内容は残します。未確定tableの候補cellは翻訳せず、元snapshotのQA／原画像を保持します。

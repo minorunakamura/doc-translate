@@ -333,7 +333,7 @@ def assemble_pdf_source(
                 if member["target_id"] in aliases:
                     member["target_id"] = aliases[member["target_id"]]
         block.structure = structure
-    for item in uncertainties:
+    for item in [*uncertainties, *checks]:
         item.target_ids = list(
             dict.fromkeys(aliases.get(key, key) for key in item.target_ids)
         )

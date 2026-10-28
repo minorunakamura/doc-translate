@@ -63,6 +63,12 @@ class TranslationChunk(Contract):
     error: Nonempty | None = None
 
 
+class ManualRevision(Contract):
+    base_translation_sha256: Sha256
+    base_chunk_index: int = Field(ge=0)
+    reason: Visible
+
+
 class UnitSplit(Contract):
     unit_id: Nonempty
     max_source_chars: int = Field(gt=0)
@@ -450,14 +456,15 @@ def translate_document(
         )
         source = load_source_snapshot(workspace, source_digest)
         preparation = load_preparation(workspace, prep_digest)
-        units = generate_translation_units(source)
+        units = generate_translation_units(source, source_sha256=source_digest)
         splits, runs = [], []
         previous = None
         if (workspace / "translation-snapshot.json").exists():
             previous = load_translation(workspace)
             runs = list(previous.runs)
             old_units = generate_translation_units(
-                load_source_snapshot(workspace, previous.source_snapshot_sha256)
+                load_source_snapshot(workspace, previous.source_snapshot_sha256),
+                source_sha256=previous.source_snapshot_sha256,
             )
             for operation in previous.splits:
                 old_target = next(
@@ -614,12 +621,22 @@ def load_translation(workspace: Path, sha256: str | None = None) -> TranslationS
         sha256 = SnapshotReference.model_validate_json(
             (workspace / "translation-snapshot.json").read_bytes()
         ).sha256
+    return _load_translation(workspace, sha256, {})
+
+
+def _load_translation(
+    workspace: Path, sha256: str, verified: dict[str, TranslationSnapshot]
+) -> TranslationSnapshot:
+    if sha256 in verified:
+        return verified[sha256]
     snapshot = TranslationSnapshot.model_validate(
         _read(workspace, "snapshots/translation", sha256)
     )
     source = load_source_snapshot(workspace, snapshot.source_snapshot_sha256)
     preparation = load_preparation(workspace, snapshot.preparation_sha256)
-    units = generate_translation_units(source)
+    units = generate_translation_units(
+        source, source_sha256=snapshot.source_snapshot_sha256
+    )
     for operation in snapshot.splits:
         units = _split(units, operation)
     if [unit for chunk in snapshot.chunks for unit in chunk.units] != units:
@@ -645,6 +662,33 @@ def load_translation(workspace: Path, sha256: str | None = None) -> TranslationS
         ):
             raise ValueError("Translation differs from actual inputs or answer")
         _validate(chunk.answer, chunk.units)
+        if "manual_revision" in artifact:
+            revision = ManualRevision.model_validate(artifact["manual_revision"])
+            base = _load_translation(
+                workspace, revision.base_translation_sha256, verified
+            )
+            if revision.base_chunk_index >= len(base.chunks):
+                raise ValueError("Unknown manual revision base chunk")
+            original = base.chunks[revision.base_chunk_index]
+            start = next(
+                (
+                    i
+                    for i, unit in enumerate(original.units)
+                    if unit.unit_id == chunk.units[0].unit_id
+                ),
+                len(original.units),
+            )
+            base_units = original.units[start : start + len(chunk.units)]
+            if (
+                _projection(base_units) != _projection(chunk.units)
+                or base.config != snapshot.config
+                or _request(
+                    base_units, load_preparation(workspace, base.preparation_sha256)
+                )
+                != _request(chunk.units, preparation)
+            ):
+                raise ValueError("Manual revision differs from base inputs")
+            continue
         run = _read(workspace, "attempts/translation", artifact["run"])
         if (
             artifact["run"] not in snapshot.runs
@@ -660,4 +704,5 @@ def load_translation(workspace: Path, sha256: str | None = None) -> TranslationS
             raise ValueError("Translation run differs from adopted answer or inputs")
     for run in snapshot.runs:
         _read(workspace, "attempts/translation", run)
+    verified[sha256] = snapshot
     return snapshot

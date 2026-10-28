@@ -306,7 +306,7 @@ def prepare_document(
         reference_path = workspace / "preparation-snapshot.json"
         if reference_path.exists():
             load_preparation(workspace)
-        units = generate_translation_units(snapshot)
+        units = generate_translation_units(snapshot, source_sha256=source_digest)
         collections = []
         runs = []
         for index, group in enumerate(_groups(units)):
@@ -394,7 +394,9 @@ def load_preparation(workspace: Path, sha256: str | None = None) -> PreparationS
         _read(workspace, "preparation/evidence", adopted.evidence_sha256)
     )
     snapshot = load_source_snapshot(workspace, adopted.source_snapshot_sha256)
-    units = generate_translation_units(snapshot)
+    units = generate_translation_units(
+        snapshot, source_sha256=adopted.source_snapshot_sha256
+    )
     groups = _groups(units)
     if (
         evidence.source_snapshot_sha256 != adopted.source_snapshot_sha256

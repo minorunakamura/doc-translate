@@ -383,10 +383,14 @@ def split_translation_units(
     return result
 
 
-def generate_translation_units(snapshot: SourceSnapshot) -> list[TranslationUnit]:
+def generate_translation_units(
+    snapshot: SourceSnapshot, *, source_sha256: str | None = None
+) -> list[TranslationUnit]:
     """Return reading-ordered units without saving, inference, or source mutation."""
     snapshot = SourceSnapshot.model_validate(snapshot.model_dump(mode="json"))
-    digest = hashlib.sha256(snapshot.model_dump_json().encode()).hexdigest()
+    digest = (
+        source_sha256 or hashlib.sha256(snapshot.model_dump_json().encode()).hexdigest()
+    )
     units = []
     headings = []
     blocks = {block.block_id: block for block in snapshot.blocks}

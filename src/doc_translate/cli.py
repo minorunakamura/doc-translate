@@ -9,7 +9,7 @@ from pathlib import Path
 from doc_translate import ai_runtime
 from doc_translate.auth import authenticate
 from doc_translate.inference import Selection, resolve_config
-from doc_translate.preparation import Glossary
+from doc_translate.preparation import Glossary, StylePolicy
 from doc_translate.render import render_document, workspace_status
 from doc_translate.run import (
     CONFIG_ERROR_CODES,
@@ -70,7 +70,7 @@ def main(
     parser = argparse.ArgumentParser(
         prog="doc-translate",
         description="Traceable PDF and EPUB translation, rendering and status.",
-        epilog="Outputs JSON. Exit codes: 0 success, 1 execution failure, 2 input/configuration error. Run sends explicitly scoped document data to the selected providers. Saved render/status need no Node or authentication.",
+        epilog="Outputs JSON. Exit codes: 0 success, 1 partial output/execution failure, 2 input/configuration error. Run/resume send explicitly scoped data to selected providers. PDF source candidate adoption is explicit via revise --source; pending resume/render exit 1, successful status exits 0. Saved render/status/revise need no Node, authentication or inference.",
     )
     commands = parser.add_subparsers(dest="operation", required=True)
     setup = commands.add_parser(
@@ -106,9 +106,29 @@ def main(
             help="Regenerate outputs from saved snapshots only."
             if operation == "render"
             else "Inspect saved processing, QA, scope, usage and output paths.",
-            description="No acquisition, correction, translation, Node, authentication or network access. Render exits 1 for partial output; status exits 0 when inspection succeeds. Input/configuration errors exit 2.",
+            description="No acquisition, correction, preparation, translation, Node, authentication or network access. Uses only adopted source H, never pending candidate C. Reports source_adoption with H/B/C paths, inputs, envelope and next_operation. Render exits 1 for partial output or pending adoption; status exits 0 when inspection succeeds. Input/configuration errors exit 2.",
         )
         command.add_argument("workspace", type=Path)
+    revise = commands.add_parser(
+        "revise",
+        help="Adopt validated JSON revisions without Node or inference.",
+        description="Offline source replacement or translation patch with current snapshot hashes (CAS) and a reason. PDF candidate adoption uses the copied source envelope with candidate_sha256; compare H/B/C and optionally edit source before adoption. No automatic merge, translation overwrite, Node, authentication, PDF models or inference. Old snapshots, reasons and raw answers are retained. Run resume afterward to update affected stages, or render after a translation-only patch. Stale bases/candidates and invalid inputs exit 2.",
+    )
+    revise.add_argument("workspace", type=Path)
+    revisions = revise.add_mutually_exclusive_group(required=True)
+    revisions.add_argument(
+        "--translations", type=Path, help="TranslationPatch JSON; changed units only."
+    )
+    revisions.add_argument(
+        "--source",
+        type=Path,
+        help="SourceReplacement JSON; whole snapshot, optional candidate_sha256 for explicit adoption. FILE is relative to the current directory, not the workspace.",
+    )
+    revise.add_argument(
+        "--reason",
+        required=True,
+        help="Nonblank revision/adoption reason; replace TEXT.",
+    )
     run = commands.add_parser(
         "run",
         help="Translate a local PDF/EPUB in a new workspace.",
@@ -119,9 +139,14 @@ def main(
     resume = commands.add_parser(
         "resume",
         help="Verify saved inputs and continue only unfinished or explicitly changed stages.",
-        description="Saved settings are defaults; ambient PI_* never changes them. Explicit glossary/provider/model/thinking overrides are persisted. Transmission scope cannot expand. Lost responses may have unknown usage and resending may duplicate charges. Completed saved results need no Node/authentication.",
+        description="Saved settings are defaults; ambient PI_* never changes them. Explicit glossary/style policy/provider/model/thinking overrides are persisted. Glossary/style changes do not repeat PDF correction; changed correction inputs may require new calls, not unnecessary acquisition. Transmission scope cannot expand. Changed PDF machine content after source revision is saved as a candidate: stop before preparation/translation, compare H/B/C, then revise --source --reason and resume; no automatic merge. Pending adoption exits 1; input/configuration errors exit 2. Lost responses may have unknown usage and resending may duplicate charges. Completed saved results need no Node/authentication.",
     )
     resume.add_argument("workspace", type=Path)
+    resume.add_argument(
+        "--policy",
+        type=Path,
+        help="Explicit style policy JSON (version/text); validated data, never code.",
+    )
     for command in (run, resume):
         for prefix in ("", "correction-", "translation-"):
             for field in ("provider", "model", "thinking"):
@@ -177,6 +202,9 @@ def main(
                     shared=shared,
                     artifacts_path=args.artifacts_path,
                     user_terms=terms,
+                    policy=StylePolicy.model_validate_json(args.policy.read_bytes())
+                    if args.policy
+                    else None,
                     process_command=process_command,
                     before_send=announce,
                 )
@@ -199,6 +227,15 @@ def main(
                     process_command=process_command,
                     before_send=announce,
                 )
+        elif args.operation == "revise":
+            from doc_translate.revise import revise_document
+
+            result = revise_document(
+                workspace=args.workspace,
+                translations=args.translations,
+                source=args.source,
+                reason=args.reason,
+            )
         elif args.operation in {"render", "status"}:
             result = (
                 render_document(args.workspace)
@@ -218,9 +255,13 @@ def main(
     except ai_runtime.RuntimeUnavailable as error:
         parser.error(str(error))
     except (OSError, ValueError, RuntimeError) as error:
-        if args.operation in {"run", "resume", "render", "status"} and isinstance(
-            error, (FileNotFoundError, ValueError)
-        ):
+        if args.operation in {
+            "run",
+            "resume",
+            "render",
+            "status",
+            "revise",
+        } and isinstance(error, (FileNotFoundError, ValueError)):
             parser.error(str(error))
         parser.exit(1, f"doc-translate: {error}\n")
     print(json.dumps(result, ensure_ascii=False))

@@ -20,6 +20,7 @@ from pydantic import (
     model_validator,
 )
 
+from doc_translate.inference import GenerationConfig
 from doc_translate.workspace import workspace_lock
 
 Nonempty = Annotated[str, Field(min_length=1)]
@@ -123,11 +124,45 @@ class ContentReview(Contract):
     details: Nonempty
 
 
+class PDFSourceInputs(Contract):
+    draft_sha256: Sha256
+    chunk_sha256s: list[Sha256]
+    correction: GenerationConfig
+    correction_policy: Nonempty
+    owned_pages: list[int]
+    reference_pages: list[int]
+    corrected_pages: list[int]
+    failed_pages: list[int]
+    not_processed_pages: list[int]
+
+    def generation_sha256(self, document: SourceDocument) -> str:
+        data = self.model_dump(
+            mode="json",
+            exclude={
+                "chunk_sha256s",
+                "corrected_pages",
+                "failed_pages",
+                "not_processed_pages",
+            },
+        )
+        data["document"] = document.model_dump(mode="json")
+        return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+
 class SourceSnapshot(Contract):
     schema_version: Literal[1]
     snapshot_id: Nonempty
     previous_snapshot_sha256: Sha256 | None = None
     change_reason: Nonempty | None = None
+    machine_base_sha256: Sha256 | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    adopted_candidate_sha256: Sha256 | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    machine_inputs: PDFSourceInputs | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     document: SourceDocument
     blocks: list[SourceBlock]
     uncertainties: list[Uncertainty] = Field(default_factory=list)
@@ -149,6 +184,16 @@ class SourceSnapshot(Contract):
         if any(location.format != self.document.format for location in locations):
             raise ValueError("Source location format must match the document")
         return self
+
+
+class SourceCandidate(Contract):
+    schema_version: Literal[1] = 1
+    document: SourceDocument
+    head_sha256: Sha256
+    base_sha256: Sha256
+    source_sha256: Sha256
+    generation_sha256: Sha256
+    inputs: PDFSourceInputs
 
 
 class SnapshotReference(Contract):
@@ -177,22 +222,40 @@ def _atomic_write(path: Path, data: bytes) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
-def save_source_snapshot(workspace: Path, snapshot: SourceSnapshot) -> str:
-    """Validate and persist a snapshot, then atomically adopt its SHA-256 reference."""
+def _store_source_snapshot(workspace: Path, snapshot: SourceSnapshot) -> str:
+    """Caller holds the writer lock; persist without changing the adopted reference."""
     snapshot = SourceSnapshot.model_validate(snapshot.model_dump(mode="json"))
     data = snapshot.model_dump_json().encode("utf-8")
     digest = hashlib.sha256(data).hexdigest()
+    directory = workspace / "snapshots" / "source"
+    directory.mkdir(parents=True, exist_ok=True)
+    artifact = directory / f"{digest}.json"
+    if artifact.exists():
+        load_source_snapshot(workspace, digest)
+    else:
+        _atomic_write(artifact, data)
+    return digest
+
+
+def store_source_snapshot(workspace: Path, snapshot: SourceSnapshot) -> str:
+    """Validate and save a machine candidate without adopting it."""
     with workspace_lock(workspace):
-        directory = workspace / "snapshots" / "source"
-        directory.mkdir(parents=True, exist_ok=True)
-        artifact = directory / f"{digest}.json"
-        if artifact.exists():
-            load_source_snapshot(workspace, digest)
-        else:
-            _atomic_write(artifact, data)
-        reference = SnapshotReference(sha256=digest)
+        return _store_source_snapshot(workspace, snapshot)
+
+
+def source_snapshot_sha256(workspace: Path) -> str:
+    return SnapshotReference.model_validate_json(
+        (workspace / "source-snapshot.json").read_bytes()
+    ).sha256
+
+
+def save_source_snapshot(workspace: Path, snapshot: SourceSnapshot) -> str:
+    """Persist first; the atomic adopted reference switch is the commit point."""
+    with workspace_lock(workspace):
+        digest = _store_source_snapshot(workspace, snapshot)
         _atomic_write(
-            workspace / "source-snapshot.json", reference.model_dump_json().encode()
+            workspace / "source-snapshot.json",
+            SnapshotReference(sha256=digest).model_dump_json().encode(),
         )
     return digest
 

@@ -29,7 +29,9 @@ def boundary_replace(
     dst_dir_fd: int | None = None,
 ) -> None:
     global matches
-    if args.boundary and str(dst).endswith(args.boundary):
+    if args.boundary and (
+        str(dst).endswith(args.boundary) or Path(str(dst)).match(args.boundary)
+    ):
         matches += 1
         match = matches == args.occurrence
     else:

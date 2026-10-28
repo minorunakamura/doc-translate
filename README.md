@@ -2,7 +2,7 @@
 
 英語の技術PDF・テキストEPUBを、原本文書への追跡と要確認事項を保ちながら日本語Markdownへ変換するCLIを開発しています。
 
-**新規`run`でPDF／EPUBの取得から準備・翻訳・Markdown出力まで実行できます。** helper初回導入・認証・任意のcatalog参照、保存済み正本の`render`／`status`にも対応します。`resume`で保存済みworkspaceを続行できます。`revise`／`review`は未実装です。 参照だけなら認証情報や書籍を準備・送信する必要はありません。実providerでの認証・推論は未検証です。
+**新規`run`でPDF／EPUBの取得から準備・翻訳・Markdown出力まで実行できます。** helper初回導入・認証・任意のcatalog参照、保存済み正本の`render`／`status`にも対応します。`resume`で保存済みworkspaceを続行できます。`revise`で原文・訳文のJSON修正を推論なしで採用できます。`review`は未実装です。 参照だけなら認証情報や書籍を準備・送信する必要はありません。実providerでの認証・推論は未検証です。
 
 ## 前提環境と導入
 
@@ -79,7 +79,7 @@ doc-translate status DIR
 両操作とも取得・補正・準備・翻訳を呼びません。Node・認証・PDF extra・OCR model・外部通信は不要です。`render`は日本語／閲覧用英語Markdown、相対参照assets、source map、QA、usage、summaryを生成し、stdoutのJSONにworkspace相対の成果物pathを表示します。元snapshot・旧出力は削除しません。
 
 - `render`のexitは0＝指定された保存範囲が出力まで到達、1＝部分出力または保存等の実行失敗、2＝入力・hash・設定エラーです。訳文なし／部分失敗なら原文を残した部分出力とし、日本語側に`※`を付けます。現在原文と元snapshotが違う旧訳は自動流用しません。
-- `status`は検査成功なら部分出力でも0、入力／hashエラーは2、その他の実行失敗は1です。`render_current: false`は未出力または入力変更後の旧出力です。旧成果物がある場合は`previous_artifacts`で場所を確認できます。
+- `status`は検査成功なら部分出力でも0、入力／hashエラーは2、その他の実行失敗は1です。`render_current: false`は未出力またはsummary全体が現在状態に未追随であることを示します。`adopted_output_current`は既存出力が採用原文・訳文の入力に対応し、訳文がstaleでないかを別に示します。どちらも内容品質の承認ではありません。旧成果物がある場合は`previous_artifacts`で場所を確認できます。
 - `※`は表示用の目印だけです。理由・原本欠損か処理問題か・元位置・block／unit・出力anchorをQAで確認してください。コード／数式内部や保存済み原文／訳文には混ぜません。
 - summaryは出力到達／未処理／失敗、機械検査、原文の内容確認記録と訳文未確認範囲、usageを区別します。PDFの所有範囲を全文とみなさず、`pages_with_source_blocks`は本文の位置だけを示します。内容品質承認ではありません。
 - code・数式・図内文字は原文を保持します。単純表はMarkdown、結合表は安全なHTMLです。安全なMathML／画像を使い、表示不能な構造や危険なassetは不活性な原データ参照とQAを残します。外部画像は読込みません。
@@ -131,15 +131,79 @@ doc-translate status ./work/book
 doc-translate resume ./work/book
 # 明示変更する場合だけ指定（段階別 > 共通 > 保存済み設定）
 doc-translate resume ./work/book --glossary ./terms-v2.json --translation-thinking high
+# 文体を変更する場合だけ、version/textのJSONを指定
+doc-translate resume ./work/book --policy ./style-v2.json
 # PDF取得をやり直す必要があり、保存済みlocal model pathが使えない場合
 doc-translate resume ./work/book --artifacts-path /path/to/prepared-models
 ```
 
-resumeは保存原本・範囲・非秘密設定を基準に、artifact hashと回答／入力対応を検査し、未処理・失敗・明示変更で無効になった部分だけを送信します。元の外部INPUTは不要です。取得済みPDFならlocal model directoryも不要で、EPUBにPDF依存は要求しません。完了済みで推論不要ならNode／認証も不要です。**resumeではambientな`PI_*`を設定変更として採用しません。** `--provider/model/thinking`と段階別指定、`--glossary`は明示変更として保存されます。glossary変更ではPDF取得／補正をやり直しません。ページ範囲を拡大するoptionはありません。
+resumeは保存原本・範囲・非秘密設定を基準に、artifact hashと回答／入力対応を検査し、未処理・失敗・明示変更で無効になった部分だけを送信します。元の外部INPUTは不要です。取得済みPDFならlocal model directoryも不要で、EPUBにPDF依存は要求しません。完了済みで推論不要ならNode／認証も不要です。**resumeではambientな`PI_*`を設定変更として採用しません。** `--provider/model/thinking`と段階別指定、`--glossary`／`--policy`は明示変更として保存されます。policyは例えば`{"version":"2","text":"本文はですます調。見出しは体言止め。"}`というデータで、実行コードではありません。glossary／文体変更ではPDF取得／補正をやり直しません。補正設定の明示変更は再補正の対象になりますが、取得入力が同じならPDFを再取得しません。ページ範囲を拡大するoptionはありません。
 
 SIGINT／SIGTERMは新規requestを止め、実行中helperの取消・認証保存drainを待ちます（強制killまで原則30秒）。SIGKILL・disk障害では応答・usageやOAuth refresh保存を保証できません。**送信済み応答を失うとusageは不明で、再送により重複課金される可能性があります。exactly-once課金は保証しません。** token保存に失敗した場合は必要に応じ再loginしてください。
 
-旧原本・snapshot・attempt・出力は削除しません。保存途中の一時fileや未検証回答は成功として採用せず、確定artifactだけを再検証します。hash不一致は送信前に明示停止し、破損fileを上書きしません。別writerが稼働中ならresume／直接stage／renderは拒否され、process終了後はOS lockが解放されます。exit codeはrunと同じ0／1／2です。未処理／失敗が残れば部分出力のままです。`revise`／`review`はまだ使えません。
+旧原本・snapshot・attempt・出力は削除しません。保存途中の一時fileや未検証回答は成功として採用せず、確定artifactだけを再検証します。hash不一致は送信前に明示停止し、破損fileを上書きしません。別writerが稼働中ならresume／直接stage／renderは拒否され、process終了後はOS lockが解放されます。exit codeはrunと同じ0／1／2です。未処理／失敗や次の候補採用待ちが残れば部分出力のままです。`review`は未実装です。
+
+## 原文・訳文を修正する（推論なし）
+
+`revise`は保存済みworkspaceに対するオフライン操作です。原本PDF／EPUBやMarkdownを直接編集する操作ではなく、利用者が用意したJSONを検証して新しい版として採用します。Node・認証・PDF extra・model・外部通信は不要で、再翻訳を自動開始しません。旧版・変更理由・元の回答は保持します。
+
+通常の原文修正は**全snapshot置換**です。`DIR/source-snapshot.json`の`sha256`を基点に、`DIR/snapshots/source/<そのhash>.json`の全体をコピーして編集し、次のenvelopeの`source`へobjectとして入れます（`{}`は差込み位置であり、空のままでは使えません）。hashは説明用の文字列でなく、参照fileの実際の64桁値に置換します。
+
+```json
+{
+  "schema_version": 1,
+  "base_source_sha256": "現在のsource参照のsha256",
+  "source": {}
+}
+```
+
+PDFではblock本文・構造・位置・根拠・assetsの整合を保ちます。EPUBの本文は`blocks[].structure.tree`内のnode内容が正本で、`blocks[].text`だけを直しても本文修正になりません。原本のhash／pathは変更しません。処理完了の自己申告で失敗ページを消すこともできません。
+
+訳文修正は**変更unitだけのpatch**です。`DIR/translation-snapshot.json`のhashと`status`の`source_snapshot_sha256`を基点にします。`unit_id`・保護markerは現在の訳文snapshotの`chunks[].answer.translations[]`からコピーし、`text`を編集します。以下は保護markerのないunitの例です。
+
+```json
+{
+  "schema_version": 1,
+  "base_source_sha256": "現在のsource参照のsha256",
+  "base_translation_sha256": "現在のtranslation参照のsha256",
+  "translations": [{"unit_id": "unit-1", "text": "確認した訳文です。", "uncertainties": []}]
+}
+```
+
+```sh
+# source.json／translation-patch.jsonは上記の形式で利用者が用意したfile
+# どちらか一方だけを実行
+doc-translate revise ./work/book --source ./source.json --reason '原本と照合して原文を訂正'
+doc-translate revise ./work/book --translations ./translation-patch.json --reason '訳語を確認して訂正'
+# 原文修正後は必要な準備・翻訳・QA／出力を更新（必要な場合だけ送信あり）
+doc-translate resume ./work/book
+# 訳文だけの修正なら推論なしで再出力できる
+doc-translate render ./work/book
+```
+
+成功はexit0、不正schema・古い基点・未知ID・不正参照等は採用前にexit2、保存等の実行失敗は1です。訳文patchは現在の原文・準備・設定に対応する訳文だけに使えます。staleなら先に`resume`し、現在の版からpatchを作り直してください。旧訳・手修正訳の再利用はIDだけでなく実際のrequest全体の一致で決まり、曖昧な分割／接合はしません。codeだけの変更で本文の翻訳入力が同じなら本文を再送しません。
+
+### PDF補正候補の比較と明示採用
+
+通常利用で手修正は必須ではありません。ただし、利用者が原文を訂正した後に不足ページが回復したり補正設定が変わったりして、新しい機械生成原文が取り込み済み基点と異なると、`resume`は**準備・翻訳の前で停止**します。自動併合・旧訂正の自動転写はしません。機械生成内容が変わらなければ訂正版を保持して続行します。
+
+1. `doc-translate status ./work/book`の`source_adoption`を確認します。`H`は現在採用中の訂正版、`B`は取り込み済み機械基点、`C`は新候補です。それぞれの`path`／`sha256`、`old_inputs`／`new_inputs`、`page_changes`で範囲・設定・追加／再組立ページを確認し、**全snapshotと原本位置を照合**してください。同じ`pdf-N`／`unit-N`でも同じ内容とは限りません。
+2. `envelope`のfileを作業用にコピーします。そのままの候補Cを採用するか、`source`全体へ必要な旧訂正を利用者が反映した統合版Kにするかを決めます。`base_source_sha256`と`candidate_sha256`は変えません。保管済みの候補・雛形は直接編集しません。
+3. コピーを`revise --source`で理由付き採用し、`resume`します。
+
+```sh
+# HASHはstatusのcandidate_sha256に置換。表示されたenvelope pathを使う
+cp ./work/book/candidates/source/HASH.envelope.json ./adopt-source.json
+# 必要ならadopt-source.jsonのsourceを編集してKにする
+doc-translate revise ./work/book --source ./adopt-source.json --reason '新補正と旧訂正を原本に照合して採用'
+doc-translate resume ./work/book
+```
+
+表示の`path`／`envelope`はworkspace相対ですが、CLIの`DIR`／`--source FILE`等は実行時のcurrent directory基準です。上例のようにworkspaceを先頭に付けるか絶対pathを使ってください。`next_operation`は絶対path付きの実行例で、`--reason TEXT`の`TEXT`を実際の判断理由に置換します。編集したKを使う場合は`--source`もコピー先へ変更します。
+
+採用待ちは`source_adoption.status: pending`、全体は`processing.status: partial`です。`resume`／`render`はexit1、検査成功の`status`はexit0、入力不正はexit2です。`status`／`render`はHだけを使い、Cを黙って出力しません。`scope.adopted_source`は採用済み範囲、`scope.run`は新補正の進捗です。新候補の全ページ成功は取込み・翻訳完了ではありません。採用版への出力が現在入力に対応していても、候補待ちやsummary更新待ちは別に残り得ます。
+
+古い基点／候補・入力世代違いは拒否されます。通常の原文再修正だけでは候補採用になりません。再度`resume`して現在版に対応する雛形を確認し直してください。同じ入力の再確認では成功済み補正を再送せず、partial候補では未成功ページだけを再試行します。中断後もまず`status`→`resume`で再検証し、hash不一致は破損を調べてください。候補・旧snapshot・理由・元回答は削除しません。
 
 ## PDFのローカル準備
 
