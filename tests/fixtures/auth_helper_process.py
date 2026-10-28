@@ -54,6 +54,23 @@ if mode in {"cancel", "cancel-storage-failure"}:
     )
     time.sleep(20)
     sys.exit(1)
+if mode in {"notifications", "notifications-auth-failed"}:
+    for event in json.loads(os.environ["AUTH_PROCESS_EVENTS"]):
+        emit("notify", {"event": event})
+    emit(
+        "prompt",
+        {
+            "prompt_id": "1",
+            "prompt": {"type": "secret", "message": "Artificial prompt"},
+        },
+    )
+    response = json.loads(sys.stdin.readline())
+    assert response["payload"] == {"prompt_id": "1", "value": "ARTIFICIAL_SECRET"}
+    if mode == "notifications-auth-failed":
+        emit("error", {"code": "auth_failed"})
+        sys.exit(1)
+    emit("result", result())
+    sys.exit(0)
 if mode == "callback":
     emit(
         "notify",

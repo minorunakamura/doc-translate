@@ -702,6 +702,13 @@ def _correction_request(digest, owned, reference, policy, projection):
             "owned_pages": [number for number in owned],
             "reference_pages": [number for number in reference],
             "response_schema": CorrectionAnswer.model_json_schema(),
+            "figure_membership": (
+                "Each picture member needs exactly one of target_id or ref: "
+                "target_id must name an output block or cell; ref.ref must be a real extraction ref from the supplied draft. "
+                "Evidence with page/position/reason alone is not a ref membership. "
+                "For image-only regions or uncertain membership, never invent refs; "
+                "retain the original image region and record uncertainty."
+            ),
             "coordinates": "Draft bbox: original page points with coord_origin. Figure regions: original PNG pixels, origin top-left; image coordinates include point-to-pixel scales.",
         },
         glossary=None,

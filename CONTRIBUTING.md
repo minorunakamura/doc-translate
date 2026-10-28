@@ -1,15 +1,65 @@
 # 開発ガイド
 
-対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13の安全Markdown・対応表・QA・summaryとoffline render/status、Issue #14のPDF／EPUB新規run接続、Issue #15のresume／障害復旧、Issue #16の基点付きrevise・PDF補正候補の明示採用、Issue #17の明示範囲reviewです。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+PDF／EPUBの取得から準備・翻訳・出力、resume／revise／局所reviewまで実装済みです。以下に構成、正式チェック、各公開境界の再現手順と限界をまとめます。Issue番号付きの節は各実装時の検証範囲であり、後続機能の未実装や統合受入れ完了を意味しません。実認証・実LLM・viewer表示は自作小入力で限定確認済みです。実token refreshは未観測で、意味品質やIssue全体の承認完了とは区別します。
+
+全体の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+
+## 統合受入れの限定確認（Issue #18）
+
+[Issue #18](https://github.com/minorunakamura/doc-translate/issues/18)の2026-10-28時点の実動・表示記録です。正式PlanのSHA-256は`32443e61e096e44f655014e4433a2db087fb23fa49babd381f4a9f5a0279982e`。本節は限定実動・表示の記録であり、独立ReviewやCode Review gateの判定・最終承認を代用しません。基本設計§18の過去のPi実験とも別の記録です。
+
+### 入力・認証・再現条件
+
+入力・hash・所有／参照範囲・provider／model／thinking・OAuth認証sourceを個別提示し、ユーザーの明示承認後に実行しました。すべて自作で、既存書籍・許可外文書・外部referenceは使っていません。
+
+| 入力 | SHA-256 | 対象 |
+| --- | --- | --- |
+| `queue-journal-electronic.pdf` | `655f5ed52ae969151b101ebd71ddc61303267e9e8f3342baa8a087446e1b9756` | 2ページ、所有1–2／参照なし。元textは988／1046文字 |
+| `queue-journal-image-only.pdf` | `262c466841879b9baf2e6aff6b06418dfb62f7632f6c94d62e1416e9552dd6a8` | 2ページ、所有1–2／参照なし。元textは0／0文字 |
+| `queue-journal.epub` | `79303b621458296c43dd7eebfefa2856a61bb6b2a78bb734706d61d3986381a0` | 全体、3 XHTML・34 unit |
+
+- 実行環境は下記「構成・環境」のmacOS arm64／Python 3.14.9／Node 24.22.1。PDFはDocling 2.142.1／core 2.104.0／OCRMac 1.0.1、CPU／Apple Vision `en-US`・`vision`・`accurate`。既存local cacheのHeron `8f39ad3c0b4c58e9c2d2c84a38465abf757272d8`／TableFormer `fc0f2d45e2218ea24bce5045f58a389aed16dc23`を固定し、Hub／Transformers offlineで新規重み取得なし。
+- 全段階は`openai/gpt-6.1-sol`・`high`。ユーザー手元の専用OAuth loginが成功し、Rootのpreflightと全45 attemptで`auth.source='OAuth'`／`type='oauth'`を確認。API key環境変数を除外し、別認証へのfallbackなし。Pi CLI／Pi authの読込み・コピーなし。実run／resumeのPATHはNodeと`/usr/bin:/bin`のみで、Pi／managerなし。
+- ユーザー追加承認でOAuth URL／codeの人間向けTTY表示とmacOS既定browser自動起動を追加しました（HTTP(S)のみ、起動失敗時はTTY手動案内、秘密非log、取消維持）。Rootが公開CLI→PTY→人工通知→外部fake `open` argvで表示・起動呼出し・秘密stdoutなしを確認しました。実login成功はauto-open追加前で、実OAuthページでのauto-open再loginとforced token refreshは未確認です。期限改変等による強制試験はしていません。
+
+### 実動結果・標本照合・限界
+
+初回は電子版の図所属ref不足による`answer_invalid`、画像版／EPUBの準備literal根拠拒否とpromptの日本語target欠落を観測しました。旧回答を保持し、validation・schema・retryを緩めずpromptだけを最小補足。各workspaceを1回resumeし、すべてexit 0・`completed`、`not_processed`／`failed`は空になりました。
+
+| workspace | 出力到達unit | 補正attempt | 準備attempt | 翻訳attempt | review attempt | QA要確認件数 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| electronic | 32 | 2 | 6 | 5 | 0 | 11 |
+| image-only | 32 | 1 | 8 | 5 | 0 | 9 |
+| epub | 34 | 0 | 11 | 7 | 0 | 3 |
+
+画像版の成功済み補正は再開で再送されませんでした。失敗分を含む全45 attemptの参考catalog価格合算は**$0.699300**です（reasoningの二重加算なし）。実請求・subscription残枠・親Agent作業費ではありません。
+
+Root assistantが原資料→採用source→日本語／英語Markdownを標本照合しました。codeの4行・4 space・操作順と末尾`write_record(`の欠損非補完、literal `queue_id`／URL、colspan 2／rowspan 2／空cell、図内部Queue／Journal／Readerの本文非重複とcaption別訳、list 3階層、EPUBのlink／noteref／backlink／em／strong／codeを確認。公開`load_preparation`で全evidence対応を検証し、journal／commit point／checksum／backpressureの本文根拠と日本語glossary・ですます調を標本確認しました。commit pointは電子版「コミット点」、他2件「コミットポイント」のように文書別固定で、3入力間の訳語完全一致は保証しません。
+
+表示はPandoc 3.7.0.1（`gfm+tex_math_dollars`→`html5 --mathml`）＋Google Chrome 156.0.8078.48 headless、1100×4200で確認。HTML有効・ローカルCSS／相対assets、CSP `default-src 'none'`、remote解決遮断・背景通信disableの条件で生成HTMLと3 PNGをRootが直接readし、結合表・図・code・list・`※`を確認しました。PDF数式はPandoc変換のMathMLで表示。EPUBの`math id='rate'`は現rendererの許可属性外で不活性source dataへfallbackし、raw MathMLの`mfrac`、原文位置・QA・source data linkの実在を確認しました。表示のために安全判定は緩めていません。
+
+残る観測・未確認範囲：
+
+- Docling charspan不正はclipせずQAに保持。EPUBのblock単位uncertaintyは多くのunitへ広く`※`が付きます。PDFのa／b sublistはbullet表示ですが親子3階層は保持しました。
+- closing argumentを「議論／主張」とする不自然さも観測しました（人工原文自体に多義性あり）。原文／訳文を無断修正していません。
+- これはRoot assistantの標本確認で、人間の全文査読・意味品質全体の承認ではありません。QAの`meaning_quality_approved=false`／unreviewedを維持し、外部viewer確認を保存済みQAの`viewer_display_checked`へ書き戻していません。実LLMの局所`review`精度、任意文書／実スキャン、Marked等の他viewer、他OS、統計的品質は未検証です。
+
+### ローカル正式チェック・保存根拠
+
+Rootの最新チェックは別core環境の`uv sync --locked --dev`と全pytest **762 passed／115 skipped**（Doclingなし）、PDF extra環境の全pytest **877 passed**、Vitest **151 passed／5 files**。Biome 26 files、oxlint（type-aware／type-check／deny-warnings）、Ruff 53 files・format、tyはすべてexit 0・lint警告なし。helper明示build、`uv build`、`scripts/check_distribution.py`全文もexit 0で、resource鮮度、別core wheelのEPUB reader→source→units→空PATH render/status、両managerのclean setupとNode-only catalog／codecを確認しました。別core／PDF wheel install・importに加え、最新build wheelを別PDF extra venvへinstallし、Docling／OCR／application importもexit 0で再確認しました（ログ：`/tmp/doc-translate-issue18-checks.8dhrqb/final-wheel-pdf.log`）。pnpm更新案内と既存TorchのmacOS redirect NOTEは非致命メッセージです。remote CIは不要・未実行です。再現用の開発コマンドは本書の「正式チェック」「wheelの明示buildと導入検査」を使い、実送信・重み取得は新たな個別承認なしに行いません。
+
+恒久保存先の3 workspaceでも、PATH空の実CLI `status`→`render`→`resume`→`status`はすべてexit 0・completedでした。`originals`／`snapshots`／`attempts`／`drafts`／`corrections`の旧hashはすべて不変、attempt増加は0です。`content_review.meaning_quality_approved`／`viewer_display_checked`は書き換えず、Rootの外部標本・表示確認と区別しています。
+
+保存先は`/Users/minoru/.agent/experiments/doc-translate/issue18-20261028-xrqkk55t/`。`inputs/`、`workspaces/{electronic,image-only,epub}/`、workspace名の`*.stdout.json`／`*.stderr.log`と`*.resume.stdout.json`／`*.resume.stderr.log`、`viewer/{name}/index.html`と`viewer/{name}.png`、`checks/`のログを参照できます。入力とworkspaceは元`/tmp`からbyte hash全一致でコピーし、原本`/tmp`も保持、credential／model重みはコピーしていません。one-off作成記録中の旧絶対pathは過去記録であり、再実行指示ではありません。ローカル保存先の恒久可用性は保証しません。
 
 ## 構成・環境
 
 - `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）・原文組立adapter（`pdf_source.py`）、共通unit生成・inline保護・workflow分割（`units.py`）、固定context／glossary準備と根拠・実行記録（`preparation.py`）、翻訳chunk・検証・部分採用と再利用（`translation.py`）、原文snapshot、基点付きJSON修正と候補採用（`revise.py`）、明示範囲の独立内容照合とhash付き不変履歴（`review.py`）、workspace OS lock、JSONL codec。
 - `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証／generation helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`、独立推論のpreflight／stream接続（`generation.ts`）。`ai/tests/`の`.mjs`は公開APIとcompile済みhelperを使うテスト専用processです。
 - `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。`tests/test_preparation.py`は保存原文→実helper／faux→固定準備artifactの公開prepare/loadを検査します。`tests/test_translation.py`は保存原文／固定準備→実helper／faux→翻訳の公開translate/loadを検査します。`tests/test_render.py`は正本→Markdown／対応表／QAと実CLI render/statusを検査します。`tests/test_run.py`はPDF／EPUBの公開CLIからworkspace・出力・statusまでを検査します。新規`run`／`resume`／`revise`／`review`は実装済みです。`tests/test_review.py`はCLI→実helper／faux→局所findings保存→保存-only QA/statusのseamを検査します。`tests/test_revise.py`はsource全置換・訳文patchとpolicy改版、`tests/test_pdf_candidate_acceptance.py`は実CLIから候補比較・採用・後続更新を検査します。
-- `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、および別venvにinstallしたwheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
+- `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、およびcore-only別venvの実EPUB取得→原文／unit→保存-only CLI出力・status、wheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
 
-実動基準：macOS 26.7.1 arm64、Python 3.14.9、Node 24.21.0、pnpm 12.10.1、npm 11.19.0。CIはGitHub-hosted macos-15 ARM64、Python 3.14／Node 24です。別OSやmacOSの最低versionは未保証です。
+今回のローカル環境：macOS 26.7.1 arm64、Python 3.14.9、Node 24.22.1、pnpm 12.10.1、npm 11.19.1、uv 0.13.5。以前の基準Node 24.21.0／npm 11.19.0とは異なります。CI設定はGitHub-hosted macos-15 ARM64、Python 3.14／Node 24.21.0／npm 11.19.0で、今回のためにtoolやlockを変更しません。別OSやmacOSの最低versionは未保証です。
 
 ## 正式チェック（順序を含む）
 
@@ -42,7 +92,7 @@ uv run --locked --extra pdf python -c 'from docling.document_converter import Do
 uv run --locked --extra pdf pytest tests/test_pdf.py tests/test_run.py tests/test_review.py
 ```
 
-共通テストはcore-onlyで全件実行し、PDF extra付きではDocling依存のテストを含む上記3ファイルに限定して重複実行を抑えます。PDF依存が必要なテストを別ファイルに追加する場合は、CIとこの手順の実行対象にも追加してください。
+共通テストはcore-onlyで全件実行し、CIのPDF extra付き検査はDocling依存のテストを含む上記3ファイルに限定しています。統合受入れでは正式Planに従って`uv run --locked --extra pdf pytest`で全件も確認します。PDF依存が必要なテストを別ファイルに追加する場合は、CIとこの手順の実行対象にも追加してください。
 
 extraを保持するには`uv run --locked --extra pdf ...`（pytestは`uv run --locked --extra pdf pytest`を推奨）、またはsync済みの`.venv/bin/pytest`／`.venv/bin/ruff`／`.venv/bin/ty`を使い、`.venv/bin/pytest`を直接使う場合はvenvのactivateまたは`.venv/bin`のPATH追加が必要です。これは依存解決・importと人工fixture検証であり、それだけを実Docling変換、Apple Vision OCR、重みを使うlayout／table処理の成功と表示しません。
 
@@ -50,7 +100,7 @@ extraを保持するには`uv run --locked --extra pdf ...`（pytestは`uv run -
 
 `acquire_pdf`→`load_pdf_draft`の公開seamで、不足model・不正入力／range、raw item／ref／table cell／provenance、clipしないcharspan不一致、conversion status／errors、全対象ページ／PNG、直接描画scale／unload、artifact hash不一致、writer排他、参照replace失敗時の旧版保持を検査します。Doclingの外部公開`DocumentConverter.convert`と公開page backend境界だけを人工fixtureに置換し、保存・load・workspaceは実物を使います。private helper mockや未依頼CLIは追加しません。core-onlyでのPDF／EPUB API importも検査します。
 
-実変換は人工fixtureテストとは別に、明示承認済みの既存local modelだけを使い、自作PDFで公開APIを呼びます。重みをテストやCIが取得することはありません。準備は[README](README.md#pdf取得だけを使う場合のローカル準備)、APIと保存物は[artifact契約](docs/reference/artifacts.md#pdf抽出下書きissue-7)を参照してください。再確認は自作の小さな文字付きPDFと画像のみPDFについて、それぞれ次を実行します（`OWN.pdf`／`MODELS`／workspaceは置換）。
+実変換は人工fixtureテストとは別に、明示承認済みの既存local modelだけを使い、自作PDFで公開APIを呼びます。重みをテストやCIが取得することはありません。準備は[README](README.md#pdfのローカル準備)、APIと保存物は[artifact契約](docs/reference/artifacts.md#pdf抽出下書きissue-7)を参照してください。再確認は自作の小さな文字付きPDFと画像のみPDFについて、それぞれ次を実行します（`OWN.pdf`／`MODELS`／workspaceは置換）。
 
 ```sh
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run --locked --extra pdf python - <<'PY'
@@ -83,7 +133,7 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 - 全content kind、見出し／list階層、code改行／callout、空cell／span、除外理由・原本欠損、不正ref／wrong-page ref／cell／span、所有外出力、owned画像欠落、rawの安全なspan投影とclipしない省略、bbox重なりだけで本文を消さないことを検査します。
 - raw itemの部分所属／共有ref／不確実cellと全table所属の矛盾で外側を削除しないこと、旧chunk保持・chunk保存失敗前のattempt保存、各artifactのhash不正、load時のdomain／送信許可再検証、writer排他を検査します。save障害注入はOSの`replace`境界だけです。
 
-再現用の公開API例はartifact契約を参照してください。offlineの実process検証は補正の構造・範囲・保存に限定され、実LLMの読取り／図分類品質・全文翻訳の成立は示しません。chunkは別artifactに確定するだけで、`source-snapshot.json`を切り替えません。CLI・unit生成・翻訳・resume engine・全chunk所有割当は対象外です。ページ接続は次の独立adapterで行います。
+再現用の公開API例はartifact契約を参照してください。offlineの実process検証は補正の構造・範囲・保存に限定され、実LLMの読取り／図分類品質・全文翻訳の成立は示しません。chunkは別artifactに確定するだけで、`source-snapshot.json`を切り替えません。このchunk API自身はCLI・unit生成・翻訳・resume engine・全chunk所有割当を担当しません。ページ接続は次の独立adapterで行います。
 
 ### PDF原文組立の検証境界
 
@@ -96,7 +146,7 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 `tests/test_pdf_source.py`は既存の人工draft／evidence／run fixtureと実helper／公開faux providerを再利用し、補正回答から検証済みchunkを作ってから組み立てます。脚注越しの本文接続・分綴・code改行／language・欠損の非補完・callout行対応、別ページlist親子（同名local IDを含む）と未知／複数／循環／kind／深さ／順序のQA、未確定table・図内部非再採用、ページ順・断片／出典／画像のsave/loadをliteral期待値で検査します。同じ原本文書の別draftも、実際の抽出snapshotを残し、draft-localな同名refの内容が違う場合に推測接続しないことを検査します。補正側では接続／親根拠の許可範囲と実raw provenanceも拒否検証します。
 
-所有unionを越える処理完了・意味品質は主張しません。未確定内容は断片とQAを保持しますが、hash不一致・所有重複・異なる原本文書は拒否します。新たな永続管理・private mock・実LLM・model取得・既存書籍処理は追加しません。CLI／unit／翻訳／renderer／自動割当は対象外です。
+所有unionを越える処理完了・意味品質は主張しません。未確定内容は断片とQAを保持しますが、hash不一致・所有重複・異なる原本文書は拒否します。新たな永続管理・private mock・実LLM・model取得・既存書籍処理は追加しません。この組立API自身はCLI／unit／翻訳／renderer／自動割当を担当しません。
 
 ### 共通翻訳unitの検証境界
 
@@ -156,7 +206,7 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 .venv/bin/pytest
 ```
 
-自作source／EPUB・固定した人工訳文を使い、fence内backtick・callout・list・空cell／span・MathML・PNG／crop・notes／anchors・危険markup／外部参照・元text不変・部分／split訳・stale／hash／atomic保存・writer排他を検査します。訳文は既存の実helper／公開faux providerを通し、private collaboratorをmockしません。CLIのcore-only条件は空PATHで検査します。機械検査は意味品質の承認ではなく、viewer実表示は統合受入れまで未確認です。
+自作source／EPUB・固定した人工訳文を使い、fence内backtick・callout・list・空cell／span・MathML・PNG／crop・notes／anchors・危険markup／外部参照・元text不変・部分／split訳・stale／hash／atomic保存・writer排他を検査します。訳文は既存の実helper／公開faux providerを通し、private collaboratorをmockしません。CLIのcore-only条件は空PATHで検査します。この機械検査は意味品質の承認でもviewer実表示の検査でもありません。現在の限定した表示確認は上記Issue #18の記録を参照してください。
 
 LLMもNodeも使わない直接CLI確認用の自作fixture（原資料を取得した実績ではありません）：
 
@@ -220,7 +270,7 @@ PY_RUN
   --provider faux --model text --thinking off
 ```
 
-最初のrunはstderrへprepare×2／translation×1の送信前通知、stdoutへsummaryを表示します。`artifacts`から日本語側の`訳:Original`とinline保持、英語原文、source map、QA／usageを確認できます。PDFのsynthetic直接確認は`.venv/bin/pytest -s tests/test_run.py -k 'owns_requested or partial_pdf or without_pages'`で同じ公開CLIを使い、置き換えるのはDocling外部APIとfaux providerだけです。fixtureの取得成功は実PDFの完全抽出や実LLM意味品質・viewer表示の保証ではありません。汎用resume／revise／review・remote CIの実行はこのIssueでは行いません。
+最初のrunはstderrへprepare×2／translation×1の送信前通知、stdoutへsummaryを表示します。`artifacts`から日本語側の`訳:Original`とinline保持、英語原文、source map、QA／usageを確認できます。PDFのsynthetic直接確認は`.venv/bin/pytest -s tests/test_run.py -k 'owns_requested or partial_pdf or without_pages'`で同じ公開CLIを使い、置き換えるのはDocling外部APIとfaux providerだけです。fixtureの取得成功は実PDFの完全抽出や実LLM意味品質・viewer表示の保証ではありません。resume／revise／reviewの検証は各節を参照してください。remote CIの実行は必須ではありません。
 
 ## 明示範囲reviewの検証境界
 
@@ -310,7 +360,7 @@ uv build
 uv run python scripts/check_distribution.py dist/doc_translate-0.1.0-py3-none-any.whl
 ```
 
-この検査は一時directoryで再compileして`ai/dist`と比較し、wheel内のdist／manifest／両lockをbyte比較します。core-onlyの別venvへwheelをinstallし、workspace外の別々のclean data directoryで実CLI `setup-ai --package-manager MANAGER`を実行します（依存packageのregistry取得あり）。内部で使用する固定コマンドは次のとおりです。
+この検査は一時directoryで再compileして`ai/dist`と比較し、wheel内のdist／manifest／両lockをbyte比較します。core-onlyの別venvへwheelをinstallし、Nodeもmanagerもない空PATHで自作EPUB ZIPのreader→source保存／load→unit生成→実CLI render/statusを検査します。訳文なしのrenderはexit1・部分出力・`※`、statusはexit0・出力鮮度をassertし、実LLMや内容品質の成功とは扱いません。その後、workspace外の別々のclean data directoryで実CLI `setup-ai --package-manager MANAGER`を実行します（依存packageのregistry取得あり）。内部で使用する固定コマンドは次のとおりです。
 
 - npm：`ci --omit=dev --ignore-scripts --no-audit --no-fund`
 - pnpm：`install --prod --frozen-lockfile --ignore-scripts`
@@ -341,17 +391,17 @@ login／refresh／TTL判定・認証変換はpi-ai 1.4.0の公開APIに任せま
 
 Pythonの`authenticate`はCLIから実helperへJSONLを送り、controlling TTYだけで非echo入力し、認証URL・device codeをterminalへ表示します。認証record／入力／URL・code／raw stderrやprovider例外をログへ残しません。SIGINT／SIGTERM／EOFで取消し、prompt取消・終了で入力queueをflushしてechoを復元します。進行中のstore callback／保存は取消から保護し`drain`、Pythonは強制kill前に30秒待ってchildを回収します。取消後の`storage_failed`も非秘密の保存エラーと再login案内を表示します。SIGKILL／disk障害時の保存・TTY復元は保証できません。
 
-承認済みの公開seamでTDDを行います。`ai/tests/credentials.test.ts`は実storeと公開`createModels/createProvider/getAuth`で同時refresh・失敗時のno fallback・保存維持を検査し、Nodeの実processでも排他・heartbeat・UUID・drainを確認します。`ai/tests/auth.test.ts`は公開provider／実helper境界、`tests/test_auth_cli.py`は公開CLI・実helper／外部fake・PTYで非echo、callbackによるprompt取消、SIGINT／SIGTERM／EOF、未送信secretの破棄、取消中の保存失敗とchild回収を検査します。実credentialを読み込まず、人工credentialとnetwork拒否で検証します。実認証・実token refresh・推論・文書送信は未検証で、別途個別承認が必要です。
+承認済みの公開seamでTDDを行います。`ai/tests/credentials.test.ts`は実storeと公開`createModels/createProvider/getAuth`で同時refresh・失敗時のno fallback・保存維持を検査し、Nodeの実processでも排他・heartbeat・UUID・drainを確認します。`ai/tests/auth.test.ts`は公開provider／実helper境界、`tests/test_auth_cli.py`は公開CLI・実helper／外部fake・PTYで非echo、callbackによるprompt取消、SIGINT／SIGTERM／EOF、未送信secretの破棄、取消中の保存失敗とchild回収を検査します。実credentialを読み込まず、人工credentialとnetwork拒否で検証します。このoffline検査に実認証・実token refresh・推論・文書送信は含めません。個別承認後の実認証・小範囲送信は上記Issue #18の記録を参照し、新たな送信等には別途個別承認が必要です。
 
 ## 推論adapterの実装・検証境界
 
-`doc_translate.inference.generate`は文書workflowとは独立したPython APIです。段階指定→共通指定→`PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL`で設定を解決し、文書を含まないpreflightで正確なmodel／thinking・画像能力・認証sourceを確認してから、明示policy／text／context／glossaryと必要なPNGだけを送ります。各試行は新しいNode processで、Pi CLI設定・履歴・tools・探索・agent loopを使いません。`run/resume`等のCLIは追加していません。APIの型・固定code・JSONLは[artifact契約](docs/reference/artifacts.md)を参照してください。
+`doc_translate.inference.generate`は文書workflowとは独立したPython APIです。段階指定→共通指定→`PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL`で設定を解決し、文書を含まないpreflightで正確なmodel／thinking・画像能力・認証sourceを確認してから、明示policy／text／context／glossaryと必要なPNGだけを送ります。各試行は新しいNode processで、Pi CLI設定・履歴・tools・探索・agent loopを使いません。文書CLIとの接続は`run.py`が担当します。APIの型・固定code・JSONLは[artifact契約](docs/reference/artifacts.md)を参照してください。
 
-Pythonは回答JSONを別に解析してcallerのPydantic model（domain validatorを含む）で検証します。ID／根拠・送信許可範囲・座標説明の意味検証、artifact保存・採用は文書callerが所有します。PDFの補正chunk callerはIssue #8で追加済みですが、文書全体のsource採用や翻訳callerは後続です。画像は完全decode・実寸・hash等を検証して元byte列と順序を保持し、縮小・再encode・保存しません。公表入力上限超過は`input_limit`で停止します。`inputLimits.images.resize.maxBytes`はraw PNGではなくcanonical base64 payloadのASCII byte量に適用します。
+Pythonは回答JSONを別に解析してcallerのPydantic model（domain validatorを含む）で検証します。ID／根拠・送信許可範囲・座標説明の意味検証、artifact保存・採用は文書callerが所有します。PDF補正・準備・翻訳のcallerと、文書全体のsource採用は各文書stage／`run.py`に実装しています。画像は完全decode・実寸・hash等を検証して元byte列と順序を保持し、縮小・再encode・保存しません。公表入力上限超過は`input_limit`で停止します。`inputLimits.images.resize.maxBytes`はraw PNGではなくcanonical base64 payloadのASCII byte量に適用します。
 
 成功にはNode terminal／stop reason・送信先・toolCallなし・Python schema検証・正常process終了がすべて必要です。workflow retryは最終`generation_failed`のlibrary heuristicによるretryableなerrorだけに初回込み最大3試行・待機3／6秒です。schema／認証／保存／timeout／取消はretryしません。libraryへ`maxRetries:0`を渡しますが、内部retryは観測できないため不明のままです。未観測usageも0ではなく不明とします。timeout／取消はchildへ伝え、stream終了を最大30秒待ち、協調的providerのterminal／最終message／usageを失敗のまま保持します。終了すれば直ちに待機を終え、credential refresh／保存のdrainも維持します。親は原則30秒のgraceでchildを回収し、非協調providerのterminal／usageは保証しません。drainで上書きされた失敗は、保持されたretry metadataだけを理由に再試行しません。
 
-`ai/tests/generation.test.ts`と`generation-process.mjs`は公開fauxProvider／createProviderと実HTTP adapter＋injected fetchで実効入力・terminal・usage・retry設定・取消／refresh drainを検査します。`tests/test_inference.py`は実helperを使ってPython側の独立validation・domain validator・有限retry・画像保持・timeout／signal取消を検査し、`ai/tests/inference-provider.mjs`は人工認証／取消process、`tests/fixtures/inference_process.py`はprotocol故障注入だけを担当します。全Node fixtureは上記Biome／oxlintの対象です。実provider通信・実credential・実token refresh・account利用権・課金・翻訳品質・全adapterの内部retry回数は未検証です。offlineテストやwheelのimport成功をこれらの成功と扱いません。
+`ai/tests/generation.test.ts`と`generation-process.mjs`は公開fauxProvider／createProviderと実HTTP adapter＋injected fetchで実効入力・terminal・usage・retry設定・取消／refresh drainを検査します。`tests/test_inference.py`は実helperを使ってPython側の独立validation・domain validator・有限retry・画像保持・timeout／signal取消を検査し、`ai/tests/inference-provider.mjs`は人工認証／取消process、`tests/fixtures/inference_process.py`はprotocol故障注入だけを担当します。全Node fixtureは上記Biome／oxlintの対象です。このoffline検査は実provider通信・実credential・実token refresh・account利用権・課金・翻訳品質・全adapterの内部retry回数を検証しません。個別承認後の小範囲実動は上記Issue #18の記録を参照してください。offlineテストやwheelのimport成功をこれらの成功と扱いません。
 
 ## lock・依存更新とlicense
 

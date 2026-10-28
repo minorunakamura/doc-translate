@@ -476,7 +476,7 @@ for block in chunk.blocks:
 - 成功したPDF draftをhash指定でloadし、原資料／raw／全PNGを再検査します。所有ページは1件以上、所有／参照の各ページは正整数かつ重複・相互重複なしでdraft内に存在し、各ページにちょうど1枚のPNGが必要です。所有→参照の指定順ですべての画像を送ります。所有ページの画像を抽出成功やtextの有無で省略しません。chunk間の重複しない所有割当は後続callerの責務です。
 - draft全体の所持は全ページの送信許可ではありません。rawをそのまま送らず、許可ページの`ref/page/charspan/text/bbox`とtable cell／spanの投影を送ります。`orig`・文書名・木全体・許可外のprovenanceや画像は送りません。bboxは元ページpoint／Docling原点、図領域は原PNGのtop-left pixelです。画像には実寸・point→pixel scale・描画条件を付け、既存`generate(stage="correction")`がPNG・能力・終了・schemaを検証します。
 - textは保存textに収まる有効なcharspanだけから取得します。許可外provenanceのspanが不正または重複していて切り分けを証明できない場合も、そのfragmentのtextを送りません。clipやitem全文へのfallbackはしません。table cellのページは単一ページの親table provenanceで検証し、複数ページtableではcell textを送らず理由を残します。送信しなかった安全でないfragmentやbboxの問題はrequest記録に残し、所有ページの問題は採用chunkの処理由来uncertaintyにも残します。rawは不変のまま保持します。
-- request contextはdraft digest・所有／参照ページ・座標説明・回答JSON schemaのみ、glossaryはnullです。外側のページや別文書のcontextを付加しません。推論前の送信先・認証表示などのCLI接続や自動chunk分割は対象外です。
+- request contextはdraft digest・所有／参照ページ・座標説明・回答JSON schema・図所属の回答指針（`figure_membership`）のみ、glossaryはnullです。外側のページや別文書のcontextを付加しません。推論前の送信先・認証表示などのCLI接続や自動chunk分割は対象外です。
 
 ### 補正回答の型と意味検証
 
