@@ -2,7 +2,7 @@
 
 英語の技術PDF・テキストEPUBを、原本文書への追跡と要確認事項を保ちながら日本語Markdownへ変換するCLIを開発しています。
 
-**新規`run`でPDF／EPUBの取得から準備・翻訳・Markdown出力まで実行できます。** helper初回導入・認証・任意のcatalog参照、保存済み正本の`render`／`status`にも対応します。`resume`で保存済みworkspaceを続行できます。`revise`で原文・訳文のJSON修正を推論なしで採用できます。`review`は未実装です。 参照だけなら認証情報や書籍を準備・送信する必要はありません。実providerでの認証・推論は未検証です。
+**新規`run`でPDF／EPUBの取得から準備・翻訳・Markdown出力まで実行できます。** helper初回導入・認証・任意のcatalog参照、保存済み正本の`render`／`status`にも対応します。`resume`で保存済みworkspaceを続行できます。`revise`で原文・訳文のJSON修正を推論なしで採用できます。`review`で明示unit／PDFページ範囲の独立LLM照合と指摘の保存ができます（自動修正・全体品質承認はしません）。参照だけなら認証情報や書籍を準備・送信する必要はありません。実providerでの認証・推論は未検証です。
 
 ## 前提環境と導入
 
@@ -141,7 +141,29 @@ resumeは保存原本・範囲・非秘密設定を基準に、artifact hashと�
 
 SIGINT／SIGTERMは新規requestを止め、実行中helperの取消・認証保存drainを待ちます（強制killまで原則30秒）。SIGKILL・disk障害では応答・usageやOAuth refresh保存を保証できません。**送信済み応答を失うとusageは不明で、再送により重複課金される可能性があります。exactly-once課金は保証しません。** token保存に失敗した場合は必要に応じ再loginしてください。
 
-旧原本・snapshot・attempt・出力は削除しません。保存途中の一時fileや未検証回答は成功として採用せず、確定artifactだけを再検証します。hash不一致は送信前に明示停止し、破損fileを上書きしません。別writerが稼働中ならresume／直接stage／renderは拒否され、process終了後はOS lockが解放されます。exit codeはrunと同じ0／1／2です。未処理／失敗や次の候補採用待ちが残れば部分出力のままです。`review`は未実装です。
+旧原本・snapshot・attempt・出力は削除しません。保存途中の一時fileや未検証回答は成功として採用せず、確定artifactだけを再検証します。hash不一致は送信前に明示停止し、破損fileを上書きしません。別writerが稼働中ならresume／直接stage／renderは拒否され、process終了後はOS lockが解放されます。exit codeはrunと同じ0／1／2です。未処理／失敗や次の候補採用待ちが残れば部分出力のままです。
+
+## 明示範囲を内容照合する（送信あり）
+
+```sh
+# IDsはstatusの出力／source mapにある現在のunit ID。comma-separatedで明示します
+# split済みなら unit-1.part-1 等の現在のIDを指定します（親IDの自動展開はしません）
+doc-translate review ./work/book --units unit-1,unit-2
+# PDFだけ：指定ページ画像と、その範囲内の原文block／対応訳を照合します
+doc-translate review ./work/book --pages 2-3
+# この操作だけの送信先変更。保存済みrun／段階設定は書き換えません
+doc-translate review ./work/book --units unit-1 --provider PROVIDER --model MODEL --thinking off
+# 指摘をQAと表示用の※へ反映（推論なし）
+doc-translate render ./work/book
+```
+
+- `--units`と`--pages`はどちらか1つが必須です。unit一覧は入力順でなく文書順に送ります。unitモードは選択した原文・対応訳・選択unit内のinline保護内容、表の行列情報、固定policy／glossaryだけを送り、他unit本文を含む祖先contextや文書全体context、ページ画像は送りません。
+- PDFページモードは保存済み送信許可範囲・ページ画像内だけです。指定外の画像・抽出下書きは送りません。code／formula／図など訳文unitのないblockやページ画像だけにも位置付き指摘を残せます。block・table cell・unitが選択外に跨る場合は、全体本文／訳文を漏らしたり黙ってskip／範囲拡大したりせず、必要なページ範囲を示してexit 2で止まります。
+- 現在の採用原文・準備・設定に対応する保存済み訳文が必要です。未知ID・未訳／staleの場合も送信せず、条件を表示します。必要な翻訳は利用者が別途`resume`してください。候補採用待ちだけを理由に拒否せず、有効な採用版のhashに結び付けます。
+- 設定はこの操作の明示`--provider/--model/--thinking` > 保存済みの該当段階設定（unitsはtranslation、pagesはcorrection）。`PI_*`で保存設定は変わりません。該当設定がない場合は不足fieldを明示指定してください。別provider／modelへ自動fallbackしません。送信直前に原資料・source／translation hash、対象ID／ページ／画像、送信先と実認証source／typeをstderrへ表示します。
+- stdoutのJSONに`review.status`・不変artifactのpath／hashと保存-only statusを返します。exit 0は範囲の照合記録が保存できたこと、1は推論／保存等の失敗、2は入力・範囲・設定エラーです。指摘があっても記録成功なら0です。元原文／訳文・採用参照は変更せず、修正は次の`revise`で明示します。
+- findings・確認者（provider/model）・独立LLMという方法・範囲・usageを保持します。QA／statusの`content_review.translation_records`は現行source／translation hashに対応する記録だけ、`review_history`には旧版も残します。原文block／unitと訳文unitの未確認範囲を別記し、機械検査と内容確認は別です。空findingsやmodelの自己申告で`meaning_quality_approved`をtrueにしません。修正後の旧reviewは現行確認済みには数えません。
+- `review`はQAの自動再出力をせず、`render_current: false`なら保存-onlyの`render`で反映できます。失敗・未採用の回答／usageも保存し、未観測usageを0としません。繰返すreviewは新しい独立呼出しです。応答／保存を失った後の再送による重複課金は保証できません。
 
 ## 原文・訳文を修正する（推論なし）
 

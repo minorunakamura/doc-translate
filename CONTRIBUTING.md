@@ -1,12 +1,12 @@
 # 開発ガイド
 
-対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13の安全Markdown・対応表・QA・summaryとoffline render/status、Issue #14のPDF／EPUB新規run接続、Issue #15のresume／障害復旧、Issue #16の基点付きrevise・PDF補正候補の明示採用です。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
+対象はIssue #1の初期基盤、Issue #2のsetup-ai／offline metadata、Issue #3の認証store／login・logout、Issue #4の再利用可能な推論adapter、Issue #5のEPUB安全読込み境界、Issue #6のEPUB原文snapshot抽出、Issue #7のPDF抽出下書き取得・保存、Issue #8の所有範囲を検証したPDF補正chunk保存、Issue #9のPDF原文snapshot組立、Issue #10の共通翻訳unit生成、Issue #11の本文根拠付きcontext／glossary準備、Issue #12の固定入力による翻訳・検証・採用snapshot、Issue #13の安全Markdown・対応表・QA・summaryとoffline render/status、Issue #14のPDF／EPUB新規run接続、Issue #15のresume／障害復旧、Issue #16の基点付きrevise・PDF補正候補の明示採用、Issue #17の明示範囲reviewです。全文機能の計画は[正式Plan](docs/plans/doc-translate-initial.md)、責務は[基本設計](docs/design/doc-translate.md)、現在の公開契約は[artifact契約](docs/reference/artifacts.md)を参照してください。READMEは利用者向けです。
 
 ## 構成・環境
 
-- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）・原文組立adapter（`pdf_source.py`）、共通unit生成・inline保護・workflow分割（`units.py`）、固定context／glossary準備と根拠・実行記録（`preparation.py`）、翻訳chunk・検証・部分採用と再利用（`translation.py`）、原文snapshot、基点付きJSON修正と候補採用（`revise.py`）、workspace OS lock、JSONL codec。
+- `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）・原文組立adapter（`pdf_source.py`）、共通unit生成・inline保護・workflow分割（`units.py`）、固定context／glossary準備と根拠・実行記録（`preparation.py`）、翻訳chunk・検証・部分採用と再利用（`translation.py`）、原文snapshot、基点付きJSON修正と候補採用（`revise.py`）、明示範囲の独立内容照合とhash付き不変履歴（`review.py`）、workspace OS lock、JSONL codec。
 - `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証／generation helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`、独立推論のpreflight／stream接続（`generation.ts`）。`ai/tests/`の`.mjs`は公開APIとcompile済みhelperを使うテスト専用processです。
-- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。`tests/test_preparation.py`は保存原文→実helper／faux→固定準備artifactの公開prepare/loadを検査します。`tests/test_translation.py`は保存原文／固定準備→実helper／faux→翻訳の公開translate/loadを検査します。`tests/test_render.py`は正本→Markdown／対応表／QAと実CLI render/statusを検査します。`tests/test_run.py`はPDF／EPUBの公開CLIからworkspace・出力・statusまでを検査します。新規`run`／`resume`／`revise`は実装済みで、`review`は未実装です。`tests/test_revise.py`はsource全置換・訳文patchとpolicy改版、`tests/test_pdf_candidate_acceptance.py`は実CLIから候補比較・採用・後続更新を検査します。
+- `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。`tests/test_preparation.py`は保存原文→実helper／faux→固定準備artifactの公開prepare/loadを検査します。`tests/test_translation.py`は保存原文／固定準備→実helper／faux→翻訳の公開translate/loadを検査します。`tests/test_render.py`は正本→Markdown／対応表／QAと実CLI render/statusを検査します。`tests/test_run.py`はPDF／EPUBの公開CLIからworkspace・出力・statusまでを検査します。新規`run`／`resume`／`revise`／`review`は実装済みです。`tests/test_review.py`はCLI→実helper／faux→局所findings保存→保存-only QA/statusのseamを検査します。`tests/test_revise.py`はsource全置換・訳文patchとpolicy改版、`tests/test_pdf_candidate_acceptance.py`は実CLIから候補比較・採用・後続更新を検査します。
 - `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、および別venvにinstallしたwheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
 
 実動基準：macOS 26.7.1 arm64、Python 3.14.9、Node 24.21.0、pnpm 12.10.1、npm 11.19.0。CIはGitHub-hosted macos-15 ARM64、Python 3.14／Node 24です。別OSやmacOSの最低versionは未保証です。
@@ -39,10 +39,10 @@ Python packageは`ai/dist`を同梱するため、fresh checkoutでは`uv sync`�
 uv sync --locked --dev --extra pdf
 uv run --locked --extra pdf ty check
 uv run --locked --extra pdf python -c 'from docling.document_converter import DocumentConverter; from docling.datamodel.pipeline_options import OcrMacOptions; from docling_core.types.doc import DoclingDocument; from ocrmac import ocrmac; print(OcrMacOptions(lang=["en-US"], framework="vision", recognition="accurate"))'
-uv run --locked --extra pdf pytest tests/test_pdf.py tests/test_run.py
+uv run --locked --extra pdf pytest tests/test_pdf.py tests/test_run.py tests/test_review.py
 ```
 
-共通テストはcore-onlyで全件実行し、PDF extra付きではDocling依存のテストを含む上記2ファイルに限定して重複実行を抑えます。PDF依存が必要なテストを別ファイルに追加する場合は、CIとこの手順の実行対象にも追加してください。
+共通テストはcore-onlyで全件実行し、PDF extra付きではDocling依存のテストを含む上記3ファイルに限定して重複実行を抑えます。PDF依存が必要なテストを別ファイルに追加する場合は、CIとこの手順の実行対象にも追加してください。
 
 extraを保持するには`uv run --locked --extra pdf ...`（pytestは`uv run --locked --extra pdf pytest`を推奨）、またはsync済みの`.venv/bin/pytest`／`.venv/bin/ruff`／`.venv/bin/ty`を使い、`.venv/bin/pytest`を直接使う場合はvenvのactivateまたは`.venv/bin`のPATH追加が必要です。これは依存解決・importと人工fixture検証であり、それだけを実Docling変換、Apple Vision OCR、重みを使うlayout／table処理の成功と表示しません。
 
@@ -221,6 +221,44 @@ PY_RUN
 ```
 
 最初のrunはstderrへprepare×2／translation×1の送信前通知、stdoutへsummaryを表示します。`artifacts`から日本語側の`訳:Original`とinline保持、英語原文、source map、QA／usageを確認できます。PDFのsynthetic直接確認は`.venv/bin/pytest -s tests/test_run.py -k 'owns_requested or partial_pdf or without_pages'`で同じ公開CLIを使い、置き換えるのはDocling外部APIとfaux providerだけです。fixtureの取得成功は実PDFの完全抽出や実LLM意味品質・viewer表示の保証ではありません。汎用resume／revise／review・remote CIの実行はこのIssueでは行いません。
+
+## 明示範囲reviewの検証境界
+
+Issue #17は公開`review DIR --units IDS`／`--pages A-B`→workspace・QA/statusと、Python↔実Node helper／公開faux providerの既存seamです。`tests/test_review.py`は`test_run.py`のhelper/run_args・人工PDF converter、`test_pdf_correction.py`の保存draft／PNGと公開補正・組立・準備・翻訳API、人工EPUBを再利用します。内部generate／workflow mock、新Runner／protocol、実provider／認証／書籍／model取得を使いません。Node fixtureの変更は`ai/tests/run-process.mjs`だけで、helper source変更がないためbuildは不要です。PDF extra CIの既存pytest対象にもreviewを追加しています（remote実行は不要）。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/pytest tests/test_review.py tests/test_cli.py tests/test_render.py tests/test_revise.py tests/test_run.py
+.venv/bin/pytest
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+.venv/bin/ty check
+pnpm --dir ai format
+pnpm --dir ai lint
+pnpm --dir ai test
+```
+
+- unit／pages排他・必須、未知／空ID、EPUB pages、保存範囲外・跨り・未訳／staleの無送信を確認します。PDF表のblock位置とcell evidenceが異なる人工形状でも選択外cell本文を送りません。
+- 文書／祖先contextの非選択sentinel、inline token内の別attribute・他unit本文を送らず、選択unitの保護literalだけを照合できることを実requestで検査します。split/table/attributeのID・親範囲・元位置、選択PNG byte/hash/順/scale/座標、非翻訳block／ページの位置付き指摘を確認します。
+- 正常／空findings／未知対象拒否／provider失敗／metadata設定失敗とusage observed/unknown、原文／訳文／準備／run参照と旧byte hash不変、明示overrideとambient非適用、writer lock／atomic artifact保存失敗時の旧版・観測usage保持を検査します。故障注入はOSのreplace境界だけです。
+- 保存-only status/renderの現行確認／未確認範囲、機械チェックとの分離、QAの元位置／block／unit／出力anchor、旧reviewの履歴保持と修正後非current、candidate待ちでも採用hashに結ぶことを確認します。空findingsでもmeaning_quality_approved=falseです。
+
+公開CLIの直接人工確認は上の`RUN_FIXTURE/new`作成後に、同じ外部process seamで実行できます（通常の利用者CLIは導入済みhelper／実providerを使うため、これはfaux限定例です）。
+
+```sh
+PYTHONPATH=tests .venv/bin/python - <<'PY_REVIEW'
+import os
+from pathlib import Path
+from test_run import helper
+from doc_translate.cli import main
+root = Path(os.environ['RUN_FIXTURE'])
+main(['review', str(root / 'new'), '--units', 'unit-1'], process_command=helper(root))
+PY_REVIEW
+.venv/bin/doc-translate status "$RUN_FIXTURE/new"  # review履歴・未確認範囲、意味品質承認false
+.venv/bin/doc-translate render "$RUN_FIXTURE/new"  # offline QA更新
+```
+
+これは機械的な範囲／保存／接続の検査であり、実LLMの指摘精度、誤訳不存在、人間の全文査読やviewer実表示を保証しません。実provider・実認証・model取得は別途の個別承認が必要です。
 
 ## 基点付き修正・PDF補正候補採用の検証境界
 

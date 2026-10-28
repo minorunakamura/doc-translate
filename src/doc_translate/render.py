@@ -15,6 +15,7 @@ from doc_translate.snapshot import (
     Sha256,
     SnapshotReference,
     SourceSnapshot,
+    Uncertainty,
     _atomic_write,
     load_source_snapshot,
     source_snapshot_sha256,
@@ -101,6 +102,7 @@ class _Markdown:
         source: SourceSnapshot,
         units: list[TranslationUnit],
         translation,
+        review_findings: list[dict[str, Any]] | None = None,
     ):
         self.source = source
         self.source_digest = source_snapshot_sha256(workspace)
@@ -134,6 +136,19 @@ class _Markdown:
         for item in [
             *source.uncertainties,
             *(translation.uncertainties if translation else []),
+            *(
+                Uncertainty(
+                    reason=f["reason"],
+                    target_ids=f["unit_ids"]
+                    if f["target_kind"] == "unit"
+                    else f["block_ids"],
+                    locations=f["locations"],
+                    stage="review",
+                    origin="undetermined",
+                )
+                for f in (review_findings or [])
+                if f["target_kind"] != "page"
+            ),
         ]:
             targets = set(item.target_ids)
             block_ids = [
@@ -168,6 +183,34 @@ class _Markdown:
                             ]
                         )
                     ),
+                }
+            )
+        for finding in review_findings or []:
+            if finding["target_kind"] != "page":
+                continue
+            related = [u for u in units if u.unit_id in finding["unit_ids"]]
+            # Keep block correspondence without marking units on other pages.
+            block_targets = [
+                bid
+                for bid in finding["block_ids"]
+                if not any(u.block_id == bid for u in related)
+            ]
+            self.marked.update(block_targets)
+            self.marked_units.update(finding["unit_ids"])
+            self.concerns.append(
+                {
+                    **Uncertainty(
+                        reason=finding["reason"],
+                        target_ids=finding["unit_ids"] + block_targets,
+                        locations=finding["locations"],
+                        stage="review",
+                        origin="undetermined",
+                    ).model_dump(mode="json"),
+                    "block_ids": finding["block_ids"],
+                    "unit_ids": finding["unit_ids"],
+                    "output_anchors": [
+                        self.anchors[bid] for bid in finding["block_ids"]
+                    ],
                 }
             )
         for unit in units:
@@ -871,6 +914,8 @@ class _Markdown:
                             }
                         )
                     rendered = self.table(cells, japanese)
+                    if marked:
+                        rendered += "\n\n※"
             elif block.kind in {"picture", "figure"}:
                 image = self.assets.pdf_picture(structure)
                 rendered = (
@@ -946,7 +991,18 @@ def _build(workspace: Path):
     )
     usage = _usage(workspace)
     active = translation if not stale else None
-    renderer = _Markdown(workspace, source, units, active)
+    from doc_translate.review import load_reviews
+
+    review_history = load_reviews(workspace)
+    current_reviews = [
+        r
+        for r in review_history
+        if r["source_snapshot_sha256"] == source_digest
+        and r["translation_snapshot_sha256"] == translation_digest
+        and not stale
+    ]
+    review_findings = [f for r in current_reviews for f in r["findings"]]
+    renderer = _Markdown(workspace, source, units, active, review_findings)
     for unit in units:
         if unit.unit_id not in renderer.translated:
             block = next(b for b in source.blocks if b.block_id == unit.block_id)
@@ -1026,8 +1082,13 @@ def _build(workspace: Path):
             unit_ids - (renderer.seen[True] & renderer.seen[False])
         ),
     }
+    translation_reviewed = {uid for r in current_reviews for uid in r["unit_ids"]}
     reviews = [r.model_dump(mode="json") for r in source.content_reviews]
-    reviewed = {target for r in source.content_reviews for target in r.target_ids}
+    reviewed = (
+        {target for r in source.content_reviews for target in r.target_ids}
+        | translation_reviewed
+        | {bid for r in current_reviews for bid in r["block_ids"]}
+    )
     qa = {
         "checks": [c.model_dump(mode="json") for c in source.checks]
         + output_checks
@@ -1041,13 +1102,19 @@ def _build(workspace: Path):
         "uncertainties": renderer.concerns,
         "content_review": {
             "records": reviews,
+            "unreviewed_source_block_ids": [
+                b.block_id for b in source.blocks if b.block_id not in reviewed
+            ],
             "unreviewed_source_unit_ids": [
                 u.unit_id
                 for u in units
                 if u.unit_id not in reviewed and u.block_id not in reviewed
             ],
-            "translation_records": [],
-            "unreviewed_translation_unit_ids": [u.unit_id for u in units],
+            "translation_records": current_reviews,
+            "review_history": review_history,
+            "unreviewed_translation_unit_ids": [
+                u.unit_id for u in units if u.unit_id not in translation_reviewed
+            ],
             "meaning_quality_approved": False,
             "viewer_display_checked": False,
         },
@@ -1217,6 +1284,7 @@ def workspace_status(workspace: Path) -> dict:
                 "usage",
                 "scope",
                 "processing",
+                "content_review",
             )
         ):
             summary = {

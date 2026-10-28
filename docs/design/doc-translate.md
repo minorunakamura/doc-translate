@@ -254,7 +254,7 @@ Node開発はpnpm、初回依存導入はinstalled npm／pnpmの固定lockで明
 | 保護対象 | 翻訳前後のコード・数式・図・表構造の不変性、literal等の保持 | 補正時点で原本を正しく復元できたか |
 | 文書全体 | 用語・文体・読み順・章節・図表等の対応 | 任意PDF・EPUBについての無誤りの保証 |
 
-構造・対応関係・保護対象・参照関係の機械検査は全範囲で行う。追加LLMによる内容レビューは必要な範囲とcontextに限定し、全文の追加レビューは標準では必須にしない。QAレポートには機械検査の結果と、誰がどの範囲を内容レビューしたかを分けて記録する。機械検査や追加LLMレビューのいずれも、見つからなかった誤訳がないことの保証にはしない。
+構造・対応関係・保護対象・参照関係の機械検査は全範囲で行う。追加LLMによる内容レビューは必要な範囲とcontextに限定し、全文の追加レビューは標準では必須にしない。QAレポートには機械検査の結果と、誰がどの範囲を内容レビューしたかを分けて記録する。`review DIR --units unit-1,unit-2`またはPDFの`--pages A-B`で明示範囲だけを独立推論し、findings・確認者（provider/model）・方法・対象source／translation hash・元位置とusageをレビュー専用の不変artifactへ保存する。原文／訳文や採用参照を自動変更しない。単位選択では他unit本文を含む全文／祖先contextやページ画像を送らず、ページ選択では指定画像だけを送り、block／cell／unitが範囲外に跨れば黙ってskip／拡大せず範囲エラーにする。設定は明示操作設定から保存該当段階設定（unitsはtranslation、pagesはcorrection）を使い、ambientで保存設定を変えない。候補pendingだけを理由に拒否せず、有効な採用版hashに結ぶ。QA／statusは現行hashの確認／未確認範囲と旧review履歴を分け、renderの鮮度判定もreview変更を比較する。機械検査や追加LLMレビューのいずれも、見つからなかった誤訳がないことの保証にはしない。
 
 電子版PDFの独立した文字抽出や単語計数は欠落候補を探す補助とする。図内文字や除外内容も区別して扱い、単語集合の一致を意味・順序の正しさの証明にしない。スキャンに同じ独立比較元があるとは想定しない。EPUBでは元のDOM・読み順・対象nodeとの対応を補助検査するが、翻訳unitのID一致だけで、本文抽出時の脱落まで検出できるとは扱わない。
 
@@ -477,11 +477,11 @@ cacheRead／cacheWriteは0。合計参考USDは19.409459で、Piのcatalog換算
 | 原文変更・glossary／文体変更後の局所処理 | 基点付きrevise、PDF候補の比較・明示採用、実request一致による旧訳／手修正訳再利用を実装。人工入力で機械的契約を検査 | `tests/test_revise.py`・`test_run.py`・`test_pdf_candidate_acceptance.py`でstale／不正入力、IDずれ・構造変更、code-only、scope／出力鮮度分離を確認する。人の訂正の意味的完全保持や実LLM品質は未保証 |
 | 障害復旧・resume | 保存入力検証・不足工程再開を実装。人工process境界で候補公開前／source切替前後の中断、旧hash保持・補正再送なしを検査 | 検査した境界と任意障害への保証を区別する。SIGKILL／disk障害・応答損失時のexactly-once課金は保証しない。§18の55ページ再利用は別の過去実績 |
 | 文書context・glossaryの自動準備 | 候補・用例・出典位置を集める方式と差替え境界は確定。品質・時間・費用は未検証 | 本文の用例・定義との整合、準備の利用量を確認する。分野知識から46語を作った実績と混同しない |
-| 内容確認の方法・範囲 | 全範囲の機械検査＋必要範囲の追加LLMレビューを採用 | 内容レビュー範囲と未確認範囲を明示する。全文の追加LLMレビューは標準では必須にせず、検査結果を無誤りの保証と扱わない |
+| 内容確認の方法・範囲 | 明示unit／PDFページの独立reviewと、hash付き指摘・確認者／方法／範囲／usageの保存、QA/status連携を実装。人工入力と実helper／公開faux providerで範囲・画像・保存・旧版非currentを検査 | 実LLMの指摘精度や意味品質・人間の全文査読は未確認。全文の追加LLMレビューは標準では必須にせず、空findingsでも品質承認しない |
 | 複雑な表・数式・要確認の目印 | §16の表示方針は確定。実表示・安全な生成は未検証 | HTML表、数式記法・MathML・画像、`※`とQAレポートの対応を、対応viewerとともに確認する |
 | テキストEPUB入力 | EPUB 2／3のXHTMLリフロー型という受理範囲は確定。未実装・実データ未検証 | parser・対象判定・inline構造・脚注・リンク等を具体化し、構造保持と安全境界を確認する。PDF用OCR・補正LLMは必須にしない |
 | ノイズを含む実スキャン、多段組み・複数ページ表・長いunit | 一般的な成立性は未検証 | きれいな画像のみPDFの実績と区別し、対応不能部分を省略・推測補完せず保持する |
-| CLI・共通schema・保存・依存 | run／resume／revise／render／statusと保存・基点／候補provenanceを実装。公開契約はartifact契約による | reviewは未実装。関連offline検査と全体受入れ・実provider検証を区別し、保持・構造検証を意味品質認定にしない |
+| CLI・共通schema・保存・依存 | run／resume／revise／review／render／statusと保存・基点／候補provenanceを実装。公開契約はartifact契約による | 関連offline検査と全体受入れ・実provider検証を区別し、保持・構造検証やmodelの自己申告を意味品質認定にしない |
 | pi-ai直接接続・認証 | 接続責務・credential・terminal eventの契約は合意済み。公開codecのみ実装 | metadata／setup-ai／認証store／generationを実装し、実認証と小範囲送信は個別承認で検証。§18は直接経路の再実証ではない |
 | 初期CI・配布 | macOS ARM64の品質checks・offline codec／wheel導入検査を設定 | 今回および後続Work Itemではremote CIの実行・成功確認・実行ref／run URLの取得・記録を受け入れ条件にせず、そのためのcommit／pushも必須にしない。既存CI設定・smoke検査と、各Work Itemの責務に対応するローカル正式チェック・build／別環境導入検証は維持する。remote CIの未実行だけでは未完了・blockedにせず、未公開／未実行をremote成功としない。PDF importをOCR変換成功としない |
 | 段階別の別model／低thinking最適化 | 未検証 | 中核方式と切り離して、必要になった時点で比較する |
