@@ -296,7 +296,7 @@ def test_changed_policy_never_renders_old_translation_as_current_after_failure(
         result["stale_translation"] is True
         or not load_translation(workspace).translations
     )
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     assert json.loads(capsys.readouterr().out)["processing"]["status"] == "partial"
 
 
@@ -480,7 +480,7 @@ def test_failed_chunk_partial_manual_patch_resumes_only_unfilled_units(
         ]
     )
     capsys.readouterr()
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     partial = json.loads(capsys.readouterr().out)
     assert partial["processing"]["status"] == "partial"
     assert load_translation(workspace).translations[0].text == "手動で補完した段落。"
@@ -546,7 +546,7 @@ def test_epub_source_validates_only_dereferenced_original_nodes(
     assert rejected.value.code == 2
     assert all(p.read_bytes() == value for p, value in before.items())
     capsys.readouterr()
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     assert json.loads(capsys.readouterr().out)["render_current"] is True
     main(["render", str(workspace)])
     assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"

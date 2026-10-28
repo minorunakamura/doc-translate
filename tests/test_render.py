@@ -151,7 +151,12 @@ def test_render_and_status_cli_do_not_require_node_or_pdf_dependencies(tmp_path)
     result = json.loads(rendered.stdout)
     assert result["processing"]["status"] == "partial"
     status = subprocess.run(
-        [str(Path(sys.executable).parent / "doc-translate"), "status", str(workspace)],
+        [
+            str(Path(sys.executable).parent / "doc-translate"),
+            "status",
+            str(workspace),
+            "--json",
+        ],
         check=False,
         env=env,
         text=True,
@@ -674,6 +679,7 @@ def test_epub_huge_table_span_renders_and_status_finishes_in_bounded_time(tmp_pa
                 str(Path(sys.executable).parent / "doc-translate"),
                 command,
                 str(workspace),
+                *(["--json"] if command == "status" else []),
             ],
             capture_output=True,
             text=True,

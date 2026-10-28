@@ -66,7 +66,7 @@ assert summary["processing"]["status"] == "partial"
 assert "A journal preserves order." in html.unescape(
     (workspace / summary["artifacts"]["english"]).read_text())
 assert "※" in (workspace / summary["artifacts"]["japanese"]).read_text()
-status = subprocess.run([str(cli), "status", str(workspace)],
+status = subprocess.run([str(cli), "status", str(workspace), "--json"],
                         capture_output=True, text=True, check=True)
 assert json.loads(status.stdout)["render_current"] is True
 print("core-only wheel EPUB reader/source/units + saved-only CLI render/status: OK")
@@ -200,9 +200,9 @@ def main() -> None:
                 [str(cli), "--help"], cwd=temporary, env=environment, check=True
             )
             for arguments, key in (
-                (["providers"], "providers"),
-                (["models", "--provider", "anthropic"], "models"),
-                (["models", "--provider", "google"], "models"),
+                (["providers", "--json"], "providers"),
+                (["models", "--provider", "anthropic", "--json"], "models"),
+                (["models", "--provider", "google", "--json"], "models"),
             ):
                 result = subprocess.run(
                     [str(cli), *arguments],

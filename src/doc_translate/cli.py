@@ -8,6 +8,7 @@ from pathlib import Path
 
 from doc_translate import ai_runtime
 from doc_translate.auth import authenticate
+from doc_translate.cli_output import catalog_text, summary_text
 from doc_translate.inference import Selection, resolve_config
 from doc_translate.preparation import Glossary, StylePolicy
 from doc_translate.render import render_document, workspace_status
@@ -99,7 +100,7 @@ def main(
     parser = argparse.ArgumentParser(
         prog="doc-translate",
         description="Traceable PDF and EPUB translation, rendering and status.",
-        epilog="Outputs JSON. Exit codes: 0 success, 1 partial output/execution failure, 2 input/configuration error. Run/resume send explicitly scoped data to selected providers. PDF source candidate adoption is explicit via revise --source; pending resume/render exit 1, successful status exits 0. Saved render/status/revise need no Node, authentication or inference.",
+        epilog="Providers/models show tables; run/status show summaries. Use --json on these commands for machine-readable output; other commands output JSON. Exit codes: 0 success, 1 partial output/execution failure, 2 input/configuration error. Run/resume send explicitly scoped data to selected providers. PDF source candidate adoption is explicit via revise --source; pending resume/render exit 1, successful status exits 0. Saved render/status/revise need no Node, authentication or inference.",
     )
     commands = parser.add_subparsers(dest="operation", required=True)
     setup = commands.add_parser(
@@ -108,15 +109,15 @@ def main(
         description="Install bundled locks in a new application-owned runtime outside document workspaces. Requires installed Node >=24.21.0 and the selected manager. Outputs runtime location and versions as JSON; no login or inference.",
     )
     setup.add_argument("--package-manager", choices=("npm", "pnpm"), required=True)
-    commands.add_parser(
+    providers = commands.add_parser(
         "providers",
         help="Optional offline built-in provider catalog lookup.",
-        description="Optional lookup: output built-in provider IDs and names as JSON. Requires setup-ai and Node only; no authentication, refresh or network requests.",
+        description="Optional lookup: show built-in provider IDs, names and login methods in a table; --json preserves full metadata. Requires setup-ai and Node only; no authentication, refresh or network requests.",
     )
     models = commands.add_parser(
         "models",
         help="Optional offline chat model and capability lookup.",
-        description="Optional lookup: output built-in chat model IDs, image-input and thinking capabilities as JSON. Requires setup-ai and Node only; no authentication, refresh or network requests.",
+        description="Optional lookup: show built-in chat model IDs, image-input and thinking capabilities in a table; --json preserves full metadata. Requires setup-ai and Node only; no authentication, refresh or network requests.",
     )
     models.add_argument("--provider", required=True)
     login = commands.add_parser(
@@ -138,6 +139,12 @@ def main(
             description="No acquisition, correction, preparation, translation, Node, authentication or network access. Uses only adopted source H, never pending candidate C. Reports source_adoption with H/B/C paths, inputs, envelope and next_operation. Render exits 1 for partial output or pending adoption; status exits 0 when inspection succeeds. Input/configuration errors exit 2.",
         )
         command.add_argument("workspace", type=Path)
+        if operation == "status":
+            command.add_argument(
+                "--json",
+                action="store_true",
+                help="Output full summary JSON instead of readable text.",
+            )
     revise = commands.add_parser(
         "revise",
         help="Adopt validated JSON revisions without Node or inference.",
@@ -214,6 +221,12 @@ def main(
         type=_page_range,
         help="Explicit PDF reference-only transmission permission A-B.",
     )
+    for command in (providers, models, run):
+        command.add_argument(
+            "--json",
+            action="store_true",
+            help="Output full result JSON instead of readable text.",
+        )
     args = parser.parse_args(argv)
     try:
         if args.operation in {"run", "resume"}:
@@ -332,7 +345,12 @@ def main(
         } and isinstance(error, (FileNotFoundError, ValueError)):
             parser.error(str(error))
         parser.exit(1, f"doc-translate: {error}\n")
-    print(json.dumps(result, ensure_ascii=False))
+    if args.operation in {"providers", "models"} and not args.json:
+        print(catalog_text(args.operation, result))
+    elif args.operation in {"run", "status"} and not args.json:
+        print(summary_text(args.operation, result, args.workspace))
+    else:
+        print(json.dumps(result, ensure_ascii=False))
     if args.operation == "review" and result["review"]["status"] == "rejected":
         parser.exit(2 if result["review"]["error"] in CONFIG_ERROR_CODES else 1)
     if (

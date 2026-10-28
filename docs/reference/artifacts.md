@@ -60,7 +60,7 @@ CLIの送信前表示は新しいpreflightを重ねず、既存推論の**prefli
 - sourceを1件も採用できなければMarkdownは作らず、partial summaryの`artifacts.original/run`と取得できた`pdf_draft`を返します。attemptは既存pathに残ります。
 - 新規runのrender/statusは文書hashと対応するmanifestを`scope.run`へ表示します。source未取得のrunもstatusで原本hashと保存pathを検査できます。status検査成功自体は内容失敗でもexit0。保存済みsourceを持つ旧workspaceの契約とNode不要は維持します。
 
-利用手順・オプションは[README](../../README.md#文書を翻訳する通常利用)、offlineの実CLI直接確認は[開発ガイド](../../CONTRIBUTING.md#新規runの検証境界)を参照してください。
+利用手順・オプションは[CLI詳細リファレンス](usage.md#文書を翻訳する通常利用)、offlineの実CLI直接確認は[開発ガイド](../../CONTRIBUTING.md#新規runの検証境界)を参照してください。
 
 ## 再開（Issue #15）
 
@@ -88,7 +88,7 @@ CLIの送信前表示は新しいpreflightを重ねず、既存推論の**prefli
 
 `SourceReplacement.candidate_sha256`は候補採用時だけ指定する任意の候補記録digestです。省略／nullの通常原文修正では現在版の機械基点・候補provenance・scopeを継承し、採用待ち候補を取り込んだ扱いにしません。理由と親はアプリが`change_reason`／`previous_snapshot_sha256`へ設定します。機械基点・provenanceとPDF工程scope（`processing`、`pdf_run_scope` check、correctionのuncertainty）は利用者の値ではなく検証済み機械版から設定します。利用者の完了自己申告で未処理／失敗を消しません。
 
-訳文patchは既存`UnitTranslation(unit_id, text, uncertainties)`を使います。変更chunkは`translations/chunks/<sha256>.json`に`request/config/answer/manual_revision`を保存し、`manual_revision`は`base_translation_sha256/base_chunk_index/reason`です。旧attempt／raw回答・旧chunk／snapshot・出力を保持して、`translation-snapshot.json`を最後に更新します。返却JSONはsource修正時`source_snapshot_sha256/reason/base_source_sha256`、訳文修正時`translation_snapshot_sha256/reason/base_translation_sha256`です。成功exit0、stale基点・不正入力exit2、保存等の実行失敗exit1。操作例・envelopeの作り方は[README](../../README.md#原文訳文を修正する推論なし)を参照してください。
+訳文patchは既存`UnitTranslation(unit_id, text, uncertainties)`を使います。変更chunkは`translations/chunks/<sha256>.json`に`request/config/answer/manual_revision`を保存し、`manual_revision`は`base_translation_sha256/base_chunk_index/reason`です。旧attempt／raw回答・旧chunk／snapshot・出力を保持して、`translation-snapshot.json`を最後に更新します。返却JSONはsource修正時`source_snapshot_sha256/reason/base_source_sha256`、訳文修正時`translation_snapshot_sha256/reason/base_translation_sha256`です。成功exit0、stale基点・不正入力exit2、保存等の実行失敗exit1。操作例・envelopeの作り方は[CLI詳細リファレンス](usage.md#原文訳文を修正する推論なし)を参照してください。
 
 ### 候補・実入力・採用の確定点
 
@@ -361,7 +361,7 @@ attempt→検証済みchunk artifact→snapshot→採用参照の順でfsync／a
 
 ## 安全Markdown・対応表・QA・render/status（Issue #13）
 
-公開APIは`doc_translate.render.render_document(workspace: Path) -> dict`と`workspace_status(workspace: Path) -> dict`です。CLIは`doc-translate render DIR`／`status DIR`で同じsummary JSONをstdoutへ返します。原文を既存loadで検証し、訳文があれば`load_translation`経由で元準備版・実入力・全unit／保護markerを再検査します。現在のsource hashと訳文の出典が違う場合は`stale_translation: true`とし、旧訳は使わず原文を残した部分出力にします。取得・LLM・認証・Node・PDF native依存は呼びません。
+公開APIは`doc_translate.render.render_document(workspace: Path) -> dict`と`workspace_status(workspace: Path) -> dict`です。CLIは`doc-translate render DIR`／`status DIR --json`で同じsummary JSONをstdoutへ返します。`status DIR`の既定は人向けの要約です。`providers`／`models`／`run`も既定は表または要約、`--json`で従来と同じ完全なJSONを出力します。保存artifact・Python API・終了コード・送信前通知は変わりません。原文を既存loadで検証し、訳文があれば`load_translation`経由で元準備版・実入力・全unit／保護markerを再検査します。現在のsource hashと訳文の出典が違う場合は`stale_translation: true`とし、旧訳は使わず原文を残した部分出力にします。取得・LLM・認証・Node・PDF native依存は呼びません。
 
 ```text
 WORKSPACE/
@@ -408,7 +408,7 @@ for check in draft.checks:
     print(check.name, check.passed, check.details)
 ```
 
-Docling／OCRMacは取得時のみimportし、core-onlyのimportやEPUBに要求しません。固定version、CPU、OCRMacの`OcrMacOptions(lang=["en-US"], framework="vision", recognition="accurate")`、HeronとTableFormer V1 accurateを使用します。modelの固定repo／revision／必要ファイル／licenseと準備手順は[README](../../README.md#pdf取得だけを使う場合のローカル準備)を参照してください。local directoryは`docling-project--docling-layout-heron/`と`docling-project--docling-models/model_artifacts/tableformer/accurate/`を持つ構造で、既存snapshotへのsymlinkも利用できます。各ファイルの絶対local pathとSHA-256を記録します。重みをworkspaceへコピーしません。
+Docling／OCRMacは取得時のみimportし、core-onlyのimportやEPUBに要求しません。固定version、CPU、OCRMacの`OcrMacOptions(lang=["en-US"], framework="vision", recognition="accurate")`、HeronとTableFormer V1 accurateを使用します。modelの固定repo／revision／必要ファイル／licenseと準備手順は[READMEのPDF手順](../../README.md#pdfを翻訳する)と[modelファイルの詳細](usage.md#pdf読取りの依存とmodelファイル)を参照してください。local directoryは`docling-project--docling-layout-heron/`と`docling-project--docling-models/model_artifacts/tableformer/accurate/`を持つ構造で、既存snapshotへのsymlinkも利用できます。各ファイルの絶対local pathとSHA-256を記録します。重みをworkspaceへコピーしません。
 
 `enable_remote_services=False`／`allow_external_plugins=False`、明示local path、`HF_HUB_OFFLINE=1`／`TRANSFORMERS_OFFLINE=1`を強制します。呼出し前にHubがimport済みでもHubのoffline flagを有効にし、呼出し後もprocessのoffline設定を維持します。これは全通信を遮断するfirewallではありません。code／formula enrichment・picture classification／descriptionやVLMは有効にせず、別model／OCRへのfallbackや変換中のdownloadはありません。不足localファイルは必要pathを示す`FileNotFoundError`、PDF extra不足／固定version不一致は`RuntimeError`、不正range／描画設定は`ValueError`です。
 

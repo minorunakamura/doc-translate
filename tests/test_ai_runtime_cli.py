@@ -101,7 +101,7 @@ def test_setup_installs_selected_locks_in_separate_runtimes_then_needs_only_node
     assert credential.read_text() == "keep credential"
     (binaries / "npm").unlink()
     (binaries / "pnpm").unlink()
-    providers = run("providers")
+    providers = run("providers", "--json")
     assert providers.returncode == 0, providers.stderr
     assert {p["id"] for p in json.loads(providers.stdout)["providers"]} >= {
         "openai",
@@ -116,11 +116,22 @@ def test_setup_installs_selected_locks_in_separate_runtimes_then_needs_only_node
     assert next(p for p in catalog if p["id"] == "google")["login_methods"] == [
         "api_key"
     ]
-    models = run("models", "--provider", "anthropic")
+    models = run("models", "--provider", "anthropic", "--json")
     assert models.returncode == 0, models.stderr
     assert any(
         m["image_input"] and m["reasoning"] for m in json.loads(models.stdout)["models"]
     )
+    readable_providers = run("providers")
+    assert readable_providers.returncode == 0, readable_providers.stderr
+    assert "PROVIDER ID" in readable_providers.stdout
+    assert "LOGIN METHODS" in readable_providers.stdout
+    assert "api_key, oauth" in readable_providers.stdout
+    readable_models = run("models", "--provider", "anthropic")
+    assert readable_models.returncode == 0, readable_models.stderr
+    assert "MODEL ID" in readable_models.stdout
+    assert "IMAGE INPUT" in readable_models.stdout
+    assert "THINKING LEVELS" in readable_models.stdout
+    assert json.loads(models.stdout)["models"][0]["id"] in readable_models.stdout
     assert len(log.read_text().splitlines()) == 2
 
 

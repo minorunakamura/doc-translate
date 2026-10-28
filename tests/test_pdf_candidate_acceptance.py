@@ -535,7 +535,7 @@ def test_adopted_candidate_reuses_manual_translation_only_for_exact_actual_reque
     assert downstream_pointers(workspace) == pointers
     assert [r["context"]["owned_pages"] for r in requests(tmp_path)[count:]] == [[2, 3]]
     adopt_candidate(workspace, candidate, capsys)
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     assert json.loads(capsys.readouterr().out)["stale_translation"] is True
     with pytest.raises(SystemExit) as stale:
         main(["render", str(workspace)])
