@@ -243,7 +243,7 @@ def test_real_cli_signal_at_atomic_boundary_reuses_accepted_stages(
     )
     try:
         await_boundary(tmp_path, process)
-        main(["status", str(workspace)])
+        main(["status", "--json", str(workspace)])
         assert json.loads(capsys.readouterr().out)["processing"]["status"] == "partial"
         process.send_signal(getattr(signal, termination))
         (tmp_path / "boundary.release").touch()
@@ -263,7 +263,7 @@ def test_real_cli_signal_at_atomic_boundary_reuses_accepted_stages(
         len(requests(tmp_path)) == 5
     )  # never resend accepted collection/organization/translation
     assert_preserved(old_files)
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     assert json.loads(capsys.readouterr().out)["render_current"] is True
 
 

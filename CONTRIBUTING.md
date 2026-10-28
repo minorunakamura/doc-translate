@@ -100,7 +100,7 @@ extraを保持するには`uv run --locked --extra pdf ...`（pytestは`uv run -
 
 `acquire_pdf`→`load_pdf_draft`の公開seamで、不足model・不正入力／range、raw item／ref／table cell／provenance、clipしないcharspan不一致、conversion status／errors、全対象ページ／PNG、直接描画scale／unload、artifact hash不一致、writer排他、参照replace失敗時の旧版保持を検査します。Doclingの外部公開`DocumentConverter.convert`と公開page backend境界だけを人工fixtureに置換し、保存・load・workspaceは実物を使います。private helper mockや未依頼CLIは追加しません。core-onlyでのPDF／EPUB API importも検査します。
 
-実変換は人工fixtureテストとは別に、明示承認済みの既存local modelだけを使い、自作PDFで公開APIを呼びます。重みをテストやCIが取得することはありません。準備は[README](README.md#pdfのローカル準備)、APIと保存物は[artifact契約](docs/reference/artifacts.md#pdf抽出下書きissue-7)を参照してください。再確認は自作の小さな文字付きPDFと画像のみPDFについて、それぞれ次を実行します（`OWN.pdf`／`MODELS`／workspaceは置換）。
+実変換は人工fixtureテストとは別に、明示承認済みの既存local modelだけを使い、自作PDFで公開APIを呼びます。重みをテストやCIが取得することはありません。準備は[READMEのPDF手順](README.md#pdfを翻訳する)、APIと保存物は[artifact契約](docs/reference/artifacts.md#pdf抽出下書きissue-7)を参照してください。再確認は自作の小さな文字付きPDFと画像のみPDFについて、それぞれ次を実行します（`OWN.pdf`／`MODELS`／workspaceは置換）。
 
 ```sh
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run --locked --extra pdf python - <<'PY'
@@ -221,7 +221,7 @@ source = SourceSnapshot.model_validate_json(Path('tests/fixtures/render-source.p
 save_source_snapshot(Path(os.environ['WORKSPACE']), source)
 PY
 .venv/bin/doc-translate render "$WORKSPACE"  # exit 1: 訳文なしの部分出力、JSONを返す
-.venv/bin/doc-translate status "$WORKSPACE"  # exit 0: render_current=true、QA／出力pathを返す
+.venv/bin/doc-translate status "$WORKSPACE" --json  # exit 0: render_current=true、QA／出力pathを返す
 ```
 
 日本語側に原文＋`※`、英語側に原文、4-backtickのcode fence、数式、code原本欠損のQAが残ります。source mapから元ページ2へ戻れますが、PDF全文とは表示しません。訳文／分割／失敗usageを含む検証は`tests/test_render.py`の既存prepare/translate公開API＋faux fixtureを参照してください。実LLM・実credential・model取得・書籍・viewer・remote CIは使いません。
@@ -258,12 +258,12 @@ root = Path(os.environ["RUN_FIXTURE"])
 source = make_epub(root)  # 自作mixed-inline EPUB、既存書籍ではない
 settings = root / "faux.json"
 settings.write_text(json.dumps({}))
-main(["run", str(source), "--workspace", str(root / "new"),
+main(["run", "--json", str(source), "--workspace", str(root / "new"),
       "--provider", "faux", "--model", "text", "--thinking", "off"],
      process_command=[shutil.which("node"), str(Path("ai/tests/run-process.mjs").resolve()),
                       str(root / "credentials"), str(settings), str(root / "requests.jsonl")])
 PY_RUN
-.venv/bin/doc-translate status "$RUN_FIXTURE/new"  # exit0、completed／render_current=true
+.venv/bin/doc-translate status "$RUN_FIXTURE/new" --json  # exit0、completed／render_current=true
 .venv/bin/doc-translate render "$RUN_FIXTURE/new"  # exit0、LLMなし
 # 同じworkspaceへの新規runはexit2（setup／実認証／推論を開始しない）
 .venv/bin/doc-translate run "$RUN_FIXTURE/book.epub" --workspace "$RUN_FIXTURE/new" \
@@ -304,7 +304,7 @@ from doc_translate.cli import main
 root = Path(os.environ['RUN_FIXTURE'])
 main(['review', str(root / 'new'), '--units', 'unit-1'], process_command=helper(root))
 PY_REVIEW
-.venv/bin/doc-translate status "$RUN_FIXTURE/new"  # review履歴・未確認範囲、意味品質承認false
+.venv/bin/doc-translate status "$RUN_FIXTURE/new" --json  # review履歴・未確認範囲、意味品質承認false
 .venv/bin/doc-translate render "$RUN_FIXTURE/new"  # offline QA更新
 ```
 
@@ -312,7 +312,7 @@ PY_REVIEW
 
 ## 基点付き修正・PDF補正候補採用の検証境界
 
-Issue #16は公開`revise`／`resume`／`status`／`render`→workspace参照・保存hash・出力と、補正回答→接続済みsourceの既存seamを使います。新しいコマンド・汎用merge基盤は追加しません。契約は[artifact契約](docs/reference/artifacts.md#基点付き修正pdf補正候補採用issue-16)、利用者操作は[README](README.md#原文訳文を修正する推論なし)を参照してください。
+Issue #16は公開`revise`／`resume`／`status`／`render`→workspace参照・保存hash・出力と、補正回答→接続済みsourceの既存seamを使います。新しいコマンド・汎用merge基盤は追加しません。契約は[artifact契約](docs/reference/artifacts.md#基点付き修正pdf補正候補採用issue-16)、利用者操作は[CLI詳細リファレンス](docs/reference/usage.md#原文訳文を修正する推論なし)を参照してください。
 
 ```sh
 export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
@@ -483,7 +483,7 @@ summary = json.loads(resumed.stdout)
 assert summary['processing']['status'] == 'completed'
 assert len((work / 'requests.jsonl').read_text().splitlines()) == 5
 assert all(hashlib.sha256(p.read_bytes()).hexdigest() == digest for p, digest in old.items())
-status = subprocess.run([str(Path(sys.executable).with_name('doc-translate')), 'status', str(workspace)],
+status = subprocess.run([str(Path(sys.executable).with_name('doc-translate')), 'status', str(workspace), '--json'],
                         capture_output=True, text=True, check=True)
 assert json.loads(status.stdout)['render_current'] is True
 print(work, 'completed; 5 requests; old hashes preserved; saved status current')

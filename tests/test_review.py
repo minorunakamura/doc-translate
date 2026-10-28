@@ -91,7 +91,7 @@ def test_review_units_saves_scoped_findings_without_changing_snapshots(
     assert record["findings"][0]["unit_ids"] == ["unit-2"]
     assert record["findings"][0]["locations"][0]["resource_path"] == "OPS/text/ch.xhtml"
     monkeypatch.setenv("PATH", "")
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     status = json.loads(capsys.readouterr().out)
     assert status["render_current"] is False
     assert status["content_review"]["unreviewed_translation_unit_ids"] == [
@@ -112,7 +112,7 @@ def test_review_units_saves_scoped_findings_without_changing_snapshots(
     assert concern["unit_ids"] == ["unit-2"]
     assert concern["output_anchors"]
     assert qa["content_review"]["unreviewed_source_unit_ids"] == ["unit-1", "unit-3"]
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     assert json.loads(capsys.readouterr().out)["render_current"] is True
 
 
@@ -302,7 +302,7 @@ def test_review_after_translation_revision_keeps_history_but_does_not_count_old_
         ]
     )
     capsys.readouterr()
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     status = json.loads(capsys.readouterr().out)
     assert status["content_review"]["translation_records"] == []
     assert (
@@ -639,7 +639,7 @@ def test_review_atomic_save_failure_keeps_old_review_snapshots_and_observed_usag
     assert old.read_bytes() == old_bytes
     assert all(p.read_bytes() == data for p, data in pointers.items())
     assert list((workspace / "reviews").iterdir()) == [old]
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     status = json.loads(capsys.readouterr().out)
     assert status["usage"]["attempts_by_stage"]["review"] == 2
     assert status["content_review"]["unreviewed_translation_unit_ids"] == [
@@ -658,7 +658,7 @@ def test_review_saved_hash_mismatch_is_not_treated_as_current_review(tmp_path, c
     record = workspace / result["review"]["artifact"]
     record.write_bytes(record.read_bytes() + b" ")
     with pytest.raises(SystemExit) as stopped:
-        main(["status", str(workspace)])
+        main(["status", "--json", str(workspace)])
     assert stopped.value.code == 2
     assert "SHA-256 mismatch" in capsys.readouterr().err
     count = len(requests(tmp_path))
@@ -857,7 +857,7 @@ def test_review_table_with_cells_outside_block_location_refuses_instead_of_leaki
         else:
             assert "<td></td>" in document
             assert "</table>\n\n※" in document
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     status = json.loads(capsys.readouterr().out)
     assert status["render_current"] is True
     assert status["content_review"] == qa["content_review"]
@@ -1022,7 +1022,7 @@ def test_review_exclusion_only_chunk_uses_adopted_images_and_revalidates_offline
     assert "outside saved scope" in capsys.readouterr().err
     assert len(requests(tmp_path)) == count
     monkeypatch.setenv("PATH", "")
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     status = json.loads(capsys.readouterr().out)
     assert status["usage"]["attempts_by_stage"]["review"] == 1
     assert status["content_review"]["translation_records"][0]["findings"] == [finding]
@@ -1038,6 +1038,6 @@ def test_review_exclusion_only_chunk_uses_adopted_images_and_revalidates_offline
     chunk_path = workspace / f"corrections/pdf/{digest}.json"
     chunk_path.write_bytes(chunk_path.read_bytes() + b" ")
     with pytest.raises(SystemExit) as stopped:
-        main(["status", str(workspace)])
+        main(["status", "--json", str(workspace)])
     assert stopped.value.code == 2
     assert "SHA-256 mismatch" in capsys.readouterr().err

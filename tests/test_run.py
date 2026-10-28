@@ -35,6 +35,7 @@ def helper(tmp_path, **options):
 def run_args(source, workspace):
     return [
         "run",
+        "--json",
         str(source),
         "--workspace",
         str(workspace),
@@ -65,7 +66,7 @@ def test_run_epub_reaches_outputs_and_saved_only_status(tmp_path, capsys, monkey
     assert len(requests) == 3
     assert "images" not in requests[-1]
     monkeypatch.setenv("PATH", "")
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     status = json.loads(capsys.readouterr().out)
     assert status["render_current"] is True
     assert status["processing"]["status"] == "completed"
@@ -262,7 +263,7 @@ def test_run_partial_pdf_keeps_success_and_reports_intended_scope_in_status(
     assert summary["scope"]["run"]["failed_pages"] == [7]
     assert load_source_snapshot(workspace).processing.status == "failed"
     assert "訳:Page" in (workspace / summary["artifacts"]["japanese"]).read_text()
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     status = json.loads(capsys.readouterr().out)
     assert status["processing"]["status"] == "partial"
     assert status["scope"]["run"] == summary["scope"]["run"]
@@ -319,7 +320,7 @@ def test_run_without_any_corrected_source_reports_failure_and_saved_paths(
     assert (workspace / summary["artifacts"]["original"]).is_file()
     assert (workspace / summary["artifacts"]["pdf_draft"]).is_file()
     assert not (workspace / "source-snapshot.json").exists()
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     assert json.loads(capsys.readouterr().out)["scope"] == summary["scope"]
 
 
@@ -404,7 +405,7 @@ def test_run_unknown_model_is_config_error_without_generation_or_fallback(
     assert summary["processing"]["status"] == "partial"
     assert summary["scope"]["run"]["error_code"] == "unknown_model"
     assert not (tmp_path / "requests.jsonl").exists()
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     assert (
         json.loads(capsys.readouterr().out)["scope"]["run"]["error_code"]
         == "unknown_model"
@@ -1028,7 +1029,7 @@ def test_revised_partial_pdf_saves_candidate_without_downstream_or_pointer_chang
     assert_preserved(preserved)
     command = helper(tmp_path)
     monkeypatch.setenv("PATH", "")
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     status = json.loads(capsys.readouterr().out)
     assert status["source_adoption"] == candidate
     assert status["processing"]["status"] == "partial"
@@ -1217,7 +1218,7 @@ def test_legacy_pdf_revision_preserves_original_byte_hash_through_resume(
     (workspace / "source-snapshot.json").write_text(
         json.dumps({"schema_version": 1, "sha256": head})
     )
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     assert json.loads(capsys.readouterr().out)["source_snapshot_sha256"] == head
     main(["resume", str(workspace)], process_command=helper(tmp_path))
     summary = json.loads(capsys.readouterr().out)
@@ -1293,7 +1294,7 @@ def test_normal_pdf_revision_rebinds_candidate_without_hidden_stale_render_summa
     assert candidate["stale"] is False
     assert len(requests(tmp_path)) == count
     assert pointer(workspace, "source") == head
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     assert json.loads(capsys.readouterr().out)["source_adoption"] == candidate
     main(
         [
@@ -1382,7 +1383,7 @@ def test_obsolete_candidate_does_not_wait_when_current_machine_content_returns_t
     assert all(
         "owned_pages" not in item["context"] for item in requests(tmp_path)[count:]
     )
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     assert "source_adoption" not in json.loads(capsys.readouterr().out)
 
 
@@ -1643,7 +1644,7 @@ def test_pdf_adoption_source_pointer_is_only_commit_despite_remaining_candidate_
             process.kill()
             process.wait()
     assert (workspace / "source-candidate.json").exists()
-    main(["status", str(workspace)])
+    main(["status", "--json", str(workspace)])
     status = json.loads(capsys.readouterr().out)
     if edge == "before":
         assert status["source_adoption"]["status"] == "pending"
