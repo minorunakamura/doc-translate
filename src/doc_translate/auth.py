@@ -8,6 +8,7 @@ import subprocess
 import termios
 from io import BytesIO
 from typing import Literal
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
@@ -33,6 +34,65 @@ class AuthPrompt(BaseModel):
 
 class AuthenticationCancelled(Exception):
     """The user interrupted authentication."""
+
+
+def _notification_text(event: object) -> str:
+    def text(value: object) -> str:
+        if not isinstance(value, str):
+            raise TypeError("Invalid authentication notification")
+        # Keep JSON's control-character escaping without wrapping copyable URLs in quotes.
+        return json.dumps(value, ensure_ascii=False)[1:-1]
+
+    if not isinstance(event, dict):
+        raise TypeError("Invalid authentication notification")
+    if event.get("type") == "auth_url":
+        lines = [
+            text(event.get("instructions", "Open this URL in your browser:")),
+            text(event["url"]),
+        ]
+    elif event.get("type") == "device_code":
+        lines = [
+            "Verification URL: " + text(event["verificationUri"]),
+            "Code: " + text(event["userCode"]),
+        ]
+    elif event.get("type") in {"info", "progress"}:
+        lines = [text(event["message"])]
+        if event["type"] == "info":
+            links = event.get("links", [])
+            if not isinstance(links, list):
+                raise TypeError("Invalid authentication notification")
+            for link in links:
+                if not isinstance(link, dict):
+                    raise TypeError("Invalid authentication notification")
+                if "label" in link:
+                    lines.append(text(link["label"]))
+                lines.append(text(link["url"]))
+    else:
+        raise ValueError("Invalid authentication notification")
+    return "\n".join(lines) + "\n"
+
+
+def _open_browser(url: str) -> bool:
+    # Check before urlsplit, which silently strips some control characters.
+    if any(c.isspace() or ord(c) < 32 or 127 <= ord(c) < 160 for c in url):
+        return False
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return False
+        return (
+            subprocess.run(
+                ["open", url],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            ).returncode
+            == 0
+        )
+    except OSError, ValueError, subprocess.TimeoutExpired:
+        return False
 
 
 def authenticate(operation: str, provider: str, method: str | None = None) -> dict:
@@ -154,23 +214,27 @@ def authenticate(operation: str, provider: str, method: str | None = None) -> di
                                         ) from None
                                 if record.type == "notify":
                                     event = data.get("event")
-                                    if not isinstance(event, dict) or event.get(
+                                    os.write(
+                                        terminal,
+                                        _notification_text(event).encode(),
+                                    )
+                                    if isinstance(event, dict) and event.get(
                                         "type"
-                                    ) not in {
-                                        "info",
-                                        "progress",
+                                    ) in {
                                         "auth_url",
                                         "device_code",
                                     }:
-                                        raise ValueError(
-                                            "Invalid authentication notification"
-                                        )
-                                    os.write(
-                                        terminal,
-                                        (
-                                            json.dumps(event, ensure_ascii=False) + "\n"
-                                        ).encode(),
-                                    )
+                                        url = event[
+                                            "url"
+                                            if event["type"] == "auth_url"
+                                            else "verificationUri"
+                                        ]
+                                        assert isinstance(url, str)
+                                        if not _open_browser(url):
+                                            os.write(
+                                                terminal,
+                                                b"Browser not opened; open the displayed URL manually to continue.\n",
+                                            )
                                 else:
                                     if (
                                         attributes is not None

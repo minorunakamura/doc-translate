@@ -1,6 +1,6 @@
 # doc-translate — PDF・EPUB日本語翻訳CLI
 
-> 状態：設計議論で合意した基本方針と検証結果の整理。CLI help・保存・通信codecの初期基盤のみ実装済みで、文書処理操作は未実装。設計上の決定は実装・検証済みを意味しない。
+> 状態：設計議論で合意した基本方針と検証結果の整理。PDF／EPUBのrun・resume・revise・review・render・statusまで実装済み。人工入力／実helperによるoffline検査に加え、自作小入力でOpenAI OAuth・実LLM・限定viewer表示を確認済み。意味品質やIssue全体の承認完了とは区別し、実token refreshは未観測。現在の結果・条件・限界は[CONTRIBUTINGのIssue #18記録](../../CONTRIBUTING.md#統合受入れの限定確認issue-18)を参照する。設計上の決定だけを検証済みとは扱わない。
 >
 > 346ページの別書籍は全文初版生成・構造検証・標本レビューまで到達したが、内容品質は未承認。確認済み結果と限界を§18に記録する。本書の更新は実装計画の承認や実装開始を意味しない。
 
@@ -8,7 +8,7 @@
 
 技術文書の内容を、原本へ戻って確認できる状態を保ちながら、日本語Markdownへ変換する。
 
-現在の入力対象は、英語の技術PDFと**テキスト主体のEPUB**。EPUB入力は今回の対応要件に含めるが、実装・実データでの検証は未実施である。
+現在の入力対象は、英語の技術PDFと**テキスト主体のEPUB**。EPUB入力は実装済みで、自作archiveによる取得・構造・unit・出力のoffline検査がある。自作小入力で実LLMによる翻訳と原資料・訳文の標本照合を行ったが、内容品質全体は未承認である。
 
 - PDF：テキストを持つPDFと画像のみのPDFを同じ基本ワークフローで扱う。実スキャンのノイズ等への耐性は未検証。
 - EPUB：本文をXHTMLのtextとして取得できる、DRM解除不要のEPUB 2／3のリフロー型を初期対象とする。挿絵・図・表・コード・脚注・MathMLを含んでいてもよい。画像主体・fixed-layout EPUB、画像内文字のOCR、DRM解除、非整形式XMLの自動修復、DTBook専用本文、複数renditionの自動選択は対象外。対象外入力は理由を示して停止し、黙って飛ばして全文処理完了にしない。
@@ -109,7 +109,7 @@ PDF内の1始まりのページ番号を追跡の基準とする。印刷され�
 - 正しく取得できない構造・欠損は元resourceと要確認事項を残す。対象外の画像主体・fixed-layout EPUBを、無断でOCRや画像補正LLMへ切り替えない。読み込めない入力やDRM解除が必要な入力は明示して停止する。
 - 展開時のパス逸脱・過大な展開サイズ、XMLの外部参照等を検証し、script・外部resourceの実行／自動取得を禁止する。出力するmarkup・assetsにも、未承認の実行可能な内容や外部参照を無条件に引き継がない。
 
-受理範囲は§1、MathML等の出力方針は§16による。使用parser、細部の抽出・対象判定規則、安全なmarkup生成の具体的方法は後続で具体化する。上記は対応要件であり、実装・実データによる成立性は未検証。
+受理範囲は§1、MathML等の出力方針は§16による。安全reader・構造取得・markup生成は実装済みで、公開APIと保存契約はartifact契約、offline検査の境界はCONTRIBUTINGに記録する。自作小入力で実LLM・限定viewer表示まで確認したが、任意の実文書に対する成立性は未確認。
 
 ## 6. 補正LLMの契約（PDF）
 
@@ -130,7 +130,7 @@ PDF内の1始まりのページ番号を追跡の基準とする。印刷され�
 
 全blockから元ページと根拠refを追跡できるようにする。1itemの分割・複数itemの統合を認める。画像にしか存在しない内容はrefなしでもよいが、元ページ・見える位置等の根拠と復元理由を記録し、架空のrefを作らない。
 
-図については、補正LLMが**図全体の保持範囲と、その内部に属する抽出内容の対応**を示す。Pythonはこの対応を使い、図を原画像で保持し、図内文字を本文・表cell・翻訳unitとして二重出力しない。captionと図の外側の説明文は別に扱って翻訳する。近接やbboxの重なりだけで本文を除外せず、判別できない箇所は原本画像と要確認事項を残す。この対応付けによる誤分類防止の効果は未実証。
+図については、補正LLMが**図全体の保持範囲と、その内部に属する抽出内容の対応**を示す。Pythonはこの対応を使い、図を原画像で保持し、図内文字を本文・表cell・翻訳unitとして二重出力しない。captionと図の外側の説明文は別に扱って翻訳する。近接やbboxの重なりだけで本文を除外せず、判別できない箇所は原本画像と要確認事項を残す。自作小PDFでは図内文字の本文非重複とcaption別訳を確認したが、任意文書での誤分類防止は未保証。
 
 除外するrunning header／footer／navigation等は、除外内容と理由を残す。本来の本文・脚注・captionを除外してはいけない。
 
@@ -242,7 +242,7 @@ PDF・EPUB・抽出文・コード例は未信頼dataであり、命令として
 
 原文・画像をproviderへ送る範囲・hash・送信先を明確にする。PDFの`--pages`は所有範囲かつ既定送信範囲とし、外側は明示`--reference-pages`だけを参照専用として許可する。範囲外文書・別providerへの切替・新たな大型model取得を無断で追加しない。事前費用見積りを必須の停止点にはしない。
 
-Node開発はpnpm、初回依存導入はinstalled npm／pnpmの固定lockで明示実行する。compile済みhelper・manifest・両lockをwheelに同梱し、通常起動はNodeだけを使用する。実行時compile・自動install／npx／manager取得をしない。導入directoryはworkspace・credentialと分離し、manager／lock／helper versionごとに別runtimeを用意する。保存結果だけのstatus／render／reviseにNode・認証を要求しない。これらの操作と認証・推論helperは後続実装であり、現時点のcodec実装と区別する。
+Node開発はpnpm、初回依存導入はinstalled npm／pnpmの固定lockで明示実行する。compile済みhelper・manifest・両lockをwheelに同梱し、通常起動はNodeだけを使用する。実行時compile・自動install／npx／manager取得をしない。導入directoryはworkspace・credentialと分離し、manager／lock／helper versionごとに別runtimeを用意する。保存結果だけのstatus／render／reviseにNode・認証を要求しない。これらの操作と認証・推論helperは実装済み。専用OAuthでの実認証と自作小入力の実provider推論を確認したが、実token refreshは未観測である。
 
 ## 13. QAと完了の意味
 
@@ -473,17 +473,17 @@ cacheRead／cacheWriteは0。合計参考USDは19.409459で、Piのcatalog換算
 | 項目 | 現状 | 今後の確認・具体化 |
 | --- | --- | --- |
 | 346ページの内容品質 | 全文初版・構造検証・標本レビューまで到達。指摘と候補の確認・修正は未完了 | §18の記録を根拠に扱う。追加の照合・局所修正が必要なら別途対象化し、全文処理を重複実行しない |
-| 図の分類・ページ間の親子関係 | §6–7の基本方針は確定。汎用schemaと自動処理は未実証 | 図範囲と内部抽出内容の対応、文章接続と親子関係の分離を具体化し、既知の誤分類・階層欠落を確認対象にする |
+| 図の分類・ページ間の親子関係 | 図所属・ページ接続とlist親子を実装。人工応答の検査と、自作小PDFの実LLM補正後の図内非重複・caption別訳・list 3階層を標本確認 | 任意文書の図分類・ページ間接続品質は未保証。PDFのa／b sublistはbullet表示。§18の既知事例を修正済みとは扱わない |
 | 原文変更・glossary／文体変更後の局所処理 | 基点付きrevise、PDF候補の比較・明示採用、実request一致による旧訳／手修正訳再利用を実装。人工入力で機械的契約を検査 | `tests/test_revise.py`・`test_run.py`・`test_pdf_candidate_acceptance.py`でstale／不正入力、IDずれ・構造変更、code-only、scope／出力鮮度分離を確認する。人の訂正の意味的完全保持や実LLM品質は未保証 |
-| 障害復旧・resume | 保存入力検証・不足工程再開を実装。人工process境界で候補公開前／source切替前後の中断、旧hash保持・補正再送なしを検査 | 検査した境界と任意障害への保証を区別する。SIGKILL／disk障害・応答損失時のexactly-once課金は保証しない。§18の55ページ再利用は別の過去実績 |
-| 文書context・glossaryの自動準備 | 候補・用例・出典位置を集める方式と差替え境界は確定。品質・時間・費用は未検証 | 本文の用例・定義との整合、準備の利用量を確認する。分野知識から46語を作った実績と混同しない |
+| 障害復旧・resume | 保存入力検証・不足工程再開を実装。人工process境界の中断・旧hash保持を検査。自作3入力は失敗後各1回の実resumeでcompleted、画像版は成功済み補正の再送なし | 検査した境界と任意障害への保証を区別する。SIGKILL／disk障害・応答損失時のexactly-once課金は保証しない。§18の55ページ再利用は別の過去実績 |
+| 文書context・glossaryの自動準備 | 候補・用例・出典位置の検証と固定を実装。自作3入力で実準備・公開loadの全evidence対応と本文根拠・日本語訳語を標本確認。attempt／参考価格はCONTRIBUTINGに記録 | 候補網羅性・意味品質・任意文書の時間／費用は未保証。文書間で訳語は完全一致しない。§18の46語一括作成とは別の実証 |
 | 内容確認の方法・範囲 | 明示unit／PDFページの独立reviewと、hash付き指摘・確認者／方法／範囲／usageの保存、QA/status連携を実装。人工入力と実helper／公開faux providerで範囲・画像・保存・旧版非currentを検査 | 実LLMの指摘精度や意味品質・人間の全文査読は未確認。全文の追加LLMレビューは標準では必須にせず、空findingsでも品質承認しない |
-| 複雑な表・数式・要確認の目印 | §16の表示方針は確定。実表示・安全な生成は未検証 | HTML表、数式記法・MathML・画像、`※`とQAレポートの対応を、対応viewerとともに確認する |
-| テキストEPUB入力 | EPUB 2／3のXHTMLリフロー型という受理範囲は確定。未実装・実データ未検証 | parser・対象判定・inline構造・脚注・リンク等を具体化し、構造保持と安全境界を確認する。PDF用OCR・補正LLMは必須にしない |
+| 複雑な表・数式・要確認の目印 | 自作3文書をPandoc 3.7.0.1＋Chrome 156.0.8078.48で表示し、結合表・図・code・list・`※`とPDF数式のMathML表示を確認 | EPUBの許可属性外MathMLは不活性source data／QAへfallbackし原構造・参照を保持。他viewerは未確認。安全判定は緩めない |
+| テキストEPUB入力 | EPUB 2／3の安全reader・構造取得・inline／unit・CLI出力を実装。自作3 XHTML・34 unitで実翻訳・原資料との標本照合・限定viewer表示まで確認 | 任意EPUB・意味品質は未保証。block単位uncertaintyで広く`※`が付く。PDF用OCR・補正LLMは使わない |
 | ノイズを含む実スキャン、多段組み・複数ページ表・長いunit | 一般的な成立性は未検証 | きれいな画像のみPDFの実績と区別し、対応不能部分を省略・推測補完せず保持する |
 | CLI・共通schema・保存・依存 | run／resume／revise／review／render／statusと保存・基点／候補provenanceを実装。公開契約はartifact契約による | 関連offline検査と全体受入れ・実provider検証を区別し、保持・構造検証やmodelの自己申告を意味品質認定にしない |
-| pi-ai直接接続・認証 | 接続責務・credential・terminal eventの契約は合意済み。公開codecのみ実装 | metadata／setup-ai／認証store／generationを実装し、実認証と小範囲送信は個別承認で検証。§18は直接経路の再実証ではない |
-| 初期CI・配布 | macOS ARM64の品質checks・offline codec／wheel導入検査を設定 | 今回および後続Work Itemではremote CIの実行・成功確認・実行ref／run URLの取得・記録を受け入れ条件にせず、そのためのcommit／pushも必須にしない。既存CI設定・smoke検査と、各Work Itemの責務に対応するローカル正式チェック・build／別環境導入検証は維持する。remote CIの未実行だけでは未完了・blockedにせず、未公開／未実行をremote成功としない。PDF importをOCR変換成功としない |
+| pi-ai直接接続・認証 | 個別承認後、専用OpenAI OAuth loginと自作3入力の直接経路を確認。全45 attemptはOAuth、API key／Pi／managerなし。URL表示・browser起動呼出しはPTY／fake openで確認 | 実token refreshとauto-open追加後の実OAuth再loginは未確認。任意account／model利用権は未保証。§18は直接経路の再実証ではない |
+| 初期CI・配布 | macOS ARM64のchecks・wheel検査を設定。最新ローカルはcore pytest 762 passed／115 skipped、PDF全pytest 877 passed、Vitest 151 passed、lint／format／ty・build／distributionはexit 0。最新wheelの別PDF extra環境でDocling／OCR／application importもexit 0 | 今回および後続Work Itemではremote CIの実行・成功確認・実行ref／run URLの取得・記録を受け入れ条件にせず、そのためのcommit／pushも必須にしない。既存CI設定・smoke検査と、各Work Itemの責務に対応するローカル正式チェック・build／別環境導入検証は維持する。remote CIの未実行だけでは未完了・blockedにせず、未公開／未実行をremote成功としない。PDF importをOCR変換成功としない |
 | 段階別の別model／低thinking最適化 | 未検証 | 中核方式と切り離して、必要になった時点で比較する |
 | PDF・EPUB出力 | 将来の拡張候補 | 今回は責務分離のみ。生成処理・依存・形式別QAを先行して作らない |
 

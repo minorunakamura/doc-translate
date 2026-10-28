@@ -143,6 +143,32 @@ def test_preparation_adopts_user_terms_and_preserves_body_evidence(tmp_path):
         assert record["attempts"][0]["final"]["message"] is not None
 
 
+def test_preparation_requests_japanese_context_and_literal_unit_evidence(tmp_path):
+    workspace, candidates = source(tmp_path)
+    run(tmp_path, workspace, candidates)
+    requests = [
+        json.loads(line)
+        for line in (tmp_path / "requests.jsonl").read_text().splitlines()
+    ]
+    collect, organize = [request["messages"][0]["content"] for request in requests]
+    for policy in (collect, organize):
+        assert "English-to-Japanese translation" in policy
+        assert "context" in policy and "Japanese" in policy
+        assert "original spelling" in policy
+        assert "spelling and case" in policy
+    assert "candidate.translation in Japanese" in collect
+    assert "terms values in Japanese" in organize
+    assert (
+        "evidence.quote must be an exact substring of source_text for its unit_id"
+        in collect
+    )
+    assert "candidate.term must occur verbatim in that quote" in collect
+    assert "paired inline markers only" in collect
+    assert "heading_path is context only, not quote evidence" in collect
+    assert "Never infer or reconstruct content hidden by standalone markers" in collect
+    assert "do not remove those markers to join terms" in collect
+
+
 @pytest.fixture(params=["pdf", "epub"])
 def emphasized_source(tmp_path, request):
     if request.param == "pdf":

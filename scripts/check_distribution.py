@@ -15,6 +15,62 @@ from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 RESOURCE = "doc_translate/ai/"
+EPUB_SMOKE = '''
+import hashlib
+import html
+import importlib.util
+import json
+import subprocess
+import sys
+from pathlib import Path
+from zipfile import ZIP_STORED, ZipFile
+
+from doc_translate.epub import read_epub
+from doc_translate.epub_source import extract_epub_source
+from doc_translate.snapshot import SourceDocument, load_source_snapshot, save_source_snapshot
+from doc_translate.units import generate_translation_units
+
+assert importlib.util.find_spec("docling") is None
+workspace = Path("epub-workspace")
+original = workspace / "originals/book.epub"
+original.parent.mkdir(parents=True)
+with ZipFile(original, "w", compression=ZIP_STORED) as archive:
+    archive.writestr("mimetype", "application/epub+zip")
+    archive.writestr("META-INF/container.xml", """<container
+        xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+        <rootfiles><rootfile full-path="book.opf"
+        media-type="application/oebps-package+xml"/></rootfiles></container>""")
+    archive.writestr("book.opf", """<package xmlns="http://www.idpf.org/2007/opf"
+        version="3.0"><metadata/><manifest><item id="chapter" href="chapter.xhtml"
+        media-type="application/xhtml+xml"/></manifest>
+        <spine><itemref idref="chapter"/></spine></package>""")
+    archive.writestr("chapter.xhtml", """<html xmlns="http://www.w3.org/1999/xhtml">
+        <body><p id="intro">A journal preserves order.</p></body></html>""")
+source = extract_epub_source(
+    read_epub(original),
+    document=SourceDocument(format="epub",
+        sha256=hashlib.sha256(original.read_bytes()).hexdigest(),
+        artifact="originals/book.epub"),
+    snapshot_id="distribution-smoke",
+)
+assert source.blocks[0].text == "A journal preserves order."
+digest = save_source_snapshot(workspace, source)
+assert load_source_snapshot(workspace, digest) == source
+units = generate_translation_units(source)
+assert len(units) == 1 and units[0].source_text == "A journal preserves order."
+cli = Path(sys.executable).with_name("doc-translate")
+render = subprocess.run([str(cli), "render", str(workspace)], capture_output=True, text=True)
+assert render.returncode == 1, render.stderr  # No translation: explicitly partial.
+summary = json.loads(render.stdout)
+assert summary["processing"]["status"] == "partial"
+assert "A journal preserves order." in html.unescape(
+    (workspace / summary["artifacts"]["english"]).read_text())
+assert "※" in (workspace / summary["artifacts"]["japanese"]).read_text()
+status = subprocess.run([str(cli), "status", str(workspace)],
+                        capture_output=True, text=True, check=True)
+assert json.loads(status.stdout)["render_current"] is True
+print("core-only wheel EPUB reader/source/units + saved-only CLI render/status: OK")
+'''
 SMOKE = """
 import assert from 'node:assert/strict';
 import { encodeRecord, readRecords } from '@doc-translate/ai/jsonl';
@@ -97,9 +153,17 @@ def main() -> None:
             [
                 str(python),
                 "-c",
-                "import importlib.util; assert importlib.util.find_spec('docling') is None",
+                EPUB_SMOKE,
             ],
             cwd=temporary,
+            env={
+                **os.environ,
+                "PATH": "",
+                "PYTHONPATH": "",
+                "HOME": str(temporary),
+                "XDG_CONFIG_HOME": str(temporary / "config"),
+                "XDG_DATA_HOME": str(temporary / "data"),
+            },
             check=True,
         )
         for manager in ("npm", "pnpm"):
@@ -108,6 +172,8 @@ def main() -> None:
             environment = {
                 **os.environ,
                 "HOME": str(home),
+                "PYTHONPATH": "",
+                "XDG_CONFIG_HOME": str(home / "config"),
                 "XDG_DATA_HOME": str(home / "data"),
             }
             environment.pop("NODE_PATH", None)

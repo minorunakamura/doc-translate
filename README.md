@@ -1,12 +1,14 @@
 # doc-translate
 
-英語の技術PDF・テキストEPUBを、原本文書への追跡と要確認事項を保ちながら日本語Markdownへ変換するCLIを開発しています。
+英語の技術PDF・テキストEPUBを、原本文書への追跡と要確認事項を保ちながら日本語Markdownへ変換するCLIです。
 
-**新規`run`でPDF／EPUBの取得から準備・翻訳・Markdown出力まで実行できます。** helper初回導入・認証・任意のcatalog参照、保存済み正本の`render`／`status`にも対応します。`resume`で保存済みworkspaceを続行できます。`revise`で原文・訳文のJSON修正を推論なしで採用できます。`review`で明示unit／PDFページ範囲の独立LLM照合と指摘の保存ができます（自動修正・全体品質承認はしません）。参照だけなら認証情報や書籍を準備・送信する必要はありません。実providerでの認証・推論は未検証です。
+`run`で取得から準備・翻訳・出力まで実行し、中断後は`resume`で続行します。保存済みの原文・訳文は`revise`で修正し、`render`で推論なしに再出力できます。`status`で処理範囲・QA・成果物を確認し、必要な範囲だけ`review`で追加LLM照合できます（自動修正・全体品質承認はしません）。
+
+**自作の小さな文字付きPDF・画像のみPDF・EPUBで、OpenAI OAuthの実認証、実LLMによる準備・翻訳（PDFは補正も）と、限定したviewerでの表示を確認済みです。** 出力到達と内容品質の承認は別です。実token refreshは未観測で、任意文書の完全復元・意味品質や他のaccount／modelの利用権は保証しません。確認範囲と限界は[開発ガイドの統合受入れ記録](CONTRIBUTING.md#統合受入れの限定確認issue-18)を参照してください。
 
 ## 前提環境と導入
 
-ローカル検証基準はmacOS 26.7.1 arm64、Python 3.14、Node 24.21.0です。Nodeは24.21.0以上を要求します。macOSの最低version、Intel、Linux／Windowsでの動作は未保証です。Node依存の初回導入には導入済みのpnpm 12.10.1またはnpm 11.19.0を使用します。Pi CLI／coding agentは不要です。
+対象環境はmacOS 26.7.1 arm64、Python 3.14、Node 24です。Nodeは24.21.0以上を要求します。macOSの最低version、Intel、Linux／Windowsでの動作は未保証です。Node依存の初回導入には導入済みのpnpmまたはnpmを使用します。今回のローカル確認環境はPython 3.14.9／Node 24.22.1／pnpm 12.10.1／npm 11.19.1で、以前の確認基準Node 24.21.0／npm 11.19.0とは異なります。Pi CLI／coding agentは不要です。
 
 配布wheelを入手した場合、uvでインストールできます（`FILE.whl`は入手したwheelのpathに置換します）。まだrelease配布はしていません。
 
@@ -41,7 +43,7 @@ doc-translate models --provider openai
 
 認証・token refresh・catalog refresh・LLM通信はしません。全model定義やheaders、credentialは出力せず、Pi CLIの認証設定も読み込み・コピーしません。catalog掲載はaccountの利用権や実providerの品質を保証しません。動的catalogのみのproviderは、built-inのmodel一覧が空になる場合があります。
 
-help／setup／参照／認証の成功はexit code 0、入力・設定不足／依存不一致・未知provider／未対応login methodは2、導入・認証・保存・helper実行の失敗や取消は1です。引数なし・未実装操作も2で停止します。不足／不一致なら表示された`setup-ai --package-manager npm`（または`pnpm`）を明示実行してください。失敗を空の成功結果とは扱いません。
+help／setup／参照／認証の成功はexit code 0、入力・設定不足／依存不一致・未知provider／未対応login methodは2、導入・認証・保存・helper実行の失敗や取消は1です。引数なし・未知の操作も2で停止します。不足／不一致なら表示された`setup-ai --package-manager npm`（または`pnpm`）を明示実行してください。失敗を空の成功結果とは扱いません。
 
 ## providerの認証と削除
 
@@ -61,9 +63,9 @@ doc-translate logout --provider anthropic
 
 保存先は`$XDG_CONFIG_HOME/doc-translate/`、変数が未設定または空なら`~/.config/doc-translate/`です。directoryは0700、`credentials.json`は0600で、文書workspaceやexport、Pi CLIのauth.jsonとは別です。OpenAI OAuthの初回loginで安定したinstallation UUIDを`installation-id`（0600）に作成・再利用します。logoutはこのUUIDや別providerのcredentialを消しません。これらのファイルを共有・repositoryへ追加しないでください。
 
-OAuth tokenのTTL判定・refresh・認証変換はpi-ai／providerに任せ、通常は保存credentialを再利用します。refresh失敗時にambient API keyや別の認証modeへ自動fallbackしません。実tokenのrefresh・利用権・実provider推論の成功は未確認です。ChatGPTサブスクリプションは共有利用枠であり、API課金や全modelの利用権、無制限利用を保証しません。
+OAuth tokenのTTL判定・refresh・認証変換はpi-ai／providerに任せ、通常は保存credentialを再利用します。refresh失敗時にambient API keyや別の認証modeへ自動fallbackしません。OpenAI OAuthと実provider推論は自作小入力で確認しましたが、実token refreshは未観測です。ChatGPTサブスクリプションは共有利用枠であり、API課金や全modelの利用権、無制限利用を保証しません。
 
-認証の入力・選択はcontrolling TTYで非echoにし、pipeからの秘密入力やechoへのfallbackは受け付けません。認証URL・device codeはterminalにのみ表示し、stdoutの成功JSONは`operation`・`provider`・login時の`method`だけです。URL・code・token・入力内容をログやterminal録画へ保存したり、Issueへ添付したりしないでください。helperのraw stderr／provider例外も出力しません。
+認証の入力・選択はcontrolling TTYで非echoにし、pipeからの秘密入力やechoへのfallbackは受け付けません。OAuth認証URL・device codeの確認URLがHTTP(S)の絶対URLなら、macOSの既定ブラウザで自動的に開きます。起動できない場合もterminalに表示したURLを手動で開いて継続できます。補助リンクは自動で開かず、ブラウザの起動だけでは認証成功になりません。認証URL・device codeの表示はterminalに限り、stdoutの成功JSONは`operation`・`provider`・login時の`method`だけです。URL・code・token・入力内容をログやterminal録画へ保存したり、Issueへ添付したりしないでください。helperのraw stderr／provider例外も出力しません。
 
 Ctrl-C／SIGTERM／入力EOF等の取消ではchildを回収し、進行中のcredential保存を待つため強制kill前に最大30秒のgraceを設けます。入力中の未送信文字を破棄してechoを復元します。SIGKILLやdisk障害では保存・terminal復元を保証できません。破損JSONや保存失敗を空credential・成功とは扱わず、取消中の保存失敗もエラーにします。エラー時は保存先・権限・空き容量等を確認し、必要なら再loginしてください。秘密入りファイルの内容を診断ログに貼らないでください。
 
@@ -85,7 +87,7 @@ doc-translate status DIR
 - code・数式・図内文字は原文を保持します。単純表はMarkdown、結合表は安全なHTMLです。安全なMathML／画像を使い、表示不能な構造や危険なassetは不活性な原データ参照とQAを残します。外部画像は読込みません。
 - usageは準備・補正・翻訳・reviewの保存済み全attemptを失敗／retry込みで分離します。未観測の利用量・全体wall time・実請求額は不明で、0や推計総額に置き換えません。今回のrender時間は別記録です。
 
-HTML table・数式・MathMLの実表示はviewerに依存します。このIssueではviewer表示を未確認とし、統合受入れで確認します。hash不一致は正本・assetの改変や保存障害を調べ、旧出力を確認してください。破損を無視した再採用や自動LLM再送はしません。
+HTML table・数式・MathMLの実表示はviewerに依存します。自作3文書をPandocでHTMLへ変換しChromeで限定確認しました。PDF数式はMathMLで表示され、EPUBの許可属性外のMathMLは安全判定を緩めず不活性な原データ参照とQAへ戻りました。他viewerでの表示は未確認です。hash不一致は正本・assetの改変や保存障害を調べ、旧出力を確認してください。破損を無視した再採用や自動LLM再送はしません。
 
 ## 文書を翻訳する（通常利用）
 
@@ -108,7 +110,7 @@ doc-translate run own.pdf --workspace work/pdf-book \
   --pages 2-6 --reference-pages 7-7
 ```
 
-各設定fieldの優先順位は`--correction-*`／`--translation-*` → 共通`--provider/--model/--thinking` → `PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL`です。準備は翻訳設定を使い、EPUBでは補正設定を使いません。不足・未知model・非対応thinking／画像能力は送信前に停止します。providerはOpenAI固定ではありません。ChatGPTサブスクリプションOAuthも実動検証対象ですが、実認証・利用権・意味品質は未確認です。
+各設定fieldの優先順位は`--correction-*`／`--translation-*` → 共通`--provider/--model/--thinking` → `PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL`です。準備は翻訳設定を使い、EPUBでは補正設定を使いません。不足・未知model・非対応thinking／画像能力は送信前に停止します。providerはOpenAI固定ではありません。ChatGPTサブスクリプションOAuthでの実認証・小範囲推論を確認済みですが、任意account／modelの利用権や意味品質を保証しません。
 
 PDFの`--pages A-B`は1始まり・両端含む所有範囲です。省略時は実PDF全ページが所有対象になります。既定の送信許可も所有範囲内だけで、外側は`--reference-pages A-B`で明示したページだけ参照専用に許可します。補正は所有5ページごとに、許可範囲内の前後各1ページだけをcontextとして使います。離れた参照指定を含むローカル取得範囲は広くなることがありますが、それはproviderへの送信許可を増やしません。参照ページは翻訳対象に追加せず、部分範囲をPDF全文処理完了と表示しません。EPUBは文書全体を対象にし、ページ指定を受け付けません。
 
@@ -277,3 +279,5 @@ hf download docling-project/docling-models \
 処理結果では、処理到達範囲・機械検査・内容確認範囲を区別します。要確認箇所は出力の`※`とQAで追跡し、出力ができただけで内容品質承認済みとはしません。
 
 エラー時も元workspaceを保持し、summaryのpathからQA・attemptを確認してください。実書籍や秘密情報をIssueに添付しないでください。
+
+ソースからの導入・開発・検証手順は[開発ガイド](CONTRIBUTING.md)を参照してください。
