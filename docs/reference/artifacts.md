@@ -293,7 +293,7 @@ WORKSPACE/
 
 `PreparationSnapshot`は`schema_version: 1`、`source_snapshot_sha256`、`glossary`、`context`、`policy`、`translation_inputs_sha256`、`evidence_sha256`、`runs`（呼出し順の実行記録digest）を持ちます。候補／根拠／実行metadataをglossaryへ混入させません。根拠artifactは`source_snapshot_sha256/sources/collections/organization/user_terms`を持ちます。`sources`はunit IDをkeyに`block_id/cell_id/node_path/attribute/locations/snapshot_id`を保持し、PDF位置／EPUB resource・snapshot-bound nodeへ追跡できます。参照元snapshot自体もhashで固定します。
 
-実行記録は`stage: prepare`、`method`、`status: validated | rejected`、実`request/config`、`elapsed_seconds`、既存adapterの全`attempts`を保存します。成功・失敗・retryのprovider／model・要求／確認済み設定・terminal・終了code・時間・raw回答・usage生値・不明状態を失いません。retryはadapterの有限retryをそのまま使い、追加retryを重ねません。準備usageを訳文生成usageと合算した記録にはしません。参考costはproviderの生値で、実請求を主張しません。
+実行記録は`stage: prepare`、`method`、`status: validated | rejected`、実`request/config`、`elapsed_seconds`、既存adapterの全`attempts`を保存します。成功・失敗・retryのprovider／model・要求／確認済み設定・terminal・終了code・時間・raw回答・usage生値・不明状態を失いません。準備の根拠検証だけは、未知unit・引用不一致・用語表記不一致・整理後の根拠なし用語を固定codeの`PreparationValidationError`として区別し、本文投影・glossaryを変えず、固定の訂正指示と`context.validation_feedback`を加えて初回込み最大3回答まで再生成します。feedbackには固定codeと、収集時は0始まりのcandidate／evidence index・用語・不正な根拠のunit_id／quote、整理時は根拠なし用語の一覧を含めます。これらは未信頼dataとしてJSONで渡し、system指示やterminalのエラー文に埋め込みません。有効な根拠は残し、不正な根拠だけの訂正・削除をmodelに求めます。失敗recordには`validation_error`を残し、成功した訂正requestも通常requestと同じ再検証で再利用します。schema不正・認証・保存・timeout・取消等にはこの再生成を適用しません。各`generate`の一時的通信失敗retryは既存どおり最大3試行のため、1収集／整理の新規helper試行は最大9回であり、再生成でも利用量を消費します。準備usageを訳文生成usageと合算した記録にはしません。参考costはproviderの生値で、実請求を主張しません。
 
 固定入力hashはsort済みUTF-8 JSONの`{glossary, context, policy}`だけから生成し、準備方式・config／model・usage・根拠artifact hash・参照元snapshot hashを含めません。翻訳callerはunitの実入力hashに加え、この固定入力hashを参照できます。方式だけが変わって採用内容が同じなら翻訳入力を無効化しません。原文とpolicy／book／version／利用者terms、全呼出しの準備方式・configが現採用版と一致するとき、`prepare_document`はloadで再検証してdigestを返し、再送しません。内容変更後の新版も旧artifactを削除しません。`version`はcaller指定の非空文字列であり、時刻や試行数による自動改版を行いません。
 
@@ -336,7 +336,7 @@ print([item.model_dump() for item in translated.uncertainties])
 - `translations`の全IDが入力順に1回ずつ必要です。欠落・重複・未知・順序違い、空白だけの訳文、不正schema、marker inventory／釣合い／包含構造の変更を拒否します。完全なspanの日本語語順への並替えは既存unit validatorが許容します。
 - `uncertainties`は必須配列で、なしなら`[]`。`reason`は空白だけを認めず、`origin`は`original/processing/undetermined`です。modelに元位置を創作させず、Pythonが対応unitの元位置・対象ID・`stage: translation`へ関連付けます。chunk失敗理由にも対応unitと元位置が残ります。
 - `processing.status: completed`は全unitの機械的受理であり、内容品質承認ではありません。`translations`は受理済みunitだけを入力順に返すproperty、`uncertainties`は元位置付きのproperty、`content_reviews`は常に空のpropertyです。要確認があっても機械検証を満たせば受理します。
-- 独立推論の有限retry（初回込み3試行、3／6秒）をそのまま使い、同じ対象に追加retryを重ねません。`length/input_limit`だけは要約を要求せず、複数unitならchunkを分け、単一unitなら文字上限を半減して再分割します。対象は必ず小さくし、不可分inline spanや1文字まで縮めても不成立なら理由を残して失敗とします。
+- marker inventory／釣合い／包含構造の違反だけは、同じchunkの全違反unitを集め、unit ID・理由・原文側のmarker列・回答側のmarker列・不足／余分なmarker（重複数を含む）・不正な訳文を`context.translation_feedback`へ入れ、初回込み最大3回答まで訂正生成します。model由来の訳文は未信頼dataとしてJSONで渡し、system指示へ埋め込みません。markerをunit間で移さず、完全なspanの同じ親内での並替えは引き続き許容します。本文投影・glossary・元のpolicy／schema・configは維持し、訂正用の固定指示だけを追加します。ID不一致・schema不正・認証・保存・timeout・取消等にはこの訂正生成を適用しません。独立推論の通信retry（初回込み3試行、3／6秒）は別に維持するため、分割しない1chunkの新規helper試行は最大9回です。`length/input_limit`だけは要約を要求せず、複数unitならchunkを分け、単一unitなら文字上限を半減して再分割します。対象は必ず小さくし、不可分inline spanや1文字まで縮めても不成立なら理由を残して失敗とします。
 - 並列処理は既定2。main-threadのSIGINT／SIGTERMを共有cancelへ伝え、新規送信を止め、実adapterのchild取消／最大30秒のgraceとcredential drainを待ってから戻ります。
 
 ### 保存・部分失敗と再利用
@@ -351,11 +351,11 @@ WORKSPACE/
 
 `TranslationSnapshot`は`schema_version: 1/source_snapshot_sha256/preparation_sha256/config/chunks/splits/runs/processing`を持ちます。各chunkには現在原文に対応する完全な`units`と`artifact_sha256/answer/error`を保持し、受理済みなら前2つが非null・errorはnull、未処理／失敗ならanswerとartifactはnull・errorに理由を保持します。`splits`は既存unit分割の`unit_id/max_source_chars`操作順です。load時に原文から再実行し、全unit・親・範囲・hash・位置を再検証します。LLMにunit IDや分割範囲を変更させません。
 
-`runs`は継承した過去記録と今回の記録digest（並列処理では完了順）。実行記録は`stage/status/request/config/error/elapsed_seconds/attempts`を持ち、`status`は`validated/rejected/adjusted`、ローカル分割調整は追加の`adjustment`と空の`attempts`を持ちます。各adapter attemptのraw回答・要求／確認済み設定・terminal／終了code・retry・usage生値を保持します。生成前の拒否やローカル処理ではusageは未観測であり、0として加算しません。失敗でも観測済みusageを失わず、準備のusageとは分離します。
+`runs`は継承した過去記録と今回の記録digest（並列処理では完了順）。実行記録は`stage/status/request/config/error/elapsed_seconds/attempts`を持ち、`status`は`validated/rejected/adjusted`、ローカル分割調整は追加の`adjustment`と空の`attempts`を持ちます。各adapter attemptのraw回答・要求／確認済み設定・terminal／終了code・retry・usage生値を保持します。marker拒否のrecordには`validation_feedback`を追加し、訂正の各回答を実際のrequestとともに別recordで保存します。生成前の拒否やローカル処理ではusageは未観測であり、0として加算しません。失敗でも観測済みusageを失わず、準備のusageとは分離します。
 
 attempt→検証済みchunk artifact→snapshot→採用参照の順でfsync／atomic replaceします。各並列jobが完了するごとに部分snapshotを採用し、別chunkの失敗で正常採用を破棄しません。`translate_document`は部分失敗でもsnapshot digestを返すので、callerは`processing.status`と各chunk.errorを確認してください。保存失敗は例外になり、直前の採用参照と保存済みattemptを保持します。参照されない保存途中artifactを自動採用するengineはありません。応答喪失・採用参照確定前のcrashによる再送／exactly-once課金は保証しません。
 
-再利用はloadで検証できた採用済みchunkに限り、現在の連続unit・分割対応と、実request（ID／種別／marker原文／unit context・固定context／glossary／policy・schema等）およびconfig（provider/model/thinking/options）を完全一致で照合します。source snapshot hashや保護payload込みsource_hashだけでは無効化せず、codeだけの変更は現在のunit／token／位置へ結び直します。準備方式・根拠・usage metadataだけの変更でも本文入力が同じなら再送しません。本文・context・固定入力・schema・実設定が変わったchunkは旧版を残して更新します。曖昧な旧訳を分割・接合して使いません。
+再利用はloadで検証できた採用済みchunkに限り、現在の連続unit・分割対応と、実request（ID／種別／marker原文／unit context・固定context／glossary／policy・schema等）およびconfig（provider/model/thinking/options）を完全一致で照合します。訂正requestは、現在の入力に処方済みの固定指示と`context.translation_feedback`だけを加えた形と完全一致する場合に限り認め、回答のID／marker・正常terminal等を再検証します。artifactとrunには同じ実requestを保存し、訂正済み結果も採用後のresumeや採用途中で中断した後に無送信で再利用できます。source snapshot hashや保護payload込みsource_hashだけでは無効化せず、codeだけの変更は現在のunit／token／位置へ結び直します。準備方式・根拠・usage metadataだけの変更でも本文入力が同じなら再送しません。本文・context・固定入力・schema・実設定が変わったchunkは旧版を残して更新します。曖昧な旧訳を分割・接合して使いません。
 
 `load_translation`はNode・認証なしで各byte hashとschema、保存原文／準備、分割履歴と全unit対応、受理済みartifactの実入力・raw回答・ID／marker、runの正常terminal／送信先／submitted設定／process終了を再検証します。壊れたartifactを黙って捨てて再送したり、未検証回答を受理したりしません。これは構造・入力対応の検査であり、意味の欠落や誤訳がないことの証明ではありません。
 
@@ -379,7 +379,7 @@ WORKSPACE/
 renderは既存の非再入workspace lockと`_atomic_write`を使い、全出力を確定してから参照を切り替えます。旧版・未採用の途中出力は削除しません。保存例外は伝播し、旧参照を維持します。resume／復旧engineは追加しません。statusは書込みせず、出力参照のschema・workspace内path・全file hashと現在入力／保存attempt集合を比較します。`render_current`と、必要時の`previous_artifacts`で旧出力を区別します。
 
 - **source-map**: `blocks`はblock ID／kind／元locations／出力anchor（図内部等で独立出力しないblockはnull）。`units`は実際の翻訳入力unit全fieldと出力anchor。split時も親unit・元marker文字範囲を保持し、順に組み立てます。EPUBのanchorはsnapshot-bound node位置に対応し、文字精度を主張しません。
-- **QA**: sourceの機械検査、保存入力検証、両言語の実unit到達・anchor一意性／内部参照／local assets検査を分けます。`uncertainties`は元recordに`block_ids/unit_ids/output_anchors`を追加し、render由来の安全fallback／未訳も記録します。目印は表示だけの`※`で、code／formula内部に入れません。
+- **QA**: sourceの機械検査、保存入力検証、両言語の実unit到達・anchor一意性／内部参照／local assets検査を分けます。`uncertainties`は元recordに`block_ids/unit_ids/output_anchors`を追加し、render由来の安全fallback／未訳も記録します。目印は表示だけの`※`で、code／formula内部に入れません。EPUBのblock対象uncertaintyに具体的なnode位置がある場合は、resource_pathとnode_snapshotが一致する位置の祖先／子孫unitだけに対応付けます。node pathは区切り単位で比較し、`/1/2/1`を`/1/2/10`へ広げません。head内のCSS参照など、本文unitと重ならない警告も元のtarget_ids・locationsと出力anchorをQAへ保持し、本文全体への目印には変換しません。node位置がrootまたは指定なしの章全体警告、明示的なunit／cell対象、PDFの対象対応は維持します。別node_snapshotの位置から現在のunitへは目印を伝播しません。
 - **内容確認**: `content_review.records`はsource snapshotの確認記録、`translation_records`は現行source／translation hashに結び付いた独立review記録です。`review_history`は過去版も含む不変review全記録で、旧hashやstaleな訳の記録を現行確認に数えません。`unreviewed_source_unit_ids/unreviewed_source_block_ids`と`unreviewed_translation_unit_ids`を別記します。unitだけの照合で所属block全体の構造まで確認済みにせず、`meaning_quality_approved`／`viewer_display_checked`はfalseです。
 - **summary**: 正本hash、`processing.status: completed | partial`、unitの`output_reached/not_processed/failed/render_failed`、`output_reached_blocks`、source処理状態、機械検査、要確認／原本欠損件数、内容確認、usage、成果物pathと`render_elapsed_seconds`を持ちます。要確認のみで失敗にはしません。`scope.ownership_records`は保存済みPDF所有記録そのもの、`pages_with_source_blocks`は本文位置で、参照ページやPDF全文被覆とはみなしません。
 - **usage**: `stages.preparation/correction/translation/review`にworkspace内の保存済み全attempt artifact／hash／raw recordを列挙します。失敗・retry・未採用も含め、raw provider usageや要求／確認済み設定・時間・終了を失いません。source/translation採用runだけに絞りません。段階ごとの意味の異なるtoken値を合算せず、reasoningを二重加算しません。過去ローカル処理時間・全体wall time・実請求は保存情報がなくnull／unknownのまま、今回のrender時間と分離します。
@@ -770,7 +770,7 @@ login・OAuth TTL判定／refresh・API認証変換はpi-ai／provider所有で�
 | `code` | 成功は`null`、失敗は固定code |
 | `terminal` | 観測した`{type:"done"または"error",reason:<stop reason>}`、未観測は`null` |
 | `message` | 最終messageの安全なprojection：`role/provider/model/api/stopReason/content/provider_thinking_level/response_model`。欠損は`null`。text partは`{type,text}`、thinking／toolCallは`{type}`のみ。errorMessage・diagnostics・headers・tool arguments・opaque signaturesは返さない |
-| `usage`, `usage_status` | 観測した正規化usage（input/output/cacheRead/cacheWrite/totalTokens/cost、任意reasoning/cacheWrite1h）と`"observed"`。非zero token量を観測できない場合は`null/"unknown"`（libraryの失敗時default zeroを実績としない）。途中usageは後のzero defaultで消さない。reasoningはoutputの内数 |
+| `usage`, `usage_status` | 観測した正規化usage（input/output/cacheRead/cacheWrite/totalTokens/cost、任意reasoning/cacheWrite1h）と`"observed"`。非zero token量を観測できない場合は`null/"unknown"`（libraryの失敗時default zeroを実績としない）。途中usageは後のzero defaultで消さない。reasoningはoutputの内数。costの任意`totalFromProvider`はprovider報告の請求額かcatalog推定かを区別するboolで、省略時はfalse |
 | `elapsed_ms` | generation処理の経過ms。最終store drain時間／Python全体時間ではない |
 | `requested` | `{provider,model,thinking}` |
 | `submitted` | `reasoning`（offは`null`）、`maxRetries:0`、`timeoutMs`、`maxTokens/temperature/transport/cacheRetention/thinkingBudgets`（省略は`null`）。これはlibraryへの指定でprovider確認済み値ではない |

@@ -4,6 +4,7 @@
 .env.*
 *.pem
 *.key
+/work/
 /workspaces/
 /runtime/
 /credentials/

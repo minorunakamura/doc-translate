@@ -188,6 +188,7 @@ class _Cost(_Model):
     cacheRead: Nonnegative
     cacheWrite: Nonnegative
     total: Nonnegative
+    totalFromProvider: bool = False
 
 
 class Usage(_Model):

@@ -95,6 +95,21 @@ def _inputs(workspace: Path):
     return source, source_digest, translation, translation_digest, stale, units
 
 
+def _epub_locations_overlap(first, second):
+    return (
+        first.format == second.format == "epub"
+        and first.resource_path == second.resource_path
+        and first.node_snapshot == second.node_snapshot
+        and first.node_path is not None
+        and second.node_path is not None
+        and (
+            first.node_path == second.node_path
+            or first.node_path.startswith(second.node_path + "/")
+            or second.node_path.startswith(first.node_path + "/")
+        )
+    )
+
+
 class _Markdown:
     def __init__(
         self,
@@ -161,12 +176,47 @@ class _Markdown:
                     for u in units
                 )
             ]
+            scoped_blocks = set()
+            scoped_locations = []
+            for block in source.blocks:
+                root = block.locations[0]
+                if block.block_id not in targets or root.format != "epub":
+                    continue
+                positions = [
+                    p
+                    for p in item.locations
+                    if p.format == "epub"
+                    and p.node_path is not None
+                    and p.resource_path == root.resource_path
+                ]
+                if positions and not any(
+                    p.node_path == root.node_path
+                    and p.node_snapshot == root.node_snapshot
+                    for p in positions
+                ):
+                    scoped_blocks.add(block.block_id)
+                    scoped_locations.extend(
+                        p for p in positions if p.node_snapshot == root.node_snapshot
+                    )
             related = [
                 u
                 for u in units
-                if u.unit_id in targets or u.block_id in targets or u.cell_id in targets
+                if u.unit_id in targets
+                or u.cell_id in targets
+                or (
+                    u.block_id in targets
+                    and (
+                        u.block_id not in scoped_blocks
+                        or any(
+                            _epub_locations_overlap(u.locations[0], p)
+                            for p in scoped_locations
+                        )
+                    )
+                )
             ]
-            self.marked.update(b for b in block_ids if b in targets)
+            self.marked.update(
+                b for b in block_ids if b in targets and b not in scoped_blocks
+            )
             self.marked_units.update(u.unit_id for u in related)
             self.concerns.append(
                 {
@@ -175,14 +225,29 @@ class _Markdown:
                     "unit_ids": [u.unit_id for u in related],
                     "output_anchors": list(
                         dict.fromkeys(
-                            [self.anchors[b] for b in block_ids if b in targets]
+                            [
+                                self.anchors[b]
+                                for b in block_ids
+                                if b in targets and b not in scoped_blocks
+                            ]
+                            + [
+                                anchor
+                                for p in scoped_locations
+                                if (
+                                    anchor := self.node_anchors.get(
+                                        (p.resource_path, p.node_path)
+                                    )
+                                )
+                            ]
                             + [
                                 self.unit_anchor(u)
                                 for u in related
                                 if u.block_id not in targets
+                                or u.block_id in scoped_blocks
                             ]
                         )
-                    ),
+                    )
+                    or [self.anchors[b] for b in block_ids],
                 }
             )
         for finding in review_findings or []:
