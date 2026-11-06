@@ -76,18 +76,31 @@ MODELS="$HOME/.local/share/doc-translate/pdf-models"
 mkdir -p "$MODELS"
 
 hf download docling-project/docling-layout-heron \
+  config.json preprocessor_config.json model.safetensors \
   --revision 8f39ad3c0b4c58e9c2d2c84a38465abf757272d8 \
-  --include config.json preprocessor_config.json model.safetensors \
   --local-dir "$MODELS/docling-project--docling-layout-heron"
 
 hf download docling-project/docling-models \
+  model_artifacts/tableformer/accurate/tm_config.json \
+  model_artifacts/tableformer/accurate/tableformer_accurate.safetensors \
   --revision fc0f2d45e2218ea24bce5045f58a389aed16dc23 \
-  --include 'model_artifacts/tableformer/accurate/tm_config.json' \
-  'model_artifacts/tableformer/accurate/tableformer_accurate.safetensors' \
   --local-dir "$MODELS/docling-project--docling-models"
 ```
 
-保存先は`~/.local/share/doc-translate/pdf-models/`です。長いrevision番号やファイル名は書き換える必要はありません。このフォルダは削除せずに残してください。PDFごとにダウンロードし直す必要はありません。
+保存先は`~/.local/share/doc-translate/pdf-models/`です。**重み（`.safetensors`）だけでなく、`config.json`・`preprocessor_config.json`・`tm_config.json`も必須**です。以下の5ファイルが存在することを確認してください。
+
+```sh
+ls \
+  "$MODELS/docling-project--docling-layout-heron/config.json" \
+  "$MODELS/docling-project--docling-layout-heron/preprocessor_config.json" \
+  "$MODELS/docling-project--docling-layout-heron/model.safetensors" \
+  "$MODELS/docling-project--docling-models/model_artifacts/tableformer/accurate/tm_config.json" \
+  "$MODELS/docling-project--docling-models/model_artifacts/tableformer/accurate/tableformer_accurate.safetensors"
+```
+
+`Required local model artifact: ...`で停止した場合は、表示された不足ファイルを追加取得してください。設定JSONだけ不足している場合は、上の`hf download`のファイル名引数を不足したJSONだけに絞れます。すでに作業フォルダが作成されていれば、取得後は削除せず`doc-translate resume 作業フォルダ`で再開します。
+
+長いrevision番号やファイル名は書き換える必要はありません。このmodelフォルダは削除せずに残してください。PDFごとにダウンロードし直す必要はありません。
 
 ### 2. まず数ページを翻訳する
 

@@ -28,10 +28,44 @@ from doc_translate.units import generate_translation_units
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def prepared(tmp_path):
-    workspace, candidates = source(tmp_path)
-    prepare(tmp_path, workspace, candidates)
+@pytest.fixture(scope="module")
+def prepared_seed(tmp_path_factory):
+    root = tmp_path_factory.mktemp("translation-prepared")
+    workspace, candidates = source(root)
+    prepare(root, workspace, candidates)
+    before = {
+        path.relative_to(workspace): path.read_bytes()
+        for path in workspace.rglob("*")
+        if path.is_file()
+    }
+    yield workspace
+    assert {
+        path.relative_to(workspace): path.read_bytes()
+        for path in workspace.rglob("*")
+        if path.is_file()
+    } == before
+
+
+@pytest.fixture
+def prepared(tmp_path, prepared_seed):
+    workspace = shutil.copytree(prepared_seed, tmp_path / "workspace")
+    load_source_snapshot(workspace)
+    load_preparation(workspace)
     return workspace
+
+
+def test_prepared_copies_load_independently_without_changing_seed(
+    tmp_path, prepared, prepared_seed
+):
+    other = shutil.copytree(prepared_seed, tmp_path / "other")
+    assert load_source_snapshot(prepared) == load_source_snapshot(other)
+    assert load_preparation(prepared) == load_preparation(other)
+    pointer = "source-snapshot.json"
+    original = (prepared_seed / pointer).read_bytes()
+    (prepared / pointer).write_bytes(b"changed copy")
+    assert (other / pointer).read_bytes() == original
+    assert (prepared_seed / pointer).read_bytes() == original
+    assert load_preparation(other) == load_preparation(prepared_seed)
 
 
 def translate(tmp_path, workspace, response=None, **kwargs):
@@ -56,7 +90,8 @@ def translate(tmp_path, workspace, response=None, **kwargs):
 def test_translation_adopts_and_reuses_fixed_inputs_without_sending_local_payload(
     tmp_path,
 ):
-    workspace = prepared(tmp_path)
+    workspace, candidates = source(tmp_path)
+    prepare(tmp_path, workspace, candidates)
     digest = translate(tmp_path, workspace)
     adopted = load_translation(workspace)
     assert adopted == load_translation(workspace, digest)
@@ -83,8 +118,10 @@ def test_translation_adopts_and_reuses_fixed_inputs_without_sending_local_payloa
 
 
 @pytest.mark.parametrize("bad", ["missing", "duplicate", "unknown", "empty", "marker"])
-def test_translation_rejects_invalid_answers_and_records_nonadoption(tmp_path, bad):
-    workspace = prepared(tmp_path)
+def test_translation_rejects_invalid_answers_and_records_nonadoption(
+    tmp_path, prepared, bad
+):
+    workspace = prepared
     unit = generate_translation_units(load_source_snapshot(workspace))[0]
     item = {"unit_id": unit.unit_id, "text": "訳文", "uncertainties": []}
     items = [item]
@@ -182,9 +219,9 @@ def test_translation_repairs_all_marker_moves_with_specific_untrusted_feedback(
 
 @pytest.mark.parametrize("tamper", ["none", "feedback", "policy", "schema"])
 def test_translation_revalidates_repaired_orphan_request_before_reuse(
-    tmp_path, monkeypatch, tamper
+    tmp_path, prepared, monkeypatch, tamper
 ):
-    workspace = prepared(tmp_path)
+    workspace = prepared
     unit = generate_translation_units(load_source_snapshot(workspace))[0]
     invalid = {
         "translations": [
@@ -492,9 +529,9 @@ def test_translation_reuses_same_marker_input_after_code_and_preparation_metadat
 @pytest.mark.parametrize(
     "change", ["source", "context", "glossary", "policy", "options", "thinking"]
 )
-def test_translation_resends_when_actual_input_changes(tmp_path, change):
+def test_translation_resends_when_actual_input_changes(tmp_path, prepared, change):
 
-    workspace = prepared(tmp_path)
+    workspace = prepared
     first = translate(tmp_path, workspace)
     kwargs = {}
     if change == "source":
@@ -554,8 +591,10 @@ def test_translation_reduces_published_input_limit_and_records_unknown_usage(tmp
 @pytest.mark.parametrize(
     "tamper", ["terminal", "exit", "model", "submitted", "run-list"]
 )
-def test_translation_load_rejects_rehashed_unvalidated_attempt(tmp_path, tamper):
-    workspace = prepared(tmp_path)
+def test_translation_load_rejects_rehashed_unvalidated_attempt(
+    tmp_path, prepared, tamper
+):
+    workspace = prepared
     digest = translate(tmp_path, workspace)
     data = load_translation(workspace, digest).model_dump(mode="json")
     chunk = data["chunks"][0]
@@ -643,8 +682,10 @@ def test_translation_cancels_parallel_children_and_drains_before_return(
 
 
 @pytest.mark.parametrize("retry", [True, "always"])
-def test_translation_preserves_finite_adapter_retry_and_all_usage(tmp_path, retry):
-    workspace = prepared(tmp_path)
+def test_translation_preserves_finite_adapter_retry_and_all_usage(
+    tmp_path, prepared, retry
+):
+    workspace = prepared
     digest = translate(tmp_path, workspace, {"retry": retry})
     adopted = load_translation(workspace, digest)
     record = json.loads(
@@ -665,8 +706,10 @@ def test_translation_preserves_finite_adapter_retry_and_all_usage(tmp_path, retr
     "directory",
     ["snapshots/translation", "translations/chunks", "attempts/translation"],
 )
-def test_translation_does_not_adopt_or_reuse_corrupt_artifacts(tmp_path, directory):
-    workspace = prepared(tmp_path)
+def test_translation_does_not_adopt_or_reuse_corrupt_artifacts(
+    tmp_path, prepared, directory
+):
+    workspace = prepared
     translate(tmp_path, workspace)
     artifact = next((workspace / directory).glob("*.json"))
     artifact.write_bytes(artifact.read_bytes() + b" ")
@@ -683,10 +726,10 @@ def test_translation_does_not_adopt_or_reuse_corrupt_artifacts(tmp_path, directo
     ["translations/chunks", "snapshots/translation", "translation-snapshot.json"],
 )
 def test_translation_save_failure_preserves_previous_adoption_and_attempts(
-    tmp_path, monkeypatch, target
+    tmp_path, prepared, monkeypatch, target
 ):
 
-    workspace = prepared(tmp_path)
+    workspace = prepared
     previous = translate(tmp_path, workspace)
     reference = (workspace / "translation-snapshot.json").read_bytes()
     real_replace = os.replace
@@ -711,10 +754,10 @@ def test_translation_save_failure_preserves_previous_adoption_and_attempts(
     assert len(list((workspace / "attempts/translation").glob("*.json"))) == 2
 
 
-def test_translation_respects_workspace_writer_lock(tmp_path):
+def test_translation_respects_workspace_writer_lock(tmp_path, prepared):
     from doc_translate.workspace import workspace_lock
 
-    workspace = prepared(tmp_path)
+    workspace = prepared
     with workspace_lock(workspace), pytest.raises(RuntimeError, match="writer"):
         translate(tmp_path, workspace)
     assert not (tmp_path / "translation-requests.jsonl").exists()
@@ -802,9 +845,9 @@ def test_translation_keeps_split_successes_when_another_split_fails(tmp_path):
     ["translations/chunks", "snapshots/translation", "translation-snapshot.json"],
 )
 def test_translation_recovers_validated_calls_before_adoption_without_resending(
-    tmp_path, monkeypatch, target
+    tmp_path, prepared, monkeypatch, target
 ):
-    workspace = prepared(tmp_path)
+    workspace = prepared
     replace = os.replace
 
     def fail_replace(src, dst):
@@ -867,9 +910,9 @@ def test_translation_recovers_successful_split_subcalls_before_snapshot_save(
 
 @pytest.mark.parametrize("tamper", ["terminal", "incomplete", "domain", "hash"])
 def test_translation_revalidates_orphan_runs_before_reusing(
-    tmp_path, monkeypatch, tamper
+    tmp_path, prepared, monkeypatch, tamper
 ):
-    workspace = prepared(tmp_path)
+    workspace = prepared
     replace = os.replace
 
     def fail_replace(src, dst):
