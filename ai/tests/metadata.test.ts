@@ -44,7 +44,7 @@ describe("offline metadata helper protocol", () => {
         { id: "google", name: expect.any(String), login_methods: ["api_key"] },
       ]),
     );
-    expect(response.payload.library_version).toBe("1.4.0");
+    expect(response.payload.library_version).toBe("1.5.0");
   });
 
   it("projects only non-secret chat model capabilities and supported thinking levels", () => {
@@ -94,6 +94,13 @@ describe("offline metadata helper protocol", () => {
           image_input: true,
           reasoning: false,
           thinking_levels: ["off"],
+        },
+        {
+          id: "gpt-6.1-terra",
+          name: expect.any(String),
+          image_input: true,
+          reasoning: true,
+          thinking_levels: ["off", "low", "medium", "high", "xhigh", "max"],
         },
       ]),
     );

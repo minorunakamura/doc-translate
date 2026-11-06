@@ -24,7 +24,7 @@
 - 翻訳前原文を再利用し、翻訳や局所修正だけをやり直せる。
 - 長時間処理の完了結果・状態・利用量を保存する。
 
-プロジェクト名・CLI名は`doc-translate`とし、主入口は独立したPython／uv CLIとする。推論はNode helperから`@earendil-works/pi-ai@1.4.0`を直接利用し、Pi CLI／coding agent／Pi Skillを利用者に要求しない。package・CLIの具体形と実装順序は[正式Plan](../plans/doc-translate-initial.md)、現在の実装済み契約は[artifact契約](../reference/artifacts.md)を参照する。動作検証基準はmacOS 26.7.1 arm64／Python 3.14／Node 24とし、macOSの最低versionやIntel、Linux／Windowsの実機保証はしない。
+プロジェクト名・CLI名は`doc-translate`とし、主入口は独立したPython／uv CLIとする。推論はNode helperから`@earendil-works/pi-ai@1.5.0`を直接利用し、Pi CLI／coding agent／Pi Skillを利用者に要求しない。package・CLIの具体形と実装順序は[正式Plan](../plans/doc-translate-initial.md)、現在の実装済み契約は[artifact契約](../reference/artifacts.md)を参照する。動作検証基準はmacOS 26.7.1 arm64／Python 3.14／Node 24とし、macOSの最低versionやIntel、Linux／Windowsの実機保証はしない。
 
 用語は[プロジェクト用語集](../../GLOSSARY.md)を参照する。対象書籍の訳語を定める「文書glossary」と、この用語集は別物である。
 
