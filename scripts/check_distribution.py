@@ -188,7 +188,7 @@ def main() -> None:
             )
             record = json.loads(installed.stdout)
             assert record["package_manager"] == manager
-            assert record["library_version"] == "1.4.0"
+            assert record["library_version"] == "1.5.0"
             runtime = Path(record["runtime"])
             assert runtime.is_relative_to(home / "data/doc-translate/ai")
             assert (
