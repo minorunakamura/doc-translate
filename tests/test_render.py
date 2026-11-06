@@ -766,6 +766,164 @@ def test_render_coverage_and_output_reached_exclude_units_only_retained_as_sourc
     assert check["passed"] is False and check["target_ids"] == ["unit-2", "unit-3"]
 
 
+@pytest.mark.parametrize("shape", ["data", "headers", "empty"])
+def test_epub_column_definition_units_render_as_table_structure_without_changing_inputs(
+    tmp_path, shape
+):
+    from test_preparation import run as prepare
+    from test_translation import translate
+
+    from doc_translate.render import render_document
+    from doc_translate.translation import load_translation
+    from doc_translate.units import generate_translation_units
+
+    cell = "th" if shape == "headers" else "td"
+    rows = (
+        ""
+        if shape == "empty"
+        else f"<tr><{cell}>First</{cell}><{cell}>Second</{cell}></tr>"
+    )
+    workspace = epub_workspace(
+        tmp_path,
+        '<html xmlns="http://www.w3.org/1999/xhtml"><head/><body><table>'
+        '<colgroup><col title="First column" onclick="unsafe()"/><col/></colgroup>'
+        + rows
+        + "</table></body></html>",
+    )
+    source = load_source_snapshot(workspace)
+    units = generate_translation_units(source)
+    structural = next(u for u in units if u.kind == "body" and u.attribute is None)
+    assert [t.kind for t in structural.tokens] == ["colgroup", "col", "col"]
+    prepare(
+        tmp_path,
+        workspace,
+        [],
+        answers_override={
+            "collect": {"context": "Own table", "candidates": []},
+            "organize": {"context": "Own table", "terms": {}},
+        },
+    )
+    translate(
+        tmp_path,
+        workspace,
+        {
+            "answer": {
+                "translations": [
+                    {
+                        "unit_id": u.unit_id,
+                        "text": u.source_text
+                        if u.unit_id == structural.unit_id
+                        else "訳:" + u.source_text,
+                        "uncertainties": [],
+                    }
+                    for u in units
+                ]
+            }
+        },
+    )
+    source_before = load_source_snapshot(workspace).model_dump_json()
+    translation_before = load_translation(workspace).model_dump_json()
+    result = render_document(workspace)
+    assert result["processing"]["status"] == "completed"
+    assert result["processing"]["render_failed"] == []
+    assert result["processing"]["output_reached"] == [u.unit_id for u in units]
+    for language in ("english", "japanese"):
+        document = artifact(workspace, result, language)
+        assert (
+            document.index("<table>")
+            < document.index("<colgroup>")
+            < document.index("</colgroup>")
+            < document.index("</table>")
+        )
+        assert len(re.findall(r"<col(?: [^>]*)?>", document)) == 2
+        assert "</col>" not in document
+        assert "onclick" not in document and "unsafe()" not in document
+        assert (
+            'title="'
+            + ("First column" if language == "english" else "訳:First column")
+            + '"'
+            in document
+        )
+        if rows:
+            assert document.index("</colgroup>") < document.index("<tr>")
+            assert "<" + cell + ">" in document
+    assert load_source_snapshot(workspace).model_dump_json() == source_before
+    assert load_translation(workspace).model_dump_json() == translation_before
+    assert generate_translation_units(load_source_snapshot(workspace)) == units
+
+
+@pytest.mark.parametrize("problem", ["prose", "order", "nested_group", "other_tag"])
+def test_epub_table_column_coverage_does_not_hide_unrendered_content(tmp_path, problem):
+    from test_preparation import run as prepare
+    from test_translation import translate
+
+    from doc_translate.render import render_document
+    from doc_translate.units import generate_translation_units
+
+    columns = "<colgroup><col/><col/></colgroup>"
+    if problem == "nested_group":
+        columns = "<colgroup><colgroup><col/></colgroup></colgroup>"
+    elif problem == "other_tag":
+        columns = "<colgroup><span>Unrecognized</span></colgroup>"
+    workspace = epub_workspace(
+        tmp_path,
+        '<html xmlns="http://www.w3.org/1999/xhtml"><head/><body><table>'
+        + columns
+        + "<tr><td>Visible</td></tr></table></body></html>",
+    )
+    units = generate_translation_units(load_source_snapshot(workspace))
+    structural = next(u for u in units if u.kind == "body")
+    text = structural.source_text
+    if problem == "prose":
+        text = "Unexpected prose " + text
+    elif problem == "order":
+        text = text.replace("⟦2⟧⟦/2⟧⟦3⟧⟦/3⟧", "⟦3⟧⟦/3⟧⟦2⟧⟦/2⟧")
+    prepare(
+        tmp_path,
+        workspace,
+        [],
+        answers_override={
+            "collect": {"context": "Own table", "candidates": []},
+            "organize": {"context": "Own table", "terms": {}},
+        },
+    )
+    translate(
+        tmp_path,
+        workspace,
+        {
+            "answer": {
+                "translations": [
+                    {
+                        "unit_id": u.unit_id,
+                        "text": text
+                        if u.unit_id == structural.unit_id
+                        else "訳:" + u.source_text,
+                        "uncertainties": [],
+                    }
+                    for u in units
+                ]
+            }
+        },
+    )
+    result = render_document(workspace)
+    assert result["processing"]["status"] == "partial"
+    assert structural.unit_id in result["processing"]["render_failed"]
+    assert structural.unit_id not in result["processing"]["output_reached"]
+    qa = json.loads(artifact(workspace, result, "qa"))
+    assert any(
+        "table-level" in c["reason"] and structural.unit_id in c["unit_ids"]
+        for c in qa["uncertainties"]
+    )
+    for language in ("english", "japanese"):
+        document = artifact(workspace, result, language)
+        assert "Visible" in document
+        if language == "english" and problem in {"prose", "order"}:
+            assert "<colgroup>" in document
+        else:
+            assert "[source data](assets/" in document
+            assert "<colgroup>" not in document
+
+
 def test_epub_attributes_are_restored_at_inline_and_table_cell_positions(tmp_path):
     from doc_translate.render import render_document
 

@@ -21,7 +21,7 @@ from doc_translate.snapshot import (
     source_snapshot_sha256,
 )
 from doc_translate.translation import load_translation
-from doc_translate.units import TranslationUnit, generate_translation_units
+from doc_translate.units import _MARKER, TranslationUnit, generate_translation_units
 from doc_translate.workspace import workspace_lock
 
 
@@ -380,7 +380,9 @@ class _Markdown:
                 text = text.replace(token.end_marker, "")
         return text
 
-    def text(self, unit: TranslationUnit, japanese: bool) -> str:
+    def text(
+        self, unit: TranslationUnit, japanese: bool, *, table_columns=False
+    ) -> str:
         self.seen[japanese].add(unit.unit_id)
         text = (
             self.translated.get(unit.unit_id, unit.source_text)
@@ -407,6 +409,8 @@ class _Markdown:
                         "sub": "sub",
                         "sup": "sup",
                     }.get(kind, "span")
+                    if table_columns and kind in {"colgroup", "col"}:
+                        tag = kind
                     attrs = ""
                     if kind == "link":
                         target = self.link(value)
@@ -423,7 +427,7 @@ class _Markdown:
                             )
                     attrs += self.attributes(value, japanese)
                     result.append(f"<{tag}{attrs}>")
-                    stack.append(f"</{tag}>")
+                    stack.append("" if tag == "col" else f"</{tag}>")
                 elif kind in {"code", "identifier"}:
                     result.append(
                         f"<code{self.attributes(value, japanese)}>"
@@ -627,11 +631,68 @@ class _Markdown:
                         )
                         spans.append((row + row_span, column, column + column_span))
                         column += column_span
+                column_definitions = []
+                for unit in by_node.get(path, []):
+                    text = (
+                        self.translated.get(unit.unit_id, unit.source_text)
+                        if japanese
+                        else unit.source_text
+                    )
+                    column_nodes = {}
+                    for token in unit.tokens:
+                        if token.kind in {"colgroup", "col"}:
+                            value: Any = token.value
+                            column_nodes[value["location"]["node_path"]] = token.kind
+                    if (
+                        unit.tokens
+                        and all(t.kind in {"colgroup", "col"} for t in unit.tokens)
+                        and not _MARKER.sub("", unit.source_text).strip()
+                        and not _MARKER.sub("", text).strip()
+                        and _MARKER.findall(text) == _MARKER.findall(unit.source_text)
+                        and all(
+                            (
+                                (kind == "colgroup" and p.rsplit("/", 1)[0] == path)
+                                or (
+                                    kind == "col"
+                                    and column_nodes.get(p.rsplit("/", 1)[0])
+                                    == "colgroup"
+                                )
+                            )
+                            and all(
+                                (isinstance(part, str) and not part.strip())
+                                or (
+                                    isinstance(part, dict)
+                                    and kind == "colgroup"
+                                    and column_nodes.get(part["node_path"]) == "col"
+                                )
+                                for part in nodes[p]["content"]
+                            )
+                            for p, kind in column_nodes.items()
+                        )
+                    ):
+                        column_definitions.append(
+                            self.text(unit, japanese, table_columns=True)
+                        )
+                        if unit.unit_id in self.marked_units or (
+                            japanese and unit.unit_id not in self.translated
+                        ):
+                            prefix += "※\n\n"
+                    else:
+                        self.problem(
+                            block,
+                            "Unsupported table-level content retained as source data",
+                            location=node["location"],
+                            unit=unit,
+                        )
+                        prefix += f"[source data]({self.assets.reference(node['location'])})※\n\n"
                 return (
                     prefix
                     + "\n".join(table_anchors)
                     + "\n\n"
-                    + "\n\n".join(captions + [self.table(cells, japanese)])
+                    + "\n\n".join(
+                        captions
+                        + [self.table(cells, japanese, "\n".join(column_definitions))]
+                    )
                 )
             own = by_node.get(path, [])
             if own and own[0].kind == "body":
@@ -859,9 +920,13 @@ class _Markdown:
         digest = self.source_digest
         return f"[source data](../../snapshots/source/{digest}.json)※"
 
-    def table(self, cells: list[dict], japanese: bool) -> str:
+    def table(
+        self, cells: list[dict], japanese: bool, column_definitions: str = ""
+    ) -> str:
         if not cells:
-            return ""
+            return (
+                f"<table>\n{column_definitions}\n</table>" if column_definitions else ""
+            )
         rows = max(c["row"] + 1 for c in cells)
         columns = max(c["column"] + c.get("column_span", 1) for c in cells)
         by_position = {(c["row"], c["column"]): c for c in cells}
@@ -870,7 +935,8 @@ class _Markdown:
             return cell["rendered"]
 
         simple = (
-            all(
+            not column_definitions
+            and all(
                 c.get("row_span", 1) == c.get("column_span", 1) == 1
                 and not c.get("rendered_attributes")
                 for c in cells
@@ -895,6 +961,8 @@ class _Markdown:
                     lines.append("| " + " | ".join(["---"] * columns) + " |")
             return "\n".join(lines)
         lines = ["<table>"]
+        if column_definitions:
+            lines.append(column_definitions)
         for row in range(rows):
             lines.append("<tr>")
             for cell in cells:
