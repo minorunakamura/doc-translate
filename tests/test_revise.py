@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import shutil
 
 import pytest
 from test_epub import make_epub
@@ -9,6 +10,8 @@ from test_resume import assert_preserved, requests, saved_files
 from test_run import helper, run_args
 
 from doc_translate.cli import main
+from doc_translate.preparation import load_preparation
+from doc_translate.snapshot import load_source_snapshot
 from doc_translate.translation import load_translation
 
 
@@ -141,17 +144,41 @@ def test_source_code_revision_survives_resume_without_resending_body(
     assert_preserved(before)
 
 
+@pytest.fixture(scope="module")
+def malformed_source_seed(tmp_path_factory):
+    root = tmp_path_factory.mktemp("revise-malformed-source")
+    workspace = root / "run"
+    main(run_args(make_epub(root), workspace), process_command=helper(root))
+    assert len(requests(root)) == 3
+    before = {p: p.read_bytes() for p in workspace.rglob("*") if p.is_file()}
+    initial_requests = (root / "requests.jsonl").read_bytes()
+    yield root
+    assert {p: p.read_bytes() for p in workspace.rglob("*") if p.is_file()} == before
+    assert (root / "requests.jsonl").read_bytes() == initial_requests
+
+
+@pytest.fixture
+def malformed_source_workspace(tmp_path, malformed_source_seed):
+    workspace = shutil.copytree(malformed_source_seed / "run", tmp_path / "run")
+    shutil.copyfile(
+        malformed_source_seed / "requests.jsonl", tmp_path / "requests.jsonl"
+    )
+    load_source_snapshot(workspace)
+    load_preparation(workspace)
+    assert load_translation(workspace).processing.status == "completed"
+    return workspace
+
+
 @pytest.mark.parametrize(
     "damage", ["unknown_target", "inactive_schema", "tree", "envelope", "stale"]
 )
 def test_source_replacement_rejects_malformed_whole_snapshot_before_adoption(
-    tmp_path, capsys, damage
+    tmp_path, capsys, damage, malformed_source_workspace
 ):
-    from doc_translate.snapshot import load_source_snapshot
-
-    workspace = tmp_path / "run"
-    main(run_args(make_epub(tmp_path), workspace), process_command=helper(tmp_path))
+    workspace = malformed_source_workspace
     capsys.readouterr()
+    assert len(requests(tmp_path)) == 3
+    initial_requests = (tmp_path / "requests.jsonl").read_bytes()
     source = load_source_snapshot(workspace).model_dump(mode="json")
     data = {
         "schema_version": 1,
@@ -199,6 +226,7 @@ def test_source_replacement_rejects_malformed_whole_snapshot_before_adoption(
     assert rejected.value.code == 2
     assert all(p.read_bytes() == value for p, value in before.items())
     assert len(requests(tmp_path)) == 3
+    assert (tmp_path / "requests.jsonl").read_bytes() == initial_requests
 
 
 @pytest.mark.parametrize(

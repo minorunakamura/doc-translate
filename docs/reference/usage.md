@@ -285,15 +285,17 @@ ln -s "$TABLE_SNAPSHOT" "$MODELS/docling-project--docling-models"
 
 ```sh
 hf download docling-project/docling-layout-heron \
+  config.json preprocessor_config.json model.safetensors \
   --revision 8f39ad3c0b4c58e9c2d2c84a38465abf757272d8 \
-  --include config.json preprocessor_config.json model.safetensors \
   --local-dir "$MODELS/docling-project--docling-layout-heron"
 hf download docling-project/docling-models \
+  model_artifacts/tableformer/accurate/tm_config.json \
+  model_artifacts/tableformer/accurate/tableformer_accurate.safetensors \
   --revision fc0f2d45e2218ea24bce5045f58a389aed16dc23 \
-  --include 'model_artifacts/tableformer/accurate/tm_config.json' \
-  'model_artifacts/tableformer/accurate/tableformer_accurate.safetensors' \
   --local-dir "$MODELS/docling-project--docling-models"
 ```
+
+設定JSONも重みと同様に必須です。必要ファイルの確認と不足時の追加取得・再開は[READMEのPDF手順](../../README.md#pdfを翻訳する)を参照してください。
 
 変換時はHub／Transformersをofflineにし、明示local pathのみを使います。不足ファイルは必要pathを示して停止し、自動download・remote services・external pluginsを使いません。固定repo／revisionと実ファイルhashを保存しますが、任意に差し替えたlocalファイルがupstream revisionと一致することを自動認証するものではありません。取得失敗やページ画像欠落は保存済み下書きへのdigest付きエラー、charspan不一致はclipしない要確認checkとして残ります。実行成功も原文品質の承認ではありません。
 

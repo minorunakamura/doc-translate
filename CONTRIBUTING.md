@@ -96,6 +96,48 @@ uv run --locked --extra pdf pytest tests/test_pdf.py tests/test_run.py tests/tes
 
 extraを保持するには`uv run --locked --extra pdf ...`（pytestは`uv run --locked --extra pdf pytest`を推奨）、またはsync済みの`.venv/bin/pytest`／`.venv/bin/ruff`／`.venv/bin/ty`を使い、`.venv/bin/pytest`を直接使う場合はvenvのactivateまたは`.venv/bin`のPATH追加が必要です。これは依存解決・importと人工fixture検証であり、それだけを実Docling変換、Apple Vision OCR、重みを使うlayout／table処理の成功と表示しません。
 
+### 検証の分担・再実行・証拠
+
+上記の正式チェックの対象・条件・順序は変えません。各機能節のコマンドは境界ごとの再現入口であり、同じ担当が毎回すべてを重複実行するリストではありません。
+
+- **Worker**：変更したconsumerの単独実行とmodule実行、関連公開seamのfocused regression、必要なlint／formatを実行し、保証・前提・除いた工程・残した実経路の対応を報告します。
+- **Root**：現在の差分を直接読み、自分で正式core-only全pytest／品質チェック／CLI help、PDF extraのty／公開import／上記3ファイルを実行します。既存環境・helper buildの鮮度を確認し、Node変更時は既存Node品質チェック、helper source変更時は明示buildも行います。pytestとは別に下記の人工run→公開load→コピー分離→不正revise拒否、render/status、訳文patchを直接照合します。Workerの成功で代替しません。
+- **Reviewer**：差分と今回の証拠から不足する具体的保証だけを追加検証します。実行主体の交代だけで全suiteを反復しません。修正後は影響した保証・正式チェック・直接確認を再実行し、shared fixture等の広い影響はfull suiteでも確認します。計測後に影響する差分が変われば再計測します。
+
+前提再利用は同じ入力の実生成物をinvocation内で作り、全artifact／evidence／attempt／pointerを独立コピーした場合に限定します。公開loadで整合を確認し、seed／他ケースへの変更非伝播とseed byte不変を検査します。別入力へのhashの後付け、永続cache、hardlink、generate／validator／saveのmockは使いません。実準備→翻訳の対照、入力改変、取消、故障、再開の検査対象操作は実行します。Nodeの30秒grace／10.5秒以上のheartbeat、Pythonの実3／6秒retryは短縮しません。
+
+直接例はrepository root、既存の開発環境とbuild済みhelperから開始します。依存の自動取得や既存環境の同期は行わず、必要なら正式手順と許可範囲を先に確認します。以下は新しい証拠directoryだけを作ります。
+
+```sh
+set -eu
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+mkdir -p work
+EVIDENCE=$(mktemp -d "$PWD/work/test-verification-XXXXXX")
+export EVIDENCE
+git rev-parse HEAD > "$EVIDENCE/revision.txt"
+git diff --stat > "$EVIDENCE/diff-scope.txt"
+git diff -- CONTRIBUTING.md tests/test_translation.py tests/test_revise.py > "$EVIDENCE/verification.diff"
+{ uname -sm; .venv/bin/python --version; node --version; pnpm --version; uv --version; } > "$EVIDENCE/tools.txt"
+```
+
+`conditions.txt`へcore/PDF extra・依存同期の有無・Node build状態・PATH/offline条件・入力・cold/warm状態を記録します（raw環境変数やcredentialは記録しません）。各操作のcommand、exit、時刻／raw所要時間、期待／観測、未確認事項を証拠と対応付けます。過去Issueの成功は今回のrevisionの成功に上書きしません。JSON／assert成功も実LLM意味品質、実Docling/OCR、viewer、account利用権の保証ではなく、remote未実行は明記します。stderr保存はnetwork拒否付き人工fixtureに限り、実認証・秘密入りstderrは保存しません。
+
+性能比較は他のtest processと**非並行**、同じ環境／extra／入力／build／PATH/offlineで行います。候補は変更前後それぞれfresh pytest processを3回実行し、seed生成・追加checkも含めます。例えば各revisionで次を実行します（終了コードも保存し、失敗値を成功時間に混ぜません）。
+
+```sh
+for n in 1 2 3; do
+  if /usr/bin/time -p .venv/bin/pytest tests/test_translation.py tests/test_revise.py tests/test_render.py \
+      --durations=0 --durations-min=0 -q > "$EVIDENCE/candidate-$n.log" 2>&1; then code=0; else code=$?; fi
+  printf '%s\n' "$code" > "$EVIDENCE/candidate-$n.exit"
+  test "$code" -eq 0 || break
+done
+.venv/bin/pytest tests/test_translation.py tests/test_revise.py tests/test_render.py --collect-only -q > "$EVIDENCE/collection.log"
+```
+
+raw値・中央値・min/max・node別setup/call/teardown、collectionのnode ID／parametrize／skip理由を比較します。Issue #39では候補中央値がbeforeの90%以下、正式core/PDF/Node各phaseは同条件の前後各1回をまず比較します。after/beforeが1.05超または外乱で判断不能なphaseだけ双方追加2回の中央値で評価し、5%超悪化を受け入れません。正式チェックと同条件なら計測を兼用し、CI待ち時間やinstall/build時間と混ぜず、ローカル結果からCI短縮率を推定しません。
+
+直接確認の証拠はworkspace外の`$EVIDENCE`へ残します。完了後、作ったprocessをwait／回収し、自分がこの例の`mktemp`で作った`WORKSPACE`／`RUN_FIXTURE`だけを削除します（人工credentialもその内側）。`work/`全体、他人のworkspace、既存venv／credential／modelは削除しません。証拠は削除せず、cleanup対象／結果と未確認範囲を記録し、`test -s "$EVIDENCE/revision.txt"`と各ログの再読込みで参照維持を確認します。障害復旧例末尾の一時directoryも、自分が今回作成したpathを確認してから同じ扱いにします。
+
 ### PDF取得の検証境界
 
 `acquire_pdf`→`load_pdf_draft`の公開seamで、不足model・不正入力／range、raw item／ref／table cell／provenance、clipしないcharspan不一致、conversion status／errors、全対象ページ／PNG、直接描画scale／unload、artifact hash不一致、writer排他、参照replace失敗時の旧版保持を検査します。Doclingの外部公開`DocumentConverter.convert`と公開page backend境界だけを人工fixtureに置換し、保存・load・workspaceは実物を使います。private helper mockや未依頼CLIは追加しません。core-onlyでのPDF／EPUB API importも検査します。
@@ -168,6 +210,8 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 .venv/bin/pytest tests/test_preparation.py tests/test_units.py tests/test_inference.py tests/test_source_snapshot.py
 ```
 
+本節と次節のfocused pytestはWorkerの境界確認、全件はRootの正式チェックです。固定準備のコピーは前提作成だけに使い、実準備→実翻訳→公開load／無送信再利用の対照を維持します。
+
 `tests/test_preparation.py`の自作PDF原文snapshotと実EPUB readerからの人工原文、`ai/tests/preparation-process.mjs`のnetwork拒否下の公開`fauxProvider`＋実`runHelper`を使います。内部`generate`／validator／保存helperをmockしません。保存故障注入はOSの`replace`境界だけです。faux processも通常のBiome／oxlint検査対象です。
 
 - 公開prepare/save/loadの観測で利用者terms優先、複合語・原表記、本文根拠なし候補の非採用、単一policy由来style、固定glossary/contextの保存を確認します。
@@ -220,8 +264,32 @@ from doc_translate.snapshot import SourceSnapshot, save_source_snapshot
 source = SourceSnapshot.model_validate_json(Path('tests/fixtures/render-source.pdf.json').read_bytes())
 save_source_snapshot(Path(os.environ['WORKSPACE']), source)
 PY
-.venv/bin/doc-translate render "$WORKSPACE"  # exit 1: 訳文なしの部分出力、JSONを返す
-.venv/bin/doc-translate status "$WORKSPACE" --json  # exit 0: render_current=true、QA／出力pathを返す
+if PATH='' "$PWD/.venv/bin/doc-translate" render "$WORKSPACE" > "$EVIDENCE/render.json"; then code=0; else code=$?; fi
+printf '%s\n' "$code" > "$EVIDENCE/render.exit"
+test "$code" -eq 1  # 期待する部分出力。set -eでも観測する
+PATH='' "$PWD/.venv/bin/doc-translate" status "$WORKSPACE" --json > "$EVIDENCE/render-status.json"
+.venv/bin/python - <<'PY'
+import json, os, shutil
+from pathlib import Path
+root, evidence = Path(os.environ['WORKSPACE']), Path(os.environ['EVIDENCE'])
+result = json.loads((evidence / 'render.json').read_bytes())
+status = json.loads((evidence / 'render-status.json').read_bytes())
+assert status['render_current'] is True
+assert result['processing']['status'] == 'partial'
+assert result['artifacts'] == status['artifacts']
+assert all((root / path).is_file() for path in result['artifacts'].values())
+ja = (root / result['artifacts']['japanese']).read_text()
+en = (root / result['artifacts']['english']).read_text()
+qa = json.loads((root / result['artifacts']['qa']).read_bytes())
+assert '※' in ja and '````' in en
+assert any(item['reason'] == 'Original code is unfinished; do not invent its ending'
+           for item in qa['uncertainties'])
+mapping = json.loads((root / result['artifacts']['source_map']).read_bytes())
+assert mapping['blocks'][0]['locations'][0]['page'] == 2
+assert qa['content_review']['meaning_quality_approved'] is False
+shutil.copytree((root / result['artifacts']['japanese']).parent, evidence / 'render-artifacts')
+print('partial exit1; saved artifacts/QA and current status matched')
+PY
 ```
 
 日本語側に原文＋`※`、英語側に原文、4-backtickのcode fence、数式、code原本欠損のQAが残ります。source mapから元ページ2へ戻れますが、PDF全文とは表示しません。訳文／分割／失敗usageを含む検証は`tests/test_render.py`の既存prepare/translate公開API＋faux fixtureを参照してください。実LLM・実credential・model取得・書籍・viewer・remote CIは使いません。
@@ -249,7 +317,7 @@ PDF／EPUBの出力到達、所有5ページ分割／length縮小、許可範囲
 ```sh
 RUN_FIXTURE=$(mktemp -d)
 export RUN_FIXTURE HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-PYTHONPATH=tests .venv/bin/python - <<'PY_RUN'
+PYTHONPATH=tests .venv/bin/python - <<'PY_RUN' > "$EVIDENCE/run.json"
 import json, os, shutil
 from pathlib import Path
 from test_epub import make_epub
@@ -263,11 +331,81 @@ main(["run", "--json", str(source), "--workspace", str(root / "new"),
      process_command=[shutil.which("node"), str(Path("ai/tests/run-process.mjs").resolve()),
                       str(root / "credentials"), str(settings), str(root / "requests.jsonl")])
 PY_RUN
-.venv/bin/doc-translate status "$RUN_FIXTURE/new" --json  # exit0、completed／render_current=true
-.venv/bin/doc-translate render "$RUN_FIXTURE/new"  # exit0、LLMなし
+.venv/bin/doc-translate status "$RUN_FIXTURE/new" --json > "$EVIDENCE/run-status.json"
+.venv/bin/doc-translate render "$RUN_FIXTURE/new" > "$EVIDENCE/run-render.json"
+.venv/bin/python - <<'PY'
+import json, os, shutil
+from pathlib import Path
+from doc_translate.snapshot import load_source_snapshot
+from doc_translate.preparation import load_preparation
+from doc_translate.translation import load_translation
+root, evidence = Path(os.environ['RUN_FIXTURE']), Path(os.environ['EVIDENCE'])
+workspace = root / 'new'
+result = json.loads((evidence / 'run.json').read_bytes())
+status = json.loads((evidence / 'run-status.json').read_bytes())
+assert result['processing']['status'] == 'completed' and status['render_current'] is True
+assert load_source_snapshot(workspace).document.format == 'epub'
+load_preparation(workspace)  # evidence/hash/attempt/実request対応も検証
+assert load_translation(workspace).processing.status == 'completed'
+assert len((root / 'requests.jsonl').read_text().splitlines()) == 3
+assert all((workspace / path).is_file() for path in result['artifacts'].values())
+assert '訳:Original' in (workspace / result['artifacts']['japanese']).read_text()
+qa = json.loads((workspace / result['artifacts']['qa']).read_bytes())
+assert qa['content_review']['meaning_quality_approved'] is False
+shutil.copytree((workspace / result['artifacts']['japanese']).parent, evidence / 'run-artifacts')
+print('completed; public loads; 3 requests; Japanese output and QA matched')
+PY
 # 同じworkspaceへの新規runはexit2（setup／実認証／推論を開始しない）
-.venv/bin/doc-translate run "$RUN_FIXTURE/book.epub" --workspace "$RUN_FIXTURE/new" \
-  --provider faux --model text --thinking off
+if .venv/bin/doc-translate run "$RUN_FIXTURE/book.epub" --workspace "$RUN_FIXTURE/new" \
+    --provider faux --model text --thinking off; then code=0; else code=$?; fi
+printf '%s\n' "$code" > "$EVIDENCE/existing-run.exit"
+test "$code" -eq 2
+```
+
+Rootのコピー前提・拒否の直接確認は、上の人工run直後に行います。元workspaceを一時退避した状態で別pathから公開loadし、不正envelopeを実CLIへ渡します。成功adoption／resumeの代わりにはしません。
+
+```sh
+.venv/bin/python - <<'PY' > "$EVIDENCE/copy-reject.txt"
+import json, os, shutil
+from pathlib import Path
+from doc_translate.cli import main
+from doc_translate.snapshot import load_source_snapshot
+from doc_translate.preparation import load_preparation
+from doc_translate.translation import load_translation
+root = Path(os.environ['RUN_FIXTURE'])
+seed = root / 'new'
+a = shutil.copytree(seed, root / 'copy-a')
+b = shutil.copytree(seed, root / 'copy-b')
+seed.rename(root / 'seed-held')
+try:
+    for workspace in (a, b):
+        load_source_snapshot(workspace)
+        load_preparation(workspace)
+        assert load_translation(workspace).processing.status == 'completed'
+finally:
+    (root / 'seed-held').rename(seed)
+before = {p: p.read_bytes() for p in a.rglob('*') if p.is_file()}
+requests = (root / 'requests.jsonl').read_bytes()
+assert len(requests.splitlines()) == 3
+revision = root / 'invalid-source.json'
+revision.write_text(json.dumps({
+    'schema_version': 1,
+    'base_source_sha256': json.loads((a / 'source-snapshot.json').read_bytes())['sha256'],
+    'source': load_source_snapshot(a).model_dump(mode='json'), 'unexpected': True}))
+try:
+    main(['revise', str(a), '--source', str(revision), '--reason', 'invalid'])
+except SystemExit as error:
+    assert error.code == 2
+else:
+    raise AssertionError('expected revise exit2')
+assert {p: p.read_bytes() for p in a.rglob('*') if p.is_file()} == before
+assert (root / 'requests.jsonl').read_bytes() == requests
+pointer = 'source-snapshot.json'
+original = (seed / pointer).read_bytes()
+(a / pointer).write_bytes(b'changed independent copy')
+assert (seed / pointer).read_bytes() == (b / pointer).read_bytes() == original
+print('relocated public loads; revise exit2; all bytes/3 requests unchanged; isolated copies')
+PY
 ```
 
 最初のrunはstderrへprepare×2／translation×1の送信前通知、stdoutへsummaryを表示します。`artifacts`から日本語側の`訳:Original`とinline保持、英語原文、source map、QA／usageを確認できます。PDFのsynthetic直接確認は`.venv/bin/pytest -s tests/test_run.py -k 'owns_requested or partial_pdf or without_pages'`で同じ公開CLIを使い、置き換えるのはDocling外部APIとfaux providerだけです。fixtureの取得成功は実PDFの完全抽出や実LLM意味品質・viewer表示の保証ではありません。resume／revise／reviewの検証は各節を参照してください。remote CIの実行は必須ではありません。
@@ -317,7 +455,7 @@ Issue #16は公開`revise`／`resume`／`status`／`render`→workspace参照・
 ```sh
 export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 .venv/bin/pytest tests/test_cli.py tests/test_revise.py tests/test_run.py tests/test_pdf_candidate_acceptance.py
-# 変更境界の確認後は上記「正式チェック」の全pytest・Ruff・tyも実行
+# Workerは変更境界をfocused確認し、Rootが上記「正式チェック」を実行
 ```
 
 `tests/test_run.py`／`test_pdf_candidate_acceptance.py`は既存の人工PDF draft／PNG・Docling公開converter／page backend境界と、実Node helper／公開faux providerを再利用します。内部workflow／validatorのmockを増やさず、送信request・採用参照・旧hash・成果物を確認します。外部process故障注入は既存`tests/fixtures/resume_process.py`のatomic replace境界を使います。`ai/tests/run-process.mjs`を変更した場合は既存のNode format／lint／testも実行し、helper source変更時だけ明示buildを行います。
@@ -347,8 +485,30 @@ PY
 PATH='' "$PWD/.venv/bin/doc-translate" revise "$RUN_FIXTURE/new" \
   --translations "$RUN_FIXTURE/patch.json" --reason '人工訳文patchの確認'
 PATH='' "$PWD/.venv/bin/doc-translate" render "$RUN_FIXTURE/new"
-PATH='' "$PWD/.venv/bin/doc-translate" status "$RUN_FIXTURE/new"
+PATH='' "$PWD/.venv/bin/doc-translate" status "$RUN_FIXTURE/new" --json > "$EVIDENCE/patch-status.json"
+.venv/bin/python - <<'PY'
+import json, os, shutil
+from pathlib import Path
+from doc_translate.translation import load_translation
+root, evidence = Path(os.environ['RUN_FIXTURE']), Path(os.environ['EVIDENCE'])
+workspace = root / 'new'
+status = json.loads((evidence / 'patch-status.json').read_bytes())
+assert status['render_current'] is True
+assert '手動確認' in load_translation(workspace).translations[0].text
+assert '手動確認' in (workspace / status['artifacts']['japanese']).read_text()
+assert len((root / 'requests.jsonl').read_text().splitlines()) == 3
+shutil.copytree((workspace / status['artifacts']['japanese']).parent, evidence / 'patch-artifacts')
+print('offline patch/render/status exit0; manual Japanese text; no new request')
+PY
+# 上記照合と必要な証拠保存後、自分がこの手順で作った一時directoryだけをcleanup
+# WORKSPACEとRUN_FIXTUREが両方とも今回のmktemp値であることを先に確認する
+rm -rf -- "$WORKSPACE" "$RUN_FIXTURE"
+printf '%s\n' 'owned temporary workspaces/credentials removed; no child left' > "$EVIDENCE/cleanup.txt"
+test -s "$EVIDENCE/revision.txt" && test -s "$EVIDENCE/run.json"
+cat "$EVIDENCE/copy-reject.txt" "$EVIDENCE/cleanup.txt"
 ```
+
+cleanup後の出力・対応表・QA／usageは`$EVIDENCE/{render,run,patch}-artifacts/`で再読込みできます。summary内のworkspace相対pathは元の保存位置であり、cleanup後の証拠参照にはこの退避先の同名fileを使います。
 
 PDF候補も同じ公開CLIを通す直接入口は`.venv/bin/pytest -s tests/test_run.py -k 'candidate_offline_adoption or revised_partial_pdf'`です。旧訂正版Hの保持、新候補Cの雛形コピーと任意のK編集、Nodeなしの明示採用→resume、元hash不変を検査します。検査対象は機械的な構造・scope・保存・再利用契約であり、意味的な訂正の完全保持・実LLM／Docling品質・viewer表示・remote CI成功ではありません。関連検査の成功を全体受入れや実provider検証の完了としません。
 
