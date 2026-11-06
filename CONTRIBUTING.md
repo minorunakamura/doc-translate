@@ -172,7 +172,7 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 - 公開prepare/save/loadの観測で利用者terms優先、複合語・原表記、本文根拠なし候補の非採用、単一policy由来style、固定glossary/contextの保存を確認します。
 - 節単位の実送信と整理入力、語がなくても節contextが整理へ届くこと、PDF／EPUB両方のblock／inline code・数式・画像・XHTML全文の非送信、snapshot-boundな用例／出典を検査します。
-- 未知unit／捏造引用・根拠なし語の採用、schema不正を拒否し、失敗のraw回答／usage記録と旧版保持、retryの全attempt（失敗分も含む）を確認します。
+- 未知unit／捏造引用・根拠なし語の採用、schema不正を拒否し、失敗のraw回答／usage記録と旧版保持、retryの全attempt（失敗分も含む）を確認します。準備の根拠不一致だけは固定理由と問題の用語／引用を未信頼dataとして伝えて最大3回答まで再生成し、収集／整理での回復・上限停止・訂正済みrequestの再利用とCLIの安全な原因表示も検査します。
 - 同じ固定版の無送信再利用、準備方式metadataだけの変更で固定翻訳入力hashが変わらないこと、policy／利用者terms改版、全artifactのhash不正、hashを再計算した捏造根拠・採用内容差替え、採用参照replace失敗、writer排他を検査します。
 
 実LLM・実credential・model重み・既存書籍を使いません。この機械検証は候補網羅性・定義の意味や訳語品質の確認ではなく、全文翻訳snapshot／CLI統合の成立も示しません。実送信や取得は別途承認が必要です。
@@ -187,7 +187,7 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 ```
 
 - 既定約12,000原文文字・concurrency 2、章節境界、ID全種の不正／空訳／marker inventory・構造の拒否、原位置付き要確認と品質未承認を検査します。
-- lengthと公開input上限によるchunk縮小／lossless unit分割・不可分spanの失敗、正常採用を残した部分失敗／再開、有限retryと失敗usage／不明usage生値の保持を検査します。
+- lengthと公開input上限によるchunk縮小／lossless unit分割・不可分spanの失敗、正常採用を残した部分失敗／再開、有限retryと失敗usage／不明usage生値の保持を検査します。marker違反の全unit・不足／余分なmarker等を未信頼dataとして返す最大3回答の訂正生成、訂正結果のload／無送信再利用・中断回復、入力改変の拒否、実CLI resumeで失敗chunkだけを訂正することも検査します。
 - marker入力が同じcode変更・準備metadataだけの変更の無送信再利用、原文／context／glossary／policy／実設定改版、artifact破損・再hashした不正attempt、artifact先／採用参照最後のreplace故障と旧版保持、writer排他を検査します。
 - main-thread SIGINT／SIGTERMを実processへ送り、2つのchildが取消・usage保持・drain／回収を終えるまで戻らず、未開始chunkを新規送信しないことを検査します。
 

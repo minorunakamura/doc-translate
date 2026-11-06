@@ -83,6 +83,31 @@ def test_generate_uses_real_helper_and_explicit_fresh_inputs(tmp_path):
     assert final.retry.internal_retries == "unknown"
 
 
+def test_http_adapter_cost_metadata_is_accepted_without_losing_usage(tmp_path):
+    class HTTPAnswer(BaseModel):
+        body: dict[str, JsonValue]
+        sends: int
+
+    result = generate(
+        GenerationConfig(provider="faux", model="vision", thinking="off"),
+        GenerationInput(
+            stage="prepare",
+            policy="",
+            text="artificial source",
+            context=None,
+            glossary=None,
+        ),
+        response_model=HTTPAnswer,
+        process_command=helper(tmp_path, "http-stop"),
+    )
+    assert result.answer.sends == 1
+    assert len(result.attempts) == 1
+    final = result.attempts[0].final
+    assert final is not None and final.usage is not None
+    assert final.usage.totalTokens == 14
+    assert final.usage.cost.totalFromProvider is False
+
+
 def png(width=2, height=1, color="red"):
     output = BytesIO()
     Image.new("RGB", (width, height), color).save(output, format="PNG")

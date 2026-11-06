@@ -93,7 +93,15 @@ faux.setResponses([
               : {
                   translations: JSON.parse(input.text).map((unit) => ({
                     unit_id: unit.unit_id,
-                    text: `訳:${unit.source_text}`,
+                    text: `訳:${
+                      settings.marker_failure &&
+                      (
+                        settings.marker_failure === "always" ||
+                          !input.context.translation_feedback
+                      )
+                        ? unit.source_text.replace(/⟦(?:=|\/)?[0-9]+⟧/u, "")
+                        : unit.source_text
+                    }`,
                     uncertainties: settings.attention
                       ? [
                           {

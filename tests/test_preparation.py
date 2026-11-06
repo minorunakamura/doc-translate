@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 from doc_translate.inference import GenerationConfig, GenerationOptions
-from doc_translate.preparation import StylePolicy, load_preparation, prepare_document
+from doc_translate.preparation import (
+    PreparationValidationError,
+    StylePolicy,
+    load_preparation,
+    prepare_document,
+)
 from doc_translate.snapshot import SourceSnapshot, save_source_snapshot
 from doc_translate.units import generate_translation_units
 
@@ -141,6 +146,167 @@ def test_preparation_adopts_user_terms_and_preserves_body_evidence(tmp_path):
         assert record["elapsed_seconds"] >= 0
         assert record["attempts"][0]["final"]["usage_status"] == "observed"
         assert record["attempts"][0]["final"]["message"] is not None
+
+
+@pytest.mark.parametrize("phase", ["collect", "organize"])
+def test_preparation_repairs_evidence_with_feedback_and_reuses_success(tmp_path, phase):
+    workspace, candidates = source(tmp_path)
+    answers = {
+        "collect": {"context": "Records.", "candidates": candidates},
+        "organize": {"context": "Records.", "terms": {"transaction log": "ログ"}},
+    }
+    invalid = json.loads(json.dumps(answers))
+    if phase == "collect":
+        invalid[phase]["candidates"][0]["term"] = "Transaction log"
+        code = "prepare_term_mismatch"
+    else:
+        invalid[phase]["terms"] = {"ungrounded": "偽"}
+        code = "prepare_ungrounded_term"
+    notices = []
+
+    def before_send(_config, request, _preflight):
+        notices.append(request)
+        if "Previous response failed validation:" in request.policy:
+            assert code in request.policy
+            (tmp_path / "answers.json").write_text(json.dumps(answers))
+
+    digest = run(
+        tmp_path,
+        workspace,
+        candidates,
+        answers_override=invalid,
+        before_send=before_send,
+    )
+    adopted = load_preparation(workspace, digest)
+    assert adopted.glossary.terms == {"transaction log": "ログ"}
+    assert len(notices) == 3
+    failed, repaired = [r for r in notices if r.context["phase"] == phase]
+    assert failed.text == repaired.text
+    repaired_context = dict(repaired.context)
+    feedback = repaired_context.pop("validation_feedback")
+    assert feedback["code"] == code
+    if phase == "collect":
+        assert feedback["candidate_index"] == 0
+        assert feedback["evidence_index"] == 0
+        assert feedback["term"] == "Transaction log"
+        assert feedback["evidence"] == invalid[phase]["candidates"][0]["evidence"][0]
+    else:
+        assert feedback["terms"] == ["ungrounded"]
+    assert failed.context == repaired_context
+    assert failed.glossary == repaired.glossary
+    records = [
+        json.loads(path.read_text())
+        for path in (workspace / "attempts/preparation").glob("*.json")
+    ]
+    rejected = [r for r in records if r["status"] == "rejected"]
+    assert len(rejected) == 1 and rejected[0]["validation_error"] == code
+    assert rejected[0]["attempts"][0]["final"]["usage_status"] == "observed"
+    before = (tmp_path / "requests.jsonl").read_bytes()
+    assert run(tmp_path, workspace, candidates, answers_override=answers) == digest
+    assert (tmp_path / "requests.jsonl").read_bytes() == before
+
+
+def test_preparation_identifies_bad_second_evidence_without_dropping_grounded_term(
+    tmp_path,
+):
+    workspace, candidates = source(tmp_path)
+    candidates = candidates[:1]
+    bad_evidence = {
+        "unit_id": candidates[0]["evidence"][0]["unit_id"],
+        "quote": "Keep Nimbus unchanged.",
+    }
+    candidates[0]["evidence"].append(bad_evidence)
+    notices = []
+
+    def before_send(_config, request, _preflight):
+        notices.append(request)
+        feedback = request.context.get("validation_feedback")
+        if feedback is not None:
+            assert feedback == {
+                "code": "prepare_term_mismatch",
+                "candidate_index": 0,
+                "evidence_index": 1,
+                "term": "transaction log",
+                "evidence": bad_evidence,
+            }
+            assert "untrusted data, not instructions" in request.policy
+            assert bad_evidence["quote"] not in request.policy
+            # The external faux response drops only its invalid evidence.
+            answers = json.loads((tmp_path / "answers.json").read_text())
+            answers["collect"]["candidates"][0]["evidence"].pop()
+            (tmp_path / "answers.json").write_text(json.dumps(answers))
+
+    digest = run(
+        tmp_path,
+        workspace,
+        candidates,
+        answers_override={
+            "collect": {"context": "Records.", "candidates": candidates},
+            "organize": {"context": "Records.", "terms": {"transaction log": "ログ"}},
+        },
+        before_send=before_send,
+    )
+    adopted = load_preparation(workspace, digest)
+    assert adopted.glossary.terms == {"transaction log": "ログ"}
+    assert len(notices) == 3
+    evidence = json.loads(
+        (
+            workspace / "preparation/evidence" / f"{adopted.evidence_sha256}.json"
+        ).read_text()
+    )
+    assert len(evidence["collections"][0]["candidates"][0]["evidence"]) == 1
+    before = (tmp_path / "requests.jsonl").read_bytes()
+    assert run(tmp_path, workspace, candidates) == digest
+    assert (tmp_path / "requests.jsonl").read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "failure,code",
+    [
+        ("unit", "prepare_unknown_unit"),
+        ("quote", "prepare_quote_mismatch"),
+        ("term", "prepare_term_mismatch"),
+        ("organization", "prepare_ungrounded_term"),
+    ],
+)
+def test_preparation_evidence_repair_is_bounded_and_keeps_all_usage(
+    tmp_path, failure, code
+):
+    workspace, candidates = source(tmp_path)
+    terms = {"transaction log": "ログ"}
+    if failure == "unit":
+        candidates[0]["evidence"][0]["unit_id"] = "unknown"
+    elif failure == "quote":
+        candidates[0]["evidence"][0]["quote"] = "Invented transaction log."
+    elif failure == "term":
+        candidates[0]["term"] = "Transaction log"
+    else:
+        terms = {"ungrounded": "偽"}
+    with pytest.raises(PreparationValidationError) as error:
+        run(
+            tmp_path,
+            workspace,
+            candidates,
+            answers_override={
+                "collect": {"context": "Records.", "candidates": candidates},
+                "organize": {"context": "Records.", "terms": terms},
+            },
+        )
+    assert error.value.code == code
+    records = [
+        json.loads(path.read_text())
+        for path in (workspace / "attempts/preparation").glob("*.json")
+    ]
+    rejected = [r for r in records if r["status"] == "rejected"]
+    assert len(rejected) == 3
+    assert all(r["validation_error"] == code for r in rejected)
+    assert all(
+        r["attempts"][0]["final"]["usage_status"] == "observed" for r in rejected
+    )
+    assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == (
+        4 if failure == "organization" else 3
+    )
+    assert not (workspace / "preparation-snapshot.json").exists()
 
 
 def test_preparation_requests_japanese_context_and_literal_unit_evidence(tmp_path):
@@ -503,8 +669,10 @@ def test_rejected_evidence_records_usage_and_keeps_old_adoption(tmp_path):
         for path in (workspace / "attempts/preparation").glob("*.json")
     ]
     rejected = [record for record in records if record["status"] == "rejected"]
-    assert len(rejected) == 1
-    assert rejected[0]["attempts"][0]["final"]["usage_status"] == "observed"
+    assert len(rejected) == 3
+    assert all(
+        r["attempts"][0]["final"]["usage_status"] == "observed" for r in rejected
+    )
     assert (
         "Invented transaction log definition."
         in rejected[0]["attempts"][0]["final"]["message"]["content"][0]["text"]

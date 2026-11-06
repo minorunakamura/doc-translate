@@ -55,7 +55,7 @@ faux.setResponses([
       .split("\n").length;
     const retry =
       response.retry === "always" || (response.retry && calls === 1);
-    const answer = response.answer ?? {
+    const answer = JSON.parse(await readFile(answerPath, "utf8")).answer ?? {
       translations: units.map((unit) => ({
         unit_id: unit.unit_id,
         text: `訳:${unit.source_text}`,

@@ -150,6 +150,14 @@ def summary_text(operation: str, result: dict, workspace: Path) -> str:
         rows.append(["処理エラー", run["error"]])
     if run.get("error_code"):
         rows.append(["エラーコード", run["error_code"]])
+        reason = {
+            "prepare_unknown_unit": "用語の根拠が未知のunitを参照しています。",
+            "prepare_quote_mismatch": "用語の引用が原文と一致しません（大文字・小文字・markerを含む）。",
+            "prepare_term_mismatch": "用語が根拠の引用と一致しません（大文字・小文字を含む）。",
+            "prepare_ungrounded_term": "整理した用語に本文根拠または利用者指定がありません。",
+        }.get(run["error_code"])
+        if reason:
+            rows.append(["原因", reason])
     adoption = result.get("source_adoption")
     if adoption:
         rows.append(

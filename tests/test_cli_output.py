@@ -101,6 +101,41 @@ def test_failure_before_source_has_no_false_zero_concerns_or_valid_translation(s
     assert "0件" not in output
 
 
+@pytest.mark.parametrize("json_output", [False, True])
+def test_preparation_evidence_failure_reports_safe_reason_and_stops(
+    tmp_path, capsys, json_output
+):
+    source = make_epub(
+        tmp_path,
+        extra={
+            "OPS/text/ch.xhtml": b'<html xmlns="http://www.w3.org/1999/xhtml"><body><p>original</p></body></html>'
+        },
+    )
+    workspace = tmp_path / "new"
+    args = run_args(source, workspace)
+    if not json_output:
+        args.remove("--json")
+    with pytest.raises(SystemExit) as error:
+        main(args, process_command=helper(tmp_path, candidate=True))
+    assert error.value.code == 1
+    captured = capsys.readouterr()
+    saved = workspace_status(workspace)
+    assert saved["scope"]["run"]["error_code"] == "prepare_quote_mismatch"
+    assert saved["processing"]["status"] == "partial"
+    assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == 3
+    if json_output:
+        assert (
+            json.loads(captured.out)["scope"]["run"]["error_code"]
+            == "prepare_quote_mismatch"
+        )
+    else:
+        assert "prepare_quote_mismatch" in captured.out
+        assert "引用が原文と一致しません" in captured.out
+    assert all(
+        json.loads(line)["stage"] == "prepare" for line in captured.err.splitlines()
+    )
+
+
 def test_empty_catalog_and_ambient_only_provider_are_explicit():
     assert "該当するmodelはありません" in catalog_text(
         "models", {"provider": "empty", "models": []}

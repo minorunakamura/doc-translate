@@ -21,7 +21,11 @@ from doc_translate.inference import (
     InferenceError,
     Selection,
 )
-from doc_translate.preparation import StylePolicy, prepare_document
+from doc_translate.preparation import (
+    PreparationValidationError,
+    StylePolicy,
+    prepare_document,
+)
 from doc_translate.snapshot import (
     Contract,
     MachineCheck,
@@ -651,7 +655,11 @@ def _continue_run(workspace, manifest, process_command, before_send, cancelled) 
             manifest.error = manifest.error_code = None
         _save_run(workspace, manifest)
     except (OSError, ValueError, RuntimeError) as error:
-        manifest.error_code = error.code if isinstance(error, InferenceError) else None
+        manifest.error_code = (
+            error.code
+            if isinstance(error, (InferenceError, PreparationValidationError))
+            else None
+        )
         manifest.error = f"{stage} failed; inspect saved source and attempts"
         _atomic_write(workspace / "run.json", manifest.model_dump_json().encode())
     return render_document(workspace)

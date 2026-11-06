@@ -888,6 +888,106 @@ def test_pdf_cell_uncertainty_marks_source_and_accepted_translation_only_in_disp
     assert load_translation(workspace).model_dump_json() == translation_before
 
 
+def test_epub_head_resource_warning_stays_in_qa_without_marking_translated_body(
+    tmp_path,
+):
+    from test_preparation import run as prepare
+    from test_translation import translate
+
+    from doc_translate.render import render_document
+    from doc_translate.translation import load_translation
+
+    workspace = epub_workspace(
+        tmp_path,
+        '<html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" href="../style.css"/></head><body><p>First</p><p>Second</p><pre><code>KEEP()</code></pre></body></html>',
+        {"OPS/style.css": b"p { color: red; }"},
+    )
+    prepare(
+        tmp_path,
+        workspace,
+        [],
+        answers_override={
+            "collect": {"context": "Own guide", "candidates": []},
+            "organize": {"context": "Own guide", "terms": {}},
+        },
+    )
+    translate(tmp_path, workspace)
+    source_before = load_source_snapshot(workspace).model_dump_json()
+    translation_before = load_translation(workspace).model_dump_json()
+    result = render_document(workspace)
+    for language in ("english", "japanese"):
+        document = artifact(workspace, result, language)
+        assert "※" not in document
+        assert "```\nKEEP()\n```" in document
+    qa = json.loads(artifact(workspace, result, "qa"))
+    warning = next(c for c in qa["uncertainties"] if "style.css" in c["reason"])
+    assert warning["target_ids"] == warning["block_ids"] == ["epub-1"]
+    assert warning["unit_ids"] == []
+    assert warning["output_anchors"] == ["node-1-3"]
+    assert result["uncertainty_count"] == 1
+    assert load_source_snapshot(workspace).model_dump_json() == source_before
+    assert load_translation(workspace).model_dump_json() == translation_before
+
+
+@pytest.mark.parametrize("scope", ["node", "section", "other_snapshot"])
+def test_epub_source_warning_uses_node_scope_and_retains_explicit_whole_section_scope(
+    tmp_path, scope
+):
+    from test_preparation import run as prepare
+    from test_translation import translate
+
+    from doc_translate.render import render_document
+    from doc_translate.snapshot import Uncertainty
+    from doc_translate.units import generate_translation_units
+
+    workspace = epub_workspace(
+        tmp_path,
+        '<html xmlns="http://www.w3.org/1999/xhtml"><head/><body>'
+        + "".join(f"<p>Paragraph {i}</p>" for i in range(1, 11))
+        + "<pre><code>KEEP()</code></pre></body></html>",
+    )
+    source = load_source_snapshot(workspace)
+    units = generate_translation_units(source)
+    locations = source.blocks[0].locations if scope == "section" else units[0].locations
+    if scope == "other_snapshot":
+        locations = [
+            locations[0].model_copy(update={"node_snapshot": "other-snapshot"})
+        ]
+    source.uncertainties.append(
+        Uncertainty(
+            reason="Specific source issue",
+            target_ids=[source.blocks[0].block_id],
+            locations=locations,
+            stage="epub_extraction",
+            origin="undetermined",
+        )
+    )
+    save_source_snapshot(workspace, source)
+    prepare(
+        tmp_path,
+        workspace,
+        [],
+        answers_override={
+            "collect": {"context": "Own guide", "candidates": []},
+            "organize": {"context": "Own guide", "terms": {}},
+        },
+    )
+    translate(tmp_path, workspace)
+    result = render_document(workspace)
+    qa = json.loads(artifact(workspace, result, "qa"))
+    warning = next(
+        c for c in qa["uncertainties"] if c["reason"] == "Specific source issue"
+    )
+    expected_units = {"node": units[:1], "section": units, "other_snapshot": []}[scope]
+    assert warning["unit_ids"] == [u.unit_id for u in expected_units]
+    assert warning["output_anchors"]
+    for language in ("english", "japanese"):
+        document = artifact(workspace, result, language)
+        assert document.count("※") == len(expected_units) + (scope == "section")
+        assert ("Paragraph 10※" in document) is (scope == "section")
+        assert "KEEP()※" not in document
+
+
 def test_epub_unit_uncertainty_does_not_mark_other_units_in_the_section(tmp_path):
     from test_preparation import run as prepare
     from test_translation import translate

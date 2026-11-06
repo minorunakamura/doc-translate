@@ -84,6 +84,59 @@ def test_api_failure_resume_retries_only_unaccepted_requests(tmp_path, capsys, s
     assert_preserved(old_files)
 
 
+def test_resume_repairs_only_failed_marker_chunk_and_reuses_accepted_output(
+    tmp_path, capsys
+):
+    from doc_translate.translation import load_translation
+
+    source = make_epub(
+        tmp_path,
+        extra={
+            "OPS/text/ch.xhtml": b'<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Good</h1><p>Original</p><h1>Protected</h1><p>Use <code>ARTIFICIAL_PRIVATE_CODE</code>.</p></body></html>'
+        },
+    )
+    workspace = tmp_path / "run"
+    with pytest.raises(SystemExit) as error:
+        main(
+            run_args(source, workspace),
+            process_command=helper(tmp_path, marker_failure="always"),
+        )
+    assert error.value.code == 1
+    capsys.readouterr()
+    partial = load_translation(workspace)
+    assert len(partial.chunks) == 2
+    accepted = next(c for c in partial.chunks if c.answer is not None)
+    failed = next(c for c in partial.chunks if c.answer is None)
+    accepted_path = (
+        workspace / "translations/chunks" / f"{accepted.artifact_sha256}.json"
+    )
+    accepted_bytes = accepted_path.read_bytes()
+    before = len(requests(tmp_path))
+    main(
+        ["resume", str(workspace)],
+        process_command=helper(tmp_path, marker_failure="once"),
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["processing"]["status"] == "completed"
+    completed = load_translation(workspace)
+    assert completed.processing.status == "completed"
+    assert any(c.artifact_sha256 == accepted.artifact_sha256 for c in completed.chunks)
+    assert accepted_path.read_bytes() == accepted_bytes
+    new_requests = requests(tmp_path)[before:]
+    assert len(new_requests) == 2
+    assert all(
+        [u["unit_id"] for u in json.loads(r["text"])]
+        == [u.unit_id for u in failed.units]
+        for r in new_requests
+    )
+    assert "translation_feedback" in new_requests[1]["context"]
+    before = len(requests(tmp_path))
+    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    capsys.readouterr()
+    assert len(requests(tmp_path)) == before
+    assert "ARTIFICIAL_PRIVATE_CODE" not in (tmp_path / "requests.jsonl").read_text()
+
+
 def test_glossary_and_explicit_config_change_only_affected_requests(tmp_path, capsys):
     source = make_epub(tmp_path)
     workspace = tmp_path / "run"
