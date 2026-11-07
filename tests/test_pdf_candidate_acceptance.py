@@ -1,6 +1,7 @@
 """PDF candidate matrices through CLI, actual faux requests and filesystem commits."""
 
 import json
+import shutil
 from html import unescape
 
 import pytest
@@ -9,7 +10,10 @@ from test_revise import pointer
 from test_run import helper, revise_pdf_paragraph, run_args
 
 from doc_translate.cli import main
+from doc_translate.pdf import load_pdf_draft
+from doc_translate.preparation import load_preparation
 from doc_translate.snapshot import load_source_snapshot
+from doc_translate.translation import load_translation
 
 pytest_plugins = ["test_run"]
 
@@ -44,6 +48,90 @@ def start_pdf(tmp_path, pdf_input, local_models, capsys, **settings):
     )
     capsys.readouterr()
     return workspace
+
+
+@pytest.fixture(scope="module")
+def pdf_evidence_seed(tmp_path_factory):
+    root = tmp_path_factory.mktemp("pdf-evidence")
+    initial_files = None
+    generations = 0
+
+    def seed(pdf_input, local_models, capsys):
+        nonlocal initial_files, generations
+        # Converter and monkeypatch must be active in the first function consumer.
+        if initial_files is None:
+            start_pdf(root, pdf_input, local_models, capsys)
+            generations += 1
+            initial_files = {
+                p.relative_to(root): p.read_bytes()
+                for p in root.rglob("*")
+                if p.is_file()
+            }
+        return root
+
+    yield seed
+    if initial_files is not None:
+        assert generations == 1
+        assert {
+            p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()
+        } == initial_files
+
+
+@pytest.fixture
+def pdf_evidence_workspace(
+    tmp_path, pdf_input, local_models, capsys, pdf_evidence_seed
+):
+    seed = pdf_evidence_seed(pdf_input, local_models, capsys)
+    workspace = shutil.copytree(seed / "new", tmp_path / "new")
+    shutil.copyfile(seed / "requests.jsonl", tmp_path / "requests.jsonl")
+    assert (tmp_path / "requests.jsonl").read_bytes() == (
+        seed / "requests.jsonl"
+    ).read_bytes()
+    assert {
+        p.relative_to(workspace): p.read_bytes()
+        for p in workspace.rglob("*")
+        if p.is_file()
+    } == {
+        p.relative_to(seed / "new"): p.read_bytes()
+        for p in (seed / "new").rglob("*")
+        if p.is_file()
+    }
+    load_pdf_draft(workspace)
+    load_source_snapshot(workspace)
+    load_preparation(workspace)
+    assert load_translation(workspace).processing.status == "completed"
+    return workspace
+
+
+def test_pdf_evidence_workspace_is_relocatable_and_isolated(
+    tmp_path, pdf_input, local_models, capsys, pdf_evidence_seed, pdf_evidence_workspace
+):
+    seed = pdf_evidence_seed(pdf_input, local_models, capsys)
+    workspace = pdf_evidence_workspace
+    sibling = shutil.copytree(workspace, tmp_path / "sibling")
+    log = tmp_path / "requests.jsonl"
+    sibling_log = tmp_path / "sibling-requests.jsonl"
+    shutil.copyfile(log, sibling_log)
+    original_pointer = (sibling / "source-snapshot.json").read_bytes()
+    original_log = log.read_bytes()
+    held = seed.with_name(seed.name + "-held")
+    seed.rename(held)
+    try:
+        for copy in (workspace, sibling):
+            load_pdf_draft(copy)
+            load_source_snapshot(copy)
+            load_preparation(copy)
+            assert load_translation(copy).processing.status == "completed"
+        (workspace / "source-snapshot.json").write_text("changed only here")
+        log.write_text("changed only here")
+        helper(tmp_path, correction_blocks=[])
+        assert (sibling / "source-snapshot.json").read_bytes() == original_pointer
+        assert (held / "new/source-snapshot.json").read_bytes() == original_pointer
+        assert sibling_log.read_bytes() == original_log
+        assert (held / "requests.jsonl").read_bytes() == original_log
+        assert json.loads((held / "faux.json").read_bytes()) == {}
+    finally:
+        held.rename(seed)
 
 
 def pending_resume(tmp_path, workspace, capsys, blocks, *options):
@@ -778,9 +866,7 @@ def test_legacy_joined_machine_baseline_is_proved_without_rewriting_its_bytes(
 )
 def test_source_revision_validates_table_cell_evidence_against_original_scope(
     tmp_path,
-    pdf_input,
-    local_models,
-    capsys,
+    pdf_evidence_workspace,
     monkeypatch,
     field,
     legacy,
@@ -790,7 +876,8 @@ def test_source_revision_validates_table_cell_evidence_against_original_scope(
 ):
     import hashlib
 
-    workspace = start_pdf(tmp_path, pdf_input, local_models, capsys)
+    workspace = pdf_evidence_workspace
+    initial_requests = (tmp_path / "requests.jsonl").read_bytes()
     source = load_source_snapshot(workspace).model_dump(mode="json")
     if legacy:
         # Non-run snapshots predate machine_inputs; preserve their original bytes.
@@ -872,15 +959,17 @@ def test_source_revision_validates_table_cell_evidence_against_original_scope(
             main(command)
         assert rejected.value.code == 2
         assert all(p.read_bytes() == value for p, value in before.items())
+    assert (tmp_path / "requests.jsonl").read_bytes() == initial_requests
 
 
 @pytest.mark.parametrize("depth", [1, 2])
 def test_source_revision_validates_list_parent_depth_across_pages(
-    tmp_path, pdf_input, local_models, capsys, monkeypatch, depth
+    tmp_path, pdf_evidence_workspace, monkeypatch, depth
 ):
     from copy import deepcopy
 
-    workspace = start_pdf(tmp_path, pdf_input, local_models, capsys)
+    workspace = pdf_evidence_workspace
+    initial_requests = (tmp_path / "requests.jsonl").read_bytes()
     source = load_source_snapshot(workspace).model_dump(mode="json")
     parent = source["blocks"][0]
     parent.update(kind="list", structure={"depth": 1, "marker": "-", "parent_id": None})
@@ -922,3 +1011,4 @@ def test_source_revision_validates_list_parent_depth_across_pages(
         adopted = load_source_snapshot(workspace)
         assert adopted.blocks[1].structure["parent_id"] == adopted.blocks[0].block_id
         assert adopted.blocks[1].locations[0].model_dump()["page"] == 3
+    assert (tmp_path / "requests.jsonl").read_bytes() == initial_requests

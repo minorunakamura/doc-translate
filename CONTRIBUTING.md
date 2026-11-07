@@ -89,10 +89,10 @@ Python packageは`ai/dist`を同梱するため、fresh checkoutでは`uv sync`�
 uv sync --locked --dev --extra pdf
 uv run --locked --extra pdf ty check
 uv run --locked --extra pdf python -c 'from docling.document_converter import DocumentConverter; from docling.datamodel.pipeline_options import OcrMacOptions; from docling_core.types.doc import DoclingDocument; from ocrmac import ocrmac; print(OcrMacOptions(lang=["en-US"], framework="vision", recognition="accurate"))'
-uv run --locked --extra pdf pytest tests/test_pdf.py tests/test_run.py tests/test_review.py
+uv run --locked --extra pdf pytest tests/test_pdf.py tests/test_run.py tests/test_review.py tests/test_pdf_candidate_acceptance.py
 ```
 
-共通テストはcore-onlyで全件実行し、CIのPDF extra付き検査はDocling依存のテストを含む上記3ファイルに限定しています。統合受入れでは正式Planに従って`uv run --locked --extra pdf pytest`で全件も確認します。PDF依存が必要なテストを別ファイルに追加する場合は、CIとこの手順の実行対象にも追加してください。
+共通テストはcore-onlyで全件実行し、CIのPDF extra付き検査はDocling依存のテストを含む上記4ファイルに限定しています。統合受入れでは正式Planに従って`uv run --locked --extra pdf pytest`で全件も確認します。PDF依存が必要なテストを別ファイルに追加する場合は、CIとこの手順の実行対象にも追加してください。
 
 extraを保持するには`uv run --locked --extra pdf ...`（pytestは`uv run --locked --extra pdf pytest`を推奨）、またはsync済みの`.venv/bin/pytest`／`.venv/bin/ruff`／`.venv/bin/ty`を使い、`.venv/bin/pytest`を直接使う場合はvenvのactivateまたは`.venv/bin`のPATH追加が必要です。これは依存解決・importと人工fixture検証であり、それだけを実Docling変換、Apple Vision OCR、重みを使うlayout／table処理の成功と表示しません。
 
@@ -101,7 +101,7 @@ extraを保持するには`uv run --locked --extra pdf ...`（pytestは`uv run -
 上記の正式チェックの対象・条件・順序は変えません。各機能節のコマンドは境界ごとの再現入口であり、同じ担当が毎回すべてを重複実行するリストではありません。
 
 - **Worker**：変更したconsumerの単独実行とmodule実行、関連公開seamのfocused regression、必要なlint／formatを実行し、保証・前提・除いた工程・残した実経路の対応を報告します。
-- **Root**：現在の差分を直接読み、自分で正式core-only全pytest／品質チェック／CLI help、PDF extraのty／公開import／上記3ファイルを実行します。既存環境・helper buildの鮮度を確認し、Node変更時は既存Node品質チェック、helper source変更時は明示buildも行います。pytestとは別に下記の人工run→公開load→コピー分離→不正revise拒否、render/status、訳文patchを直接照合します。Workerの成功で代替しません。
+- **Root**：現在の差分を直接読み、自分で正式core-only全pytest／品質チェック／CLI help、PDF extraのty／公開import／上記4ファイルを実行します。既存環境・helper buildの鮮度を確認し、Node変更時は既存Node品質チェック、helper source変更時は明示buildも行います。pytestとは別に下記の人工run→公開load→コピー分離→不正revise拒否、render/status、訳文patchを直接照合します。Workerの成功で代替しません。
 - **Reviewer**：差分と今回の証拠から不足する具体的保証だけを追加検証します。実行主体の交代だけで全suiteを反復しません。修正後は影響した保証・正式チェック・直接確認を再実行し、shared fixture等の広い影響はfull suiteでも確認します。計測後に影響する差分が変われば再計測します。
 
 前提再利用は同じ入力の実生成物をinvocation内で作り、全artifact／evidence／attempt／pointerを独立コピーした場合に限定します。公開loadで整合を確認し、seed／他ケースへの変更非伝播とseed byte不変を検査します。別入力へのhashの後付け、永続cache、hardlink、generate／validator／saveのmockは使いません。実準備→翻訳の対照、入力改変、取消、故障、再開の検査対象操作は実行します。Nodeの30秒grace／10.5秒以上のheartbeat、Pythonの実3／6秒retryは短縮しません。
@@ -177,6 +177,45 @@ cat "$EVIDENCE/exits.txt" "$EVIDENCE/cleanup.txt"
 ```
 
 今回のcommand／exit／条件／raw時間／node ID比較／cleanup記録は追跡外の今回専用`work/`配下へ保存します。27対象だけなら実生成は従来27回から2回、両module全体では既存revise seedの分を考慮して26回のrun反復を除きます。追加characterization checkも同じseedを使います。時間比較は同条件のfresh process前後各1回から始め、ばらつきが判断を左右するときだけ追加2回とし、固定秒数目標は置きません。Planの49件比較には未変更のPDF22件も含めますが、その前提生成は本項目では変更しません。工程削減を時間短縮率へ外挿せず、seed生成・コピー・公開load・追加checkを含む実測と区別します。Rootの正式チェック・別の実入口からの直接照合・独立Reviewはこの再現例だけで代替しません。実LLM意味品質、実Docling／OCR、viewer、他OS、remote CIはこのoffline確認の対象外です。
+
+### PDF evidence／list reviseの前提再利用（Issue #42）
+
+[Approved Plan](docs/plans/verification-design-right-sizing.md)のPDF部分です。`test_pdf_candidate_acceptance.py`のtable-cell evidence20件とlist-depth2件だけで、同じdefault `start_pdf`（所有2–3／参照4）の完成状態をinvocation内で1回実生成します。module-localの遅延seedを最初のfunction consumerで生成し、`pdf_input`／converter／monkeypatchはfunction scopeのままです。各caseへworkspace全file（原本・draft・画像・source・preparation・evidence・attempt・translation・履歴・pointer・run・render）と初期request logを独立コピーし、公開draft／source／preparation／translation loadで検証します。永続cache・hardlinkは使いません。
+
+legacy化・damageはコピー後に行い、実CLI revise、全22 parameter、PATH空での受理／拒否、旧byte／hash／pointerの保持、request不変を残します。他の`start_pdf` caller、可変入力／設定、候補publication・中断復旧は実経路のままです。追加の`test_pdf_evidence_workspace_is_relocatable_and_isolated`はseed root全体を退避して2コピーを公開loadし、pointer／log／helper設定の変更非伝播を確認します。seed生成回数とseed全byte（初期log・helper設定を含む）の不変もteardownでassertします。
+
+CIと上の正式PDFコマンドは4ファイルに揃えます。core-onlyではDocling不在でskipされる候補採用moduleの既存48件もPDF側で実行するためです。EPUB、正式チェックの順序・core全件・offline・品質・build／配布、および検証規約全体は本項目で変更しません。
+
+以下は既存PDF extra環境とbuild済みhelperを使う再現入口です。repository rootで**非並行・foreground**実行し、追加install／sync／model取得はしません。SIGINTのdefault handlerを確認し、background shellからignoreを継承する場合はPython親processで`signal.signal(signal.SIGINT, signal.default_int_handler)`へ戻してからsubprocessを起動します。offline変数だけで全通信遮断とはみなさず、既存`ai/tests/run-process.mjs`のnetwork拒否と一時人工credentialを使います。
+
+```sh
+set -eu
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+mkdir -p work
+EVIDENCE=$(mktemp -d "$PWD/work/issue42-pdf-XXXXXX")
+git rev-parse HEAD > "$EVIDENCE/revision.txt"
+git diff -- CONTRIBUTING.md .github/workflows/ci.yml tests/test_pdf_candidate_acceptance.py > "$EVIDENCE/verification.diff"
+python -c 'import signal; assert signal.getsignal(signal.SIGINT) == signal.default_int_handler'
+pytest tests/test_pdf_candidate_acceptance.py --collect-only -q > "$EVIDENCE/collection.log"
+# 代表単独でも、function fixtureが有効な間にseedを実生成できることを確認
+pytest 'tests/test_pdf_candidate_acceptance.py::test_source_revision_validates_list_parent_depth_across_pages[2]' \
+  --basetemp="$EVIDENCE/pytest-single" -q > "$EVIDENCE/single.log" 2>&1
+# 同じ保証範囲の22件＋公開load／移設／分離check
+pytest tests/test_pdf_candidate_acceptance.py \
+  -k 'source_revision_validates_table_cell_evidence_against_original_scope or source_revision_validates_list_parent_depth_across_pages or pdf_evidence_workspace_is_relocatable_and_isolated' \
+  --basetemp="$EVIDENCE/pytest-targets" -q --durations=0 --durations-min=0 > "$EVIDENCE/targets.log" 2>&1
+pytest tests/test_pdf_candidate_acceptance.py \
+  tests/test_review.py::test_review_pending_candidate_reviews_adopted_hash_without_adopting_candidate \
+  --basetemp="$EVIDENCE/pytest-module" -q --durations=0 --durations-min=0 > "$EVIDENCE/module.log" 2>&1
+# 失敗時は停止してcommand／exit／原因を記録。成功時も所有物だけcleanup
+printf '%s\n' 'collection and three pytest commands exited 0' > "$EVIDENCE/exits.txt"
+rm -rf -- "$EVIDENCE/pytest-single" "$EVIDENCE/pytest-targets" "$EVIDENCE/pytest-module"
+printf '%s\n' 'owned pytest workspaces/artificial credentials removed; evidence retained' > "$EVIDENCE/cleanup.txt"
+test -s "$EVIDENCE/revision.txt" && test -s "$EVIDENCE/module.log"
+cat "$EVIDENCE/exits.txt" "$EVIDENCE/cleanup.txt"
+```
+
+条件・command／exit・raw時間・生成回数・request増分・node ID／parameterの前後比較（既存48件を失わずcharacterizationのみ追加）を秘密なしで証拠へ残します。所有processを回収し、自分のpytest一時workspace／人工credentialだけを削除し、ログはworkspace外へ保持してcleanup後も読み直します。既存venv・model・利用者workspace・`work/`全体は削除しません。計測は同条件のfresh process前後各1回から始め、seed生成・コピー・公開load・追加checkも含めます。22回から1回への生成削減と、正式PDF3→4ファイルの48件追加による時間差は別に報告し、固定秒数目標やCI短縮率へ外挿しません。Rootの正式確認・別途の実CLI／公開load直接照合・独立Reviewをこの例だけで代替せず、実LLM意味品質・実Docling／OCR・viewer・他OS・remote CIは未確認とします。
 
 ### PDF取得の検証境界
 
