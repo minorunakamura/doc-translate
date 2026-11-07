@@ -702,6 +702,17 @@ def _correction_request(digest, owned, reference, policy, projection):
             "owned_pages": [number for number in owned],
             "reference_pages": [number for number in reference],
             "response_schema": CorrectionAnswer.model_json_schema(),
+            "page_results": (
+                "Return results and evidence for every owned page; reference pages are context only. "
+                "Return the full visible original-language text, headings and structure of the owned pages, "
+                "not a diff or summary, including content unchanged from the draft. Never invent unseen content. "
+                'Only if the page image confirms a blank page, add an exclusions entry with text: "", '
+                "a reason explaining why it is blank, and evidence with the actual page number, ref: null, "
+                "the inspected position and the visual basis for that judgment. "
+                "An empty extraction or missing text alone does not establish a blank page. "
+                "If you cannot determine the content, record the uncertainty with page evidence in uncertainties; "
+                "do not silently omit the page."
+            ),
             "figure_membership": (
                 "Each picture member needs exactly one of target_id or ref: "
                 "target_id must name an output block or cell; ref.ref must be a real extraction ref from the supplied draft. "
@@ -718,7 +729,10 @@ def _correction_request(digest, owned, reference, policy, projection):
 def _saved_correction(
     workspace, run, record, config, request, pages, items, projection
 ):
-    if record.get("request") != request.model_dump(mode="json"):
+    current = request.model_dump(mode="json")
+    legacy = {**current, "context": dict(current["context"])}
+    del legacy["context"]["page_results"]
+    if record.get("request") not in (current, legacy):
         return None
     context = request.context
     images = _images(workspace, pages)

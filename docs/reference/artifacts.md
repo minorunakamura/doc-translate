@@ -476,7 +476,8 @@ for block in chunk.blocks:
 - 成功したPDF draftをhash指定でloadし、原資料／raw／全PNGを再検査します。所有ページは1件以上、所有／参照の各ページは正整数かつ重複・相互重複なしでdraft内に存在し、各ページにちょうど1枚のPNGが必要です。所有→参照の指定順ですべての画像を送ります。所有ページの画像を抽出成功やtextの有無で省略しません。chunk間の重複しない所有割当は後続callerの責務です。
 - draft全体の所持は全ページの送信許可ではありません。rawをそのまま送らず、許可ページの`ref/page/charspan/text/bbox`とtable cell／spanの投影を送ります。`orig`・文書名・木全体・許可外のprovenanceや画像は送りません。bboxは元ページpoint／Docling原点、図領域は原PNGのtop-left pixelです。画像には実寸・point→pixel scale・描画条件を付け、既存`generate(stage="correction")`がPNG・能力・終了・schemaを検証します。
 - textは保存textに収まる有効なcharspanだけから取得します。許可外provenanceのspanが不正または重複していて切り分けを証明できない場合も、そのfragmentのtextを送りません。clipやitem全文へのfallbackはしません。table cellのページは単一ページの親table provenanceで検証し、複数ページtableではcell textを送らず理由を残します。送信しなかった安全でないfragmentやbboxの問題はrequest記録に残し、所有ページの問題は採用chunkの処理由来uncertaintyにも残します。rawは不変のまま保持します。
-- request contextはdraft digest・所有／参照ページ・座標説明・回答JSON schema・図所属の回答指針（`figure_membership`）のみ、glossaryはnullです。外側のページや別文書のcontextを付加しません。推論前の送信先・認証表示などのCLI接続や自動chunk分割は対象外です。
+- request contextはdraft digest・所有／参照ページ・座標説明・回答JSON schema・図所属の回答指針（`figure_membership`）と、全所有ページの結果の返し方（`page_results`）です。glossaryはnullで、外側のページや別文書のcontextを付加しません。所有／参照の許可範囲は変わりません。
+- `page_results`は全所有ページの結果と根拠、見える原語本文・見出し・構造の全文返却を指示します。差分や要約ではなく、下書きから変更のない内容も返し、見えない内容は創作しません。**画像で白紙と確認したページだけ**を`exclusions`の`text: ""`、白紙と判断した理由、実ページ番号・`ref: null`・見た位置・確認根拠を持つ`evidence`で表現します。抽出textが空／欠落というだけでは白紙とせず、判断不能ならページ根拠付きの`uncertainties`に残します。
 
 ### 補正回答の型と意味検証
 
@@ -520,7 +521,11 @@ chunkは`schema_version/draft_sha256/owned_pages/reference_pages/blocks/retained
 
 既存`workspace_lock`を自分で取得し、既存のhash保存・`_atomic_write`（一時file／flush／fsync／atomic replace）を再利用します。外側から同じ非再入lockを取得しません。推論のraw回答と全attempt（失敗時の取得済みusage等を含む）を保存してから、検証済みchunkだけを別directoryへ確定します。`status=validated`は回答のschema／domain検証までで、後続chunkの保存成功を意味しません。schema／domain不正時は`status=rejected`の記録を残し、chunkを作りません。保存OSエラーは伝播し、既に保存できたattemptと旧chunkは削除しません。disk自体に書けない場合の記録保証はありません。
 
-loadはchunk／draft／原資料／raw／PNG／runのhashを照合し、元runのraw回答を再度schema／domain検証し、記録した送信許可範囲・draft投影・図所属からの採用結果と一致することを確認します。旧chunkはdigestで読めます。採用pointerや自動resume／再送抑止engineは追加せず、`source-snapshot.json`も作成・変更しません。複数chunkからのsource組立は次節の別APIで行います。自動所有割当・unit生成・翻訳は後続です。
+loadはchunk／draft／原資料／raw／PNG／runのhashを照合し、元runのraw回答を再度schema／domain検証し、記録した送信許可範囲・draft投影・図所属からの採用結果と一致することを確認します。旧chunkはdigestで読め、歴史的な`figure_membership`欠如も従来どおりloadできます。このchunk APIは`source-snapshot.json`を作成・変更せず、複数chunkからのsource組立は次節の別APIで行います。
+
+Issue #46では`CORRECTION_POLICY`・回答／chunk schema・公開API・既存validationを変更しません。`correct_pdf`とresumeの保存応答回収は、現在のbase request、またはそこから**`context.page_results`だけ**を除いた厳密な旧baseと全体一致する成功記録に限ります。任意contextの削除・指示の書換え・feedback付きrequestの正規化はしません。policy／config／参照範囲／schema／draft投影／実画像等を照合し、保存status・preflight・正常terminal／helper終了・画像metadata・raw回答のschema／全domain検証を再実行します。rejectedや不正hashの保存物は成功として再利用しません。
+
+既存の成功chunkはloadとrun側のdraft／許可範囲／config／policyの照合後に再利用します。旧base／新baseの成功保存応答は、attempt保存後・chunk保存前の中断でも無送信で回収できます。raw回答・観測usage・旧immutable artifactは書き換えず保持します。**この中間成果にcoverage限定の自動訂正生成・専用例外・feedbackは未実装です。** 明示白紙は受理しますが、空回答・ページの黙示省略は従来のcoverage検証で拒否してchunk全体を失敗にし、部分回答のmergeや空抽出の自動白紙化はしません。既存の限定transport retryとlength／input上限時の分割は変更しません。
 
 ## PDF原文snapshot組立（Issue #9）
 

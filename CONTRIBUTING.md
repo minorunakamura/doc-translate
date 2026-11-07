@@ -291,7 +291,46 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 - 全content kind、見出し／list階層、code改行／callout、空cell／span、除外理由・原本欠損、不正ref／wrong-page ref／cell／span、所有外出力、owned画像欠落、rawの安全なspan投影とclipしない省略、bbox重なりだけで本文を消さないことを検査します。
 - raw itemの部分所属／共有ref／不確実cellと全table所属の矛盾で外側を削除しないこと、旧chunk保持・chunk保存失敗前のattempt保存、各artifactのhash不正、load時のdomain／送信許可再検証、writer排他を検査します。save障害注入はOSの`replace`境界だけです。
 
-再現用の公開API例はartifact契約を参照してください。offlineの実process検証は補正の構造・範囲・保存に限定され、実LLMの読取り／図分類品質・全文翻訳の成立は示しません。chunkは別artifactに確定するだけで、`source-snapshot.json`を切り替えません。このchunk API自身はCLI・unit生成・翻訳・resume engine・全chunk所有割当を担当しません。ページ接続は次の独立adapterで行います。
+#### Issue #46：全所有結果の指示・旧base互換性の再現
+
+公開保存／指示／互換性の契約は上記artifact契約に集約します。今回は指示明確化と旧／新base成功結果の再利用までで、coverage限定の自動訂正生成は未実装です。空回答や所有ページの省略は従来どおり拒否します。既存環境とbuild済みhelperを使い、install／sync／model取得はしません。helperが不在／古ければ止めて環境更新の許可を確認します。
+
+以下はrepository rootで実行します。`EVIDENCE`を指定する場合も、今回だけの新規directoryを使ってください。pytestの`--basetemp`は既存directoryを消すため、既存workspaceを指定しません。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+EVIDENCE="${EVIDENCE:-$(mktemp -d "$PWD/work/pdf-correction-issue46-XXXXXX")}"
+mkdir -p "$EVIDENCE"
+git rev-parse HEAD > "$EVIDENCE/revision.txt"
+git diff -- src/doc_translate/pdf_correction.py tests/test_pdf_correction.py tests/test_run.py docs/reference/artifacts.md CONTRIBUTING.md > "$EVIDENCE/diff.patch"
+.venv/bin/pytest 'tests/test_units.py::test_accepted_pdf_figure_membership_is_not_reclassified_by_units[shared-ref]' \
+  -q --basetemp="$EVIDENCE/pytest-single" > "$EVIDENCE/single.log" 2>&1
+result=$?; printf 'single exit=%s\n' "$result" >> "$EVIDENCE/exits.txt"; test "$result" -eq 0 || exit "$result"
+.venv/bin/pytest tests/test_pdf_correction.py \
+  -q --basetemp="$EVIDENCE/pytest-correction" > "$EVIDENCE/correction.log" 2>&1
+result=$?; printf 'correction exit=%s\n' "$result" >> "$EVIDENCE/exits.txt"; test "$result" -eq 0 || exit "$result"
+.venv/bin/pytest tests/test_pdf_source.py \
+  tests/test_units.py::test_accepted_pdf_figure_membership_is_not_reclassified_by_units \
+  tests/test_review.py::test_review_exclusion_only_chunk_uses_adopted_images_and_revalidates_offline \
+  tests/test_run.py::test_resume_pdf_fills_failed_ownership_without_acquisition_or_resending_accepted \
+  tests/test_run.py::test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages \
+  -q --basetemp="$EVIDENCE/pytest-consumers" > "$EVIDENCE/consumers.log" 2>&1
+result=$?; printf 'consumers exit=%s\n' "$result" >> "$EVIDENCE/exits.txt"; test "$result" -eq 0 || exit "$result"
+cat "$EVIDENCE/exits.txt" "$EVIDENCE/single.log" "$EVIDENCE/correction.log" "$EVIDENCE/consumers.log"
+# 成功確認／必要な観測の保存後、自分が上で作ったpytest一時workspaceと人工credentialだけを削除
+rm -rf -- "$EVIDENCE/pytest-single" "$EVIDENCE/pytest-correction" "$EVIDENCE/pytest-consumers"
+printf 'owned pytest workspaces/artificial credentials removed; evidence retained\n' > "$EVIDENCE/cleanup.txt"
+test -s "$EVIDENCE/revision.txt" && cat "$EVIDENCE/exits.txt" "$EVIDENCE/cleanup.txt"
+```
+
+期待する観測と証拠は次のとおりです。
+
+- `test_correct_pdf_requests_full_owned_results_and_image_confirmed_blank_pages`と所有／参照許可テストで、実送信requestの全文・白紙・創作禁止指示、画像と許可範囲を確認します。白紙exclusionは公開correct/loadで成功し、空回答はcoverage拒否、空抽出の判断不能ページはexclusionsを自動生成せずuncertaintiesとして保存されます。
+- 旧成功再利用は真正helper成功から今回の`page_results`だけを除き、hashを正しく保存した合成旧形式で確認します。raw回答とusage自体は変更しません。再利用／chunk保存前のOS replace故障からの回収は`before_send`が呼ばれず、旧byteが不変です。policy／config／参照／投影／画像等の差異、不正status／terminal／domain／hashは再利用しません。歴史的な図所属指示欠如のload互換も残します。
+- CLIのadaptive回収は旧／新base両方で、保存成功chunkとchunk未確定の成功応答を再送せず、残った所有`[7]`だけを参照`[6]`付きで補正します。部分失敗のresumeは失敗所有だけ回復し、再resumeでは送信を増やさず、旧immutableのhashを保持します。
+- Workerはこの代表consumer単独fresh process・補正module・focused consumer回帰と手順の成立を報告します。Rootは上の正式チェックの選定と別一時workspaceからの公開API直接確認、Reviewerは独立受入れを担当します。今回専用`work/`にcommand／exit、Red→Green、期待／観測・保存hash・未確認・cleanupを残し、cleanup後も証拠を読み直します。既存workspace／attempt／venv／model／lockに触れず、他人のprocessは止めません。
+
+再現用の公開API例はartifact契約を参照してください。offlineの実process検証は補正の構造・範囲・保存に限定され、実LLMの読取り／図分類品質・全文翻訳・実Docling／OCR・viewer・他OS・remote CIの成立は示しません。chunkは別artifactに確定するだけで、`source-snapshot.json`を切り替えません。このchunk API自身はCLI・unit生成・翻訳・resume engine・全chunk所有割当を担当しません。ページ接続は次の独立adapterで行います。
 
 ### PDF原文組立の検証境界
 
