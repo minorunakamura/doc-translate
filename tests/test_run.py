@@ -562,8 +562,9 @@ def test_resume_pdf_fills_failed_ownership_without_acquisition_or_resending_acce
     assert len(requests(tmp_path)) == count
 
 
+@pytest.mark.parametrize("base", ["current", "legacy"])
 def test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages(
-    tmp_path, pdf_input, local_models, capsys, monkeypatch
+    tmp_path, pdf_input, local_models, capsys, monkeypatch, base
 ):
     from test_resume import assert_preserved, requests, saved_files
 
@@ -596,6 +597,35 @@ def test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages(
             )
         assert stopped.value.code == 1
     capsys.readouterr()
+    if base == "legacy":
+        from test_pdf_correction import artifact
+
+        # Model an old workspace using actual helper replies, preserving raw/usage.
+        old_runs = {}
+        for path in list((workspace / "attempts/pdf-correction").glob("*.json")):
+            record = json.loads(path.read_bytes())
+            del record["request"]["context"]["page_results"]
+            old_runs[path.stem] = artifact(
+                workspace,
+                "attempts/pdf-correction",
+                "json",
+                json.dumps(record).encode(),
+            )
+            path.rename(path.with_suffix(".original"))
+        old_chunks = {}
+        for path in list((workspace / "corrections/pdf").glob("*.json")):
+            chunk = json.loads(path.read_bytes())
+            chunk["run"] = old_runs[chunk["run"]["sha256"]]
+            old_chunks[path.stem] = artifact(
+                workspace, "corrections/pdf", "json", json.dumps(chunk).encode()
+            )["sha256"]
+            path.rename(path.with_suffix(".original"))
+        manifest_path = workspace / "run.json"
+        manifest = json.loads(manifest_path.read_bytes())
+        manifest["chunk_sha256s"] = [
+            old_chunks[digest] for digest in manifest["chunk_sha256s"]
+        ]
+        manifest_path.write_text(json.dumps(manifest))
     old_files = saved_files(workspace)
     sent = requests(tmp_path)
     assert [item["context"]["owned_pages"] for item in sent] == [

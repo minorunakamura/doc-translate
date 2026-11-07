@@ -178,6 +178,72 @@ def test_correct_pdf_saves_only_owned_content_and_sends_only_authorized_input(
     assert record["status"] == "validated"
 
 
+def test_correct_pdf_reuses_legacy_success_without_resending_or_rewriting(
+    tmp_path, draft
+):
+    workspace, digest, _ = draft
+    accepted = run(tmp_path, draft, answer(digest))
+    path = workspace / f"corrections/pdf/{accepted}.json"
+    chunk = json.loads(path.read_bytes())
+    run_path = workspace / chunk["run"]["artifact"]
+    record = json.loads(run_path.read_bytes())
+    original_attempts = record["attempts"]
+    # Synthesize the exact old base from a genuine helper success, not a fake reply.
+    del record["request"]["context"]["page_results"]
+    chunk["run"] = artifact(
+        workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
+    )
+    legacy = artifact(workspace, "corrections/pdf", "json", json.dumps(chunk).encode())
+    run_path.rename(run_path.with_suffix(".original"))
+    path.rename(path.with_suffix(".original"))
+    previous = {
+        path: path.read_bytes() for path in workspace.rglob("*") if path.is_file()
+    }
+    assert (
+        load_pdf_correction(workspace, legacy["sha256"]).blocks[0].text
+        == "Outside text"
+    )
+    recovered = run(
+        tmp_path, draft, answer(digest), before_send=lambda *_: pytest.fail("resent")
+    )
+    loaded = load_pdf_correction(workspace, recovered)
+    assert loaded.model_dump(mode="json") == chunk
+    assert (
+        json.loads((workspace / loaded.run.artifact).read_bytes())["attempts"]
+        == original_attempts
+    )
+    assert all(path.read_bytes() == data for path, data in previous.items())
+
+
+def test_correct_pdf_requests_full_owned_results_and_image_confirmed_blank_pages(
+    tmp_path, draft
+):
+    run(tmp_path, draft, answer(draft[1]))
+    request = json.loads((tmp_path / "request.json").read_text())
+    source_input = json.loads(request["messages"][1]["content"][0]["text"])
+    context = source_input["context"]
+    assert context["owned_pages"] == [1]
+    assert context["reference_pages"] == [2]
+    guidance = context["page_results"]
+    assert "results and evidence for every owned page" in guidance
+    assert "reference pages are context only" in guidance
+    assert "full visible original-language text, headings and structure" in guidance
+    assert "not a diff or summary" in guidance
+    assert "including content unchanged from the draft" in guidance
+    assert "Never invent unseen content" in guidance
+    assert "Only if the page image confirms a blank page" in guidance
+    assert 'exclusions entry with text: ""' in guidance
+    assert "a reason explaining why it is blank" in guidance
+    assert "actual page number, ref: null" in guidance
+    assert "inspected position and the visual basis" in guidance
+    assert (
+        "empty extraction or missing text alone does not establish a blank page"
+        in guidance
+    )
+    assert "record the uncertainty with page evidence in uncertainties" in guidance
+    assert "do not silently omit the page" in guidance
+
+
 def test_correct_pdf_requests_grounded_figure_membership(tmp_path, draft):
     _, digest, _ = draft
     run(tmp_path, draft, answer(digest))
@@ -463,6 +529,7 @@ def test_load_pdf_correction_accepts_legacy_request_without_membership_guidance(
     chunk = json.loads(original)
     record = json.loads((workspace / chunk["run"]["artifact"]).read_bytes())
     record["request"]["context"].pop("figure_membership", None)
+    record["request"]["context"].pop("page_results", None)
     chunk["run"] = artifact(
         workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
     )
@@ -920,18 +987,57 @@ def test_load_revalidates_owned_results_and_figure_adoption_not_only_json_hash(
         load_pdf_correction(workspace, forged["sha256"])
 
 
-def test_every_owned_page_needs_an_explicit_result_even_when_blank(tmp_path, draft):
+def test_empty_extraction_does_not_make_an_unreadable_page_blank(tmp_path, draft):
+    workspace, _, model = draft
+    raw = json.loads((workspace / model.raw.artifact).read_text())
+    raw["texts"] = []
+    draft = rewrite_raw(draft, raw)
+    response = answer(draft[1])
+    response.update(owned_pages=[2], blocks=[])
+    with pytest.raises(ValueError, match="coverage"):
+        run(tmp_path, draft, response, owned_pages=[2], reference_pages=[])
+    assert not list((workspace / "corrections/pdf").glob("*.json"))
+    response["uncertainties"] = [
+        {
+            "reason": "Image content cannot be determined; extraction is empty",
+            "target_ids": [],
+            "evidence": [evidence(2, None, reason="inspected entire blue page")],
+            "origin": "undetermined",
+        }
+    ]
+    accepted = run(tmp_path, draft, response, owned_pages=[2], reference_pages=[])
+    chunk = load_pdf_correction(workspace, accepted)
+    assert chunk.blocks == []
+    assert chunk.exclusions == []
+    assert chunk.uncertainties[0].evidence[0].page == 2
+    assert chunk.uncertainties[0].origin == "undetermined"
+
+
+@pytest.mark.parametrize("owned", [[1], [1, 2]])
+def test_every_owned_page_needs_an_explicit_result_even_when_blank(
+    tmp_path, draft, owned
+):
     workspace, digest, _ = draft
     response = answer(digest)
-    response["blocks"] = []
+    response["owned_pages"] = owned
+    if owned == [1]:
+        response["blocks"] = []
     with pytest.raises(ValueError, match="coverage"):
-        run(tmp_path, draft, response)
+        run(tmp_path, draft, response, owned_pages=owned, reference_pages=[])
     response["exclusions"] = [
-        {"text": "", "reason": "page visibly blank", "evidence": [evidence(ref=None)]}
+        {
+            "text": "",
+            "reason": "page visibly blank",
+            "evidence": [evidence(owned[-1], None)],
+        }
     ]
-    chunk = load_pdf_correction(workspace, run(tmp_path, draft, response))
-    assert chunk.blocks == []
+    accepted = run(tmp_path, draft, response, owned_pages=owned, reference_pages=[])
+    chunk = load_pdf_correction(workspace, accepted)
+    assert [block.text for block in chunk.blocks] == (
+        [] if owned == [1] else ["Outside text", "Image only"]
+    )
     assert chunk.exclusions[0].reason == "page visibly blank"
+    assert chunk.exclusions[0].evidence[0].page == owned[-1]
 
 
 def test_confirmed_internal_table_is_retained_not_independently_adopted(
@@ -1301,8 +1407,9 @@ def test_connection_evidence_obeys_authorization_and_raw_provenance(
     assert not list((draft[0] / "corrections/pdf").glob("*.json"))
 
 
+@pytest.mark.parametrize("base", ["current", "legacy"])
 def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
-    tmp_path, draft, monkeypatch
+    tmp_path, draft, monkeypatch, base
 ):
     import os
 
@@ -1318,6 +1425,17 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
         patch.setattr(os, "replace", fail_replace)
         with pytest.raises(OSError, match="interrupted chunk save"):
             run(tmp_path, draft, answer(digest))
+    if base == "legacy":
+        path = next((workspace / "attempts/pdf-correction").glob("*.json"))
+        record = json.loads(path.read_bytes())
+        del record["request"]["context"]["page_results"]
+        artifact(
+            workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
+        )
+        path.rename(path.with_suffix(".original"))
+    previous = {
+        path: path.read_bytes() for path in workspace.rglob("*") if path.is_file()
+    }
     sent = (tmp_path / "request.json").read_bytes()
     # No helper may start even though no accepted chunk was saved yet.
     accepted = run(
@@ -1334,13 +1452,15 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
         )
         == accepted
     )
+    assert all(path.read_bytes() == data for path, data in previous.items())
 
 
+@pytest.mark.parametrize("base", ["current", "legacy"])
 @pytest.mark.parametrize(
-    "tamper", ["terminal", "images", "incomplete", "domain", "hash"]
+    "tamper", ["status", "terminal", "images", "incomplete", "domain", "hash"]
 )
 def test_correct_pdf_revalidates_orphan_result_and_actual_images(
-    tmp_path, draft, monkeypatch, tamper
+    tmp_path, draft, monkeypatch, tamper, base
 ):
     import os
 
@@ -1358,6 +1478,13 @@ def test_correct_pdf_revalidates_orphan_result_and_actual_images(
             run(tmp_path, draft, answer(digest))
     path = next((workspace / "attempts/pdf-correction").glob("*.json"))
     record = json.loads(path.read_bytes())
+    if base == "legacy":
+        del record["request"]["context"]["page_results"]
+        legacy = artifact(
+            workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
+        )
+        path.rename(path.with_suffix(".original"))
+        path = workspace / legacy["artifact"]
     before = (tmp_path / "request.json").read_bytes()
     if tamper == "hash":
         path.write_bytes(path.read_bytes() + b" ")
@@ -1368,7 +1495,9 @@ def test_correct_pdf_revalidates_orphan_result_and_actual_images(
         assert (tmp_path / "request.json").read_bytes() == before
         return
     path.rename(path.with_suffix(".original"))
-    if tamper == "terminal":
+    if tamper == "status":
+        record["status"] = "rejected"
+    elif tamper == "terminal":
         record["attempts"][-1]["final"]["terminal"]["reason"] = "length"
     elif tamper == "images":
         record["attempts"][-1]["images"][0]["sha256"] = "0" * 64
@@ -1389,19 +1518,56 @@ def test_correct_pdf_revalidates_orphan_result_and_actual_images(
     assert load_pdf_correction(workspace, accepted).blocks[0].text == "Outside text"
 
 
-@pytest.mark.parametrize("change", ["policy", "config", "reference_pages"])
-def test_correct_pdf_does_not_reuse_changed_actual_inputs(tmp_path, draft, change):
+@pytest.mark.parametrize("base", ["current", "legacy"])
+@pytest.mark.parametrize(
+    "change", ["policy", "config", "reference_pages", "projection", "images"]
+)
+def test_correct_pdf_does_not_reuse_changed_actual_inputs(
+    tmp_path, draft, change, base
+):
     workspace, digest, _ = draft
     previous = run(tmp_path, draft, answer(digest))
-    options = {
-        "policy": {"policy": "Changed correction policy"},
-        "config": {
-            "config": CONFIG.model_copy(
-                update={"options": GenerationOptions(maxTokens=512)}
-            )
-        },
-        "reference_pages": {"reference_pages": []},
-    }[change]
+    if base == "legacy":
+        path = workspace / f"corrections/pdf/{previous}.json"
+        chunk = json.loads(path.read_bytes())
+        run_path = workspace / chunk["run"]["artifact"]
+        record = json.loads(run_path.read_bytes())
+        del record["request"]["context"]["page_results"]
+        chunk["run"] = artifact(
+            workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
+        )
+        previous = artifact(
+            workspace, "corrections/pdf", "json", json.dumps(chunk).encode()
+        )["sha256"]
+        path.rename(path.with_suffix(".original"))
+        run_path.rename(run_path.with_suffix(".original"))
+    options = {}
+    if change == "projection":
+        raw = json.loads((workspace / draft[2].raw.artifact).read_text())
+        raw["texts"][0]["text"] = "Changed text"
+        raw["texts"][0]["prov"][0]["charspan"] = [0, len("Changed text")]
+        draft = rewrite_raw(draft, raw)
+        digest = draft[1]
+    elif change == "images":
+        image = BytesIO()
+        Image.new("RGB", (20, 10), "green").save(image, format="PNG")
+        draft[2].pages[0].image = PDFArtifact(
+            **artifact(workspace, "drafts/pdf/images", "png", image.getvalue())
+        )
+        digest = artifact(
+            workspace, "drafts/pdf", "json", draft[2].model_dump_json().encode()
+        )["sha256"]
+        draft = workspace, digest, draft[2]
+    else:
+        options = {
+            "policy": {"policy": "Changed correction policy"},
+            "config": {
+                "config": CONFIG.model_copy(
+                    update={"options": GenerationOptions(maxTokens=512)}
+                )
+            },
+            "reference_pages": {"reference_pages": []},
+        }[change]
     sent = []
     current = run(
         tmp_path,
@@ -1414,3 +1580,51 @@ def test_correct_pdf_does_not_reuse_changed_actual_inputs(tmp_path, draft, chang
     assert current != previous
     assert load_pdf_correction(workspace, previous).blocks[0].text == "Outside text"
     assert load_pdf_correction(workspace, current).blocks[0].text == "Outside text"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "projection",
+        "schema",
+        "coordinates",
+        "figure_membership",
+        "extra-context",
+        "page_results",
+    ],
+)
+def test_correct_pdf_does_not_normalize_other_legacy_request_differences(
+    tmp_path, draft, change
+):
+    workspace, digest, _ = draft
+    accepted = run(tmp_path, draft, answer(digest))
+    chunk = load_pdf_correction(workspace, accepted)
+    path = workspace / chunk.run.artifact
+    record = json.loads(path.read_bytes())
+    del record["request"]["context"]["page_results"]
+    context = record["request"]["context"]
+    if change == "projection":
+        record["request"]["text"] += " "
+    elif change == "schema":
+        context["response_schema"] = {}
+    elif change == "coordinates":
+        context["coordinates"] = "different coordinates"
+    elif change == "figure_membership":
+        del context["figure_membership"]
+    elif change == "extra-context":
+        context["extra"] = "not part of either base request"
+    else:
+        context["page_results"] = "different page instructions"
+    path.rename(path.with_suffix(".original"))
+    changed = artifact(
+        workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
+    )
+    changed_path = workspace / changed["artifact"]
+    before = changed_path.read_bytes()
+    sent = []
+    current = run(
+        tmp_path, draft, answer(digest), before_send=lambda *_: sent.append(True)
+    )
+    assert sent == [True]
+    assert load_pdf_correction(workspace, current).blocks[0].text == "Outside text"
+    assert changed_path.read_bytes() == before
