@@ -562,7 +562,7 @@ def test_resume_pdf_fills_failed_ownership_without_acquisition_or_resending_acce
     assert len(requests(tmp_path)) == count
 
 
-@pytest.mark.parametrize("base", ["current", "legacy"])
+@pytest.mark.parametrize("base", ["current", "legacy", "repaired"])
 def test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages(
     tmp_path, pdf_input, local_models, capsys, monkeypatch, base
 ):
@@ -593,7 +593,11 @@ def test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages(
                     "--correction-model",
                     "vision",
                 ],
-                process_command=helper(tmp_path, correction_length_above=3),
+                process_command=helper(
+                    tmp_path,
+                    correction_length_above=3,
+                    correction_omit_pages=[4] if base == "repaired" else [],
+                ),
             )
         assert stopped.value.code == 1
     capsys.readouterr()
@@ -632,7 +636,9 @@ def test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages(
         [2, 3, 4, 5, 6],
         [2, 3],
         [4, 5, 6],
-    ]
+    ] + ([[4, 5, 6]] if base == "repaired" else [])
+    if base == "repaired":
+        assert sent[-1]["context"]["correction_feedback"]["missing_pages"] == [4]
     shutil.rmtree(local_models)
     main(
         ["resume", str(workspace)],
@@ -1758,3 +1764,97 @@ def test_legacy_pdf_baseline_proves_chunks_with_only_exclusions_from_ownership_r
     assert summary["processing"]["status"] == "completed"
     assert len(requests(tmp_path)) == count
     assert (workspace / f"snapshots/source/{base}.json").read_bytes() == raw
+
+
+def test_resume_pdf_repairs_coverage_only_for_failed_ownership_and_retains_all_usage(
+    tmp_path, pdf_input, local_models, capsys, monkeypatch
+):
+    from test_resume import assert_preserved, requests, saved_files
+
+    workspace = tmp_path / "new"
+    with pytest.raises(SystemExit) as stopped:
+        main(
+            run_args(pdf_input, workspace)
+            + [
+                "--pages",
+                "2-7",
+                "--artifacts-path",
+                str(local_models),
+                "--correction-model",
+                "vision",
+            ],
+            process_command=helper(
+                tmp_path,
+                correction_omit_pages=[7],
+                correction_coverage_failure="always",
+            ),
+        )
+    assert stopped.value.code == 1
+    failed = json.loads(capsys.readouterr().out)
+    assert failed["processing"]["status"] == "partial"
+    assert failed["scope"]["run"]["corrected_pages"] == [2, 3, 4, 5, 6]
+    assert failed["scope"]["run"]["failed_pages"] == [7]
+    assert failed["scope"]["run"]["not_processed_pages"] == []
+    manifest = json.loads((workspace / "run.json").read_bytes())
+    assert manifest["error_code"] == "answer_invalid"
+    assert failed["usage"]["attempts_by_stage"]["correction"] == 4
+    main(["status", "--json", str(workspace)])
+    status = json.loads(capsys.readouterr().out)
+    assert status["scope"]["run"]["failed_pages"] == [7]
+    old_files = saved_files(workspace)
+    old_files.update(
+        {
+            path: hashlib.sha256(path.read_bytes()).hexdigest()
+            for directory in ("drafts", "attempts")
+            for path in (workspace / directory).rglob("*")
+            if path.is_file()
+        }
+    )
+    count = len(requests(tmp_path))
+    pdf_input.unlink()
+    shutil.rmtree(local_models)
+    main(
+        ["resume", str(workspace)],
+        process_command=helper(tmp_path, correction_omit_pages=[7]),
+    )
+    resumed = json.loads(capsys.readouterr().out)
+    assert resumed["processing"]["status"] == "completed"
+    assert resumed["scope"]["run"]["corrected_pages"] == [2, 3, 4, 5, 6, 7]
+    assert resumed["scope"]["run"]["failed_pages"] == []
+    assert resumed["scope"]["run"]["not_processed_pages"] == []
+    corrections = [
+        item for item in requests(tmp_path)[count:] if "owned_pages" in item["context"]
+    ]
+    assert [item["context"]["owned_pages"] for item in corrections] == [[7], [7]]
+    assert [item["context"]["reference_pages"] for item in corrections] == [[6], [6]]
+    assert corrections[1]["context"]["correction_feedback"]["missing_pages"] == [7]
+    assert resumed["usage"]["attempts_by_stage"]["correction"] == 6
+    usage = json.loads((workspace / resumed["artifacts"]["usage"]).read_bytes())
+    records = usage["stages"]["correction"]
+    assert len(records) == 6
+    assert (
+        sorted(item["record"]["status"] for item in records)
+        == ["rejected"] * 4 + ["validated"] * 2
+    )
+    for item in records:
+        data = (workspace / item["artifact"]).read_bytes()
+        assert hashlib.sha256(data).hexdigest() == item["sha256"]
+        assert item["record"] == json.loads(data)
+        assert len(item["record"]["attempts"]) == 1
+        final = item["record"]["attempts"][0]["final"]
+        assert final["usage_status"] == "observed"
+        assert final["usage"]["totalTokens"] > 0
+        assert final["message"]["content"][0]["text"]
+    assert usage["actual_billing"] == "unknown"
+    assert (workspace / resumed["artifacts"]["qa"]).is_file()
+    assert_preserved(old_files)
+    count = len(requests(tmp_path))
+    monkeypatch.setenv("PATH", "")
+    main(["resume", str(workspace)])
+    assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
+    main(["status", "--json", str(workspace)])
+    final = json.loads(capsys.readouterr().out)
+    assert final["scope"]["run"]["failed_pages"] == []
+    assert final["usage"]["attempts_by_stage"]["correction"] == 6
+    assert len(requests(tmp_path)) == count
+    assert_preserved(old_files)

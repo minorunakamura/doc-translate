@@ -513,19 +513,23 @@ for block in chunk.blocks:
 ```text
 WORKSPACE/
   .writer.lock
-  attempts/pdf-correction/<sha256>.json  # config／安全なrequest／全attempt・最終raw回答／status
+  attempts/pdf-correction/<sha256>.json  # 各generateのconfig／実request／全attempt・raw回答／status／validation_feedback
   corrections/pdf/<sha256>.json         # PDFCorrectionChunk（所有範囲のみの採用結果）
 ```
 
 chunkは`schema_version/draft_sha256/owned_pages/reference_pages/blocks/retained_blocks/exclusions/uncertainties/page_images/run`を持ちます。`page_images`は明示許可した所有・参照ページだけ、`run`はattempt記録のartifact／hashです。参照ページの本文は採用しません。
 
-既存`workspace_lock`を自分で取得し、既存のhash保存・`_atomic_write`（一時file／flush／fsync／atomic replace）を再利用します。外側から同じ非再入lockを取得しません。推論のraw回答と全attempt（失敗時の取得済みusage等を含む）を保存してから、検証済みchunkだけを別directoryへ確定します。`status=validated`は回答のschema／domain検証までで、後続chunkの保存成功を意味しません。schema／domain不正時は`status=rejected`の記録を残し、chunkを作りません。保存OSエラーは伝播し、既に保存できたattemptと旧chunkは削除しません。disk自体に書けない場合の記録保証はありません。
+既存`workspace_lock`を自分で取得し、既存のhash保存・`_atomic_write`（一時file／flush／fsync／atomic replace）を再利用します。外側から同じ非再入lockを取得しません。各generateが返した全attempt・raw回答・観測usageと実requestを、次のgenerateより前／chunk保存より前にimmutable保存します。過去の呼出しのattemptを累積再保存しないため、失敗分もusageに残り、二重計上しません。不明usageを0にしません。`status=validated`は回答のschema／domain検証までで、後続chunkの保存成功を意味しません。schema／domain不正時は`status=rejected`を残し、その回答からchunkを作りません。保存OSエラーは伝播し、追加送信せず、既に保存できたattemptと旧chunkは削除しません。generate内部attemptの逐次永続化、応答喪失やdisk自体に書けない場合の記録保証はありません。
+
+全evidence・table・図所属等のdomain検証の**末尾**で所有ページの網羅性を検査します。不足だけなら専用の`ValueError` subclassで識別し、`validation_feedback`に`code: "owned_page_coverage_incomplete"`、昇順・重複なしの`missing_pages`、固定`reason: "Owned page result coverage is incomplete; blank pages need explicit evidence/reason"`を記録します（旧記録のfield欠如は許容）。contextへ固定指示`coverage_correction`と未信頼dataの`correction_feedback`を加えたrequestで、初回込み最大3回generateします。毎回baseから組み立てるためfeedbackは累積せず、前回答本文や任意の例外文は指示に貼り戻しません。policy・所有／参照・投影・画像は不変で、毎回全chunkを返させ全検証を行い、成功した最終回答だけを採用します。部分採用・回答mergeはしません。
+
+上限でも不足ならchunk全体を失敗にし、CLIは従来の`answer_invalid`／failed ownership／部分出力になります。欠落と不正table等が同居する場合も、schema／別domain／認証・通信・timeout・取消等にもcoverage訂正を広げません。既存transport retry（既知のlibrary-heuristic transientのみ最大3 attempt・待機3/6秒）とlength／input上限時の二分処理は不変です。coverage訂正の追加backoffはなく、分割しない1回のcorrect_pdfで最大3generate×3attempt＝9 underlying attemptです。分割や後日のresumeを跨ぐ永久予算はありません。
 
 loadはchunk／draft／原資料／raw／PNG／runのhashを照合し、元runのraw回答を再度schema／domain検証し、記録した送信許可範囲・draft投影・図所属からの採用結果と一致することを確認します。旧chunkはdigestで読め、歴史的な`figure_membership`欠如も従来どおりloadできます。このchunk APIは`source-snapshot.json`を作成・変更せず、複数chunkからのsource組立は次節の別APIで行います。
 
-Issue #46では`CORRECTION_POLICY`・回答／chunk schema・公開API・既存validationを変更しません。`correct_pdf`とresumeの保存応答回収は、現在のbase request、またはそこから**`context.page_results`だけ**を除いた厳密な旧baseと全体一致する成功記録に限ります。任意contextの削除・指示の書換え・feedback付きrequestの正規化はしません。policy／config／参照範囲／schema／draft投影／実画像等を照合し、保存status・preflight・正常terminal／helper終了・画像metadata・raw回答のschema／全domain検証を再実行します。rejectedや不正hashの保存物は成功として再利用しません。
+Issue #46／#47では`CORRECTION_POLICY`・回答／chunk schema・公開API・所有許可を変更しません。`correct_pdf`とresumeの保存応答回収は、現在のbase request、そこから**`context.page_results`だけ**を除いた厳密な旧base、または現行baseに規定の訂正contextだけを加えたrequestと全体一致する成功記録に限ります。訂正feedbackは上記code・固定理由・非空で昇順かつ重複のない所有範囲内の整数ページ番号だけを認識します。固定指示の書換え、余分なfeedback field、旧baseへの訂正追加、その他contextの緩い正規化はしません。policy／config／参照範囲／schema／draft投影／実画像等を照合し、保存status・preflight・正常terminal／helper終了・画像metadata・raw回答のschema／全domain検証を再実行します。rejectedや不正hashの保存物は成功として再利用しません。
 
-既存の成功chunkはloadとrun側のdraft／許可範囲／config／policyの照合後に再利用します。旧base／新baseの成功保存応答は、attempt保存後・chunk保存前の中断でも無送信で回収できます。raw回答・観測usage・旧immutable artifactは書き換えず保持します。**この中間成果にcoverage限定の自動訂正生成・専用例外・feedbackは未実装です。** 明示白紙は受理しますが、空回答・ページの黙示省略は従来のcoverage検証で拒否してchunk全体を失敗にし、部分回答のmergeや空抽出の自動白紙化はしません。既存の限定transport retryとlength／input上限時の分割は変更しません。
+既存の成功chunkはloadとrun側のdraft／許可範囲／config／policyの照合後に再利用します。旧base／新base／訂正成功の保存応答は、attempt保存後・chunk保存前の中断でも無送信で回収できます。raw回答・観測usage・旧immutable artifactは書き換えず保持します。明示白紙は受理しますが、空回答・ページの黙示省略は拒否し、空抽出を自動白紙化しません。網羅性はページ結果の根拠があることだけで、ページ内の全文や意味品質の保証ではありません。
 
 ## PDF原文snapshot組立（Issue #9）
 

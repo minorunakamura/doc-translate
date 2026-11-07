@@ -56,19 +56,26 @@ faux.setResponses([
               owned_pages: input.context.owned_pages,
               blocks:
                 settings.correction_blocks ??
-                input.context.owned_pages.map((page) => ({
-                  block_id: `page-${page}`,
-                  kind: "body",
-                  text: `Page ${page} source.`,
-                  evidence: [
-                    {
-                      page,
-                      ref: null,
-                      position: "center",
-                      reason: "Synthetic visible paragraph.",
-                    },
-                  ],
-                })),
+                input.context.owned_pages
+                  .filter(
+                    (page) =>
+                      !settings.correction_omit_pages?.includes(page) ||
+                      (input.context.correction_feedback &&
+                        settings.correction_coverage_failure !== "always"),
+                  )
+                  .map((page) => ({
+                    block_id: `page-${page}`,
+                    kind: "body",
+                    text: `Page ${page} source.`,
+                    evidence: [
+                      {
+                        page,
+                        ref: null,
+                        position: "center",
+                        reason: "Synthetic visible paragraph.",
+                      },
+                    ],
+                  })),
               exclusions: settings.correction_exclusions ?? [],
               uncertainties: [],
             }

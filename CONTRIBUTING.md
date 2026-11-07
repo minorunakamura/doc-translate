@@ -291,32 +291,38 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 - 全content kind、見出し／list階層、code改行／callout、空cell／span、除外理由・原本欠損、不正ref／wrong-page ref／cell／span、所有外出力、owned画像欠落、rawの安全なspan投影とclipしない省略、bbox重なりだけで本文を消さないことを検査します。
 - raw itemの部分所属／共有ref／不確実cellと全table所属の矛盾で外側を削除しないこと、旧chunk保持・chunk保存失敗前のattempt保存、各artifactのhash不正、load時のdomain／送信許可再検証、writer排他を検査します。save障害注入はOSの`replace`境界だけです。
 
-#### Issue #46：全所有結果の指示・旧base互換性の再現
+#### Issue #46／#47：全所有結果・coverage限定訂正・厳密再利用の再現
 
-公開保存／指示／互換性の契約は上記artifact契約に集約します。今回は指示明確化と旧／新base成功結果の再利用までで、coverage限定の自動訂正生成は未実装です。空回答や所有ページの省略は従来どおり拒否します。既存環境とbuild済みhelperを使い、install／sync／model取得はしません。helperが不在／古ければ止めて環境更新の許可を確認します。
+公開保存／指示／互換性の契約は上記artifact契約、利用回数・課金非保証・既存workspace復旧案内は[usage](docs/reference/usage.md#ページ欠落が残る既存pdfの復旧確認)に集約します。合成入力だけで欠落→訂正成功、3generate上限、全記録・無送信回収とCLIへの接続を確認します。既存環境とbuild済みhelperを使い、install／sync／model取得はしません。helperが不在／古ければ止めて環境更新の許可を確認します。
 
 以下はrepository rootで実行します。`EVIDENCE`を指定する場合も、今回だけの新規directoryを使ってください。pytestの`--basetemp`は既存directoryを消すため、既存workspaceを指定しません。
 
 ```sh
 export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-EVIDENCE="${EVIDENCE:-$(mktemp -d "$PWD/work/pdf-correction-issue46-XXXXXX")}"
+EVIDENCE="${EVIDENCE:-$(mktemp -d "$PWD/work/pdf-correction-issue47-XXXXXX")}"
 mkdir -p "$EVIDENCE"
 git rev-parse HEAD > "$EVIDENCE/revision.txt"
-git diff -- src/doc_translate/pdf_correction.py tests/test_pdf_correction.py tests/test_run.py docs/reference/artifacts.md CONTRIBUTING.md > "$EVIDENCE/diff.patch"
-.venv/bin/pytest 'tests/test_units.py::test_accepted_pdf_figure_membership_is_not_reclassified_by_units[shared-ref]' \
+git diff -- src/doc_translate/pdf_correction.py tests/test_pdf_correction.py tests/test_run.py ai/tests/pdf-correction-process.mjs ai/tests/run-process.mjs docs/reference/artifacts.md docs/reference/usage.md CONTRIBUTING.md > "$EVIDENCE/diff.patch"
+# SIGINTをignoreする起動環境でもdefault handlerを戻してforeground実行する
+pytest_checked() {
+  .venv/bin/python -c 'import signal, pytest; signal.signal(signal.SIGINT, signal.default_int_handler); raise SystemExit(pytest.main())' "$@"
+}
+pytest_checked 'tests/test_units.py::test_accepted_pdf_figure_membership_is_not_reclassified_by_units[shared-ref]' \
   -q --basetemp="$EVIDENCE/pytest-single" > "$EVIDENCE/single.log" 2>&1
 result=$?; printf 'single exit=%s\n' "$result" >> "$EVIDENCE/exits.txt"; test "$result" -eq 0 || exit "$result"
-.venv/bin/pytest tests/test_pdf_correction.py \
+pytest_checked tests/test_pdf_correction.py \
   -q --basetemp="$EVIDENCE/pytest-correction" > "$EVIDENCE/correction.log" 2>&1
 result=$?; printf 'correction exit=%s\n' "$result" >> "$EVIDENCE/exits.txt"; test "$result" -eq 0 || exit "$result"
-.venv/bin/pytest tests/test_pdf_source.py \
+pytest_checked tests/test_pdf_source.py \
   tests/test_units.py::test_accepted_pdf_figure_membership_is_not_reclassified_by_units \
   tests/test_review.py::test_review_exclusion_only_chunk_uses_adopted_images_and_revalidates_offline \
-  tests/test_run.py::test_resume_pdf_fills_failed_ownership_without_acquisition_or_resending_accepted \
-  tests/test_run.py::test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages \
+  tests/test_run.py \
   -q --basetemp="$EVIDENCE/pytest-consumers" > "$EVIDENCE/consumers.log" 2>&1
 result=$?; printf 'consumers exit=%s\n' "$result" >> "$EVIDENCE/exits.txt"; test "$result" -eq 0 || exit "$result"
 cat "$EVIDENCE/exits.txt" "$EVIDENCE/single.log" "$EVIDENCE/correction.log" "$EVIDENCE/consumers.log"
+# cleanup前の保存hash（pathは合成試験の元位置。raw/requestが必要なら秘密を除いて別途退避）
+find "$EVIDENCE"/pytest-* -type f \( -path '*/attempts/pdf-correction/*.json' -o -path '*/corrections/pdf/*.json' -o -name usage.json \) \
+  -exec shasum -a 256 {} + > "$EVIDENCE/observed-hashes.txt"
 # 成功確認／必要な観測の保存後、自分が上で作ったpytest一時workspaceと人工credentialだけを削除
 rm -rf -- "$EVIDENCE/pytest-single" "$EVIDENCE/pytest-correction" "$EVIDENCE/pytest-consumers"
 printf 'owned pytest workspaces/artificial credentials removed; evidence retained\n' > "$EVIDENCE/cleanup.txt"
@@ -327,7 +333,9 @@ test -s "$EVIDENCE/revision.txt" && cat "$EVIDENCE/exits.txt" "$EVIDENCE/cleanup
 
 - `test_correct_pdf_requests_full_owned_results_and_image_confirmed_blank_pages`と所有／参照許可テストで、実送信requestの全文・白紙・創作禁止指示、画像と許可範囲を確認します。白紙exclusionは公開correct/loadで成功し、空回答はcoverage拒否、空抽出の判断不能ページはexclusionsを自動生成せずuncertaintiesとして保存されます。
 - 旧成功再利用は真正helper成功から今回の`page_results`だけを除き、hashを正しく保存した合成旧形式で確認します。raw回答とusage自体は変更しません。再利用／chunk保存前のOS replace故障からの回収は`before_send`が呼ばれず、旧byteが不変です。policy／config／参照／投影／画像等の差異、不正status／terminal／domain／hashは再利用しません。歴史的な図所属指示欠如のload互換も残します。
-- CLIのadaptive回収は旧／新base両方で、保存成功chunkとchunk未確定の成功応答を再送せず、残った所有`[7]`だけを参照`[6]`付きで補正します。部分失敗のresumeは失敗所有だけ回復し、再resumeでは送信を増やさず、旧immutableのhashを保持します。
+- `test_correct_pdf_repairs_missing_pages_with_complete_chunk_and_retains_usage`は所有[1,2,3]の一部欠落から不足[2,3]の固定feedbackを返し、同じpolicy／投影／画像で全chunkの完全回答だけを採用します。`test_correct_pdf_stops_after_three_incomplete_whole_chunk_answers`は異なるページだけを返す回答もmergeせず、3generateで停止しchunkを保存しません。各回のraw回答・全attempt・人工usageを不変保存し、既知のtransientだけのtransport retryも独立に残ることを確認します。schema／不正tableとの複合不正は追加訂正せず、OS replace境界での拒否record保存失敗・取消も次の送信を止めます。
+- 訂正成功は`test_correct_pdf_recovers_repaired_success_before_chunk_save_without_resending`でOS replace故障後も無送信回収します。固定指示・code・理由・不足番号の型／並び／範囲／余分fieldやその他入力の差異は誤再利用しません。旧base／新baseの既存再利用試験も維持します。
+- CLIのadaptive回収は旧／新base／訂正成功で、保存成功chunkとchunk未確定の成功応答を再送せず、残った所有`[7]`だけを参照`[6]`付きで補正します。`test_resume_pdf_repairs_coverage_only_for_failed_ownership_and_retains_all_usage`は最初のrunで所有[2–6]成功・[7]欠落3回→exit1／answer_invalid／failed[7]／not_processed[]、補正記録4件を期待します。resumeは[7]だけ欠落→訂正成功の2generateで回復し、記録6件に失敗4件と成功2件のraw／観測usageが残りstatusとQA付随usageに対応します。再resumeは空PATHでも無送信、原本・draft・attempt・旧chunk等のhashは不変です。fixtureの従来単一回答／最終request.jsonは保持し、responsesの初回／訂正選択とrequest.json.jsonl追記履歴を補完しています。run-processの既存optionsも維持し、correction_omit_pages／correction_coverage_failureだけで合成欠落を操作します。
 - Workerはこの代表consumer単独fresh process・補正module・focused consumer回帰と手順の成立を報告します。Rootは上の正式チェックの選定と別一時workspaceからの公開API直接確認、Reviewerは独立受入れを担当します。今回専用`work/`にcommand／exit、Red→Green、期待／観測・保存hash・未確認・cleanupを残し、cleanup後も証拠を読み直します。既存workspace／attempt／venv／model／lockに触れず、他人のprocessは止めません。
 
 再現用の公開API例はartifact契約を参照してください。offlineの実process検証は補正の構造・範囲・保存に限定され、実LLMの読取り／図分類品質・全文翻訳・実Docling／OCR・viewer・他OS・remote CIの成立は示しません。chunkは別artifactに確定するだけで、`source-snapshot.json`を切り替えません。このchunk API自身はCLI・unit生成・翻訳・resume engine・全chunk所有割当を担当しません。ページ接続は次の独立adapterで行います。

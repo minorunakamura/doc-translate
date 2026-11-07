@@ -1,5 +1,5 @@
 import "./no-network.mjs";
-import { readFile, writeFile } from "node:fs/promises";
+import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { createModels } from "@earendil-works/pi-ai";
 import {
   fauxAssistantMessage,
@@ -18,7 +18,23 @@ const faux = fauxProvider({
 faux.setResponses([
   async (context, _options, _state, model) => {
     await writeFile(recordingPath, JSON.stringify(context));
-    const message = fauxAssistantMessage(await readFile(answerPath, "utf8"));
+    await appendFile(`${recordingPath}.jsonl`, `${JSON.stringify(context)}\n`);
+    const input = JSON.parse(context.messages[1].content[0].text);
+    const raw = await readFile(answerPath, "utf8");
+    const response = JSON.parse(raw);
+    const calls = (await readFile(`${recordingPath}.jsonl`, "utf8"))
+      .trim()
+      .split("\n").length;
+    const message = fauxAssistantMessage(
+      response.responses
+        ? JSON.stringify(
+            response.responses[input.context.correction_feedback ? 1 : 0],
+          )
+        : raw,
+      response.retry && calls === 1
+        ? { stopReason: "error", errorMessage: "429 rate limit exceeded" }
+        : (response.terminal ?? {}),
+    );
     message.provider = model.provider;
     message.model = model.id;
     return message;
