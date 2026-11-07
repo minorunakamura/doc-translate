@@ -138,6 +138,46 @@ raw値・中央値・min/max・node別setup/call/teardown、collectionのnode ID
 
 直接確認の証拠はworkspace外の`$EVIDENCE`へ残します。完了後、作ったprocessをwait／回収し、自分がこの例の`mktemp`で作った`WORKSPACE`／`RUN_FIXTURE`だけを削除します（人工credentialもその内側）。`work/`全体、他人のworkspace、既存venv／credential／modelは削除しません。証拠は削除せず、cleanup対象／結果と未確認範囲を記録し、`test -s "$EVIDENCE/revision.txt"`と各ログの再読込みで参照維持を確認します。障害復旧例末尾の一時directoryも、自分が今回作成したpathを確認してから同じ扱いにします。
 
+### EPUB revise／reviewの前提再利用（Issue #41）
+
+本項目は[Approved Plan](docs/plans/verification-design-right-sizing.md)の実装方針1のEPUB部分だけです。正式チェック全体・PDF fixture／CI・上のIssue #39の歴史的計測条件は変更しません。
+
+- `test_revise.py`のpatch拒否7件とQA target9件だけを、既存の`malformed_source_seed`／`malformed_source_workspace`へ接続します。同じdefault `make_epub`の実CLI runをmodule invocation内で1回生成し、既存malformed source拒否群とも共有します。
+- `test_review.py`のscope拒否7件とempty／rejected answers4件だけは、chosen／secret／heading入りの同一人工EPUBから専用`review_scope_seed`を実生成し、各caseへ独立コピーします。他の`epub_workspace` caller・異なる入力・PDFへは転用しません。
+- workspace全file（原本・artifact・evidence・attempt・履歴・pointer・run・render等）と初期3 requestのbyte一致を確認し、コピー上で公開source／preparation／translation loadを行います。各moduleの`*_workspace_is_relocatable_and_isolated`は元seed root全体を一時退避して2コピーをloadし、pointer／request logの変更とconsumer側の`helper`設定書込みがseed／他コピーへ伝播しないことを確認します。seedのworkspace全byteとrequest logはteardownでも不変をassertします。
+- 各caseの実CLI revise／review、実Node helper／公開faux、受理／拒否、byte／hash／pointer、無送信、usage、品質未承認のassertは残します。reader→run、patch→resume、旧訳再利用、取消／復旧も従来の実経路のままです。毎caseの前提作成（prepare2件＋translation1件）だけを除きます。
+
+次は既存PDF extra環境・build済みhelperからの再現例です。追加install／sync／model取得をせず、repository rootで**非並行・foreground**実行します。SIGINTのdefault handlerを確認し、background shell由来のignoreを持ち込みません。offline変数だけでなく`ai/tests/run-process.mjs`のnetwork拒否と人工credentialを使います。
+
+```sh
+set -eu
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+mkdir -p work
+EVIDENCE=$(mktemp -d "$PWD/work/issue41-epub-XXXXXX")
+git rev-parse HEAD > "$EVIDENCE/revision.txt"
+git diff -- CONTRIBUTING.md tests/test_revise.py tests/test_review.py > "$EVIDENCE/verification.diff"
+python -c 'import signal; assert signal.getsignal(signal.SIGINT) == signal.default_int_handler'
+# 新fixtureは代表consumer単独のfresh processでも生成できることを確認
+pytest 'tests/test_revise.py::test_translation_patch_rejects_invalid_inputs_without_changing_workspace[stale]' \
+  --basetemp="$EVIDENCE/pytest-revise" -q > "$EVIDENCE/single-revise.log" 2>&1
+pytest 'tests/test_review.py::test_review_empty_and_rejected_answers_keep_usage_without_quality_approval[findings0-None-None]' \
+  --basetemp="$EVIDENCE/pytest-review" -q > "$EVIDENCE/single-review.log" 2>&1
+# 27対象＋移設／分離check、続いて変更moduleの全回帰
+pytest tests/test_revise.py tests/test_review.py \
+  -k 'translation_patch_rejects_invalid_inputs_without_changing_workspace or epub_source_validates_qa_targets_before_adoption or review_invalid_scope_never_sends or review_empty_and_rejected_answers_keep_usage_without_quality_approval or workspace_is_relocatable_and_isolated' \
+  --basetemp="$EVIDENCE/pytest-targets" -q --durations=0 --durations-min=0 > "$EVIDENCE/targets.log" 2>&1
+pytest tests/test_revise.py tests/test_review.py --basetemp="$EVIDENCE/pytest-modules" \
+  -q --durations=0 --durations-min=0 > "$EVIDENCE/modules.log" 2>&1
+# 成功時の終了コードは0。失敗時は止め、command／exitと原因を記録してから所有物だけcleanup
+printf '%s\n' 'all four pytest commands exited 0' > "$EVIDENCE/exits.txt"
+rm -rf -- "$EVIDENCE/pytest-revise" "$EVIDENCE/pytest-review" "$EVIDENCE/pytest-targets" "$EVIDENCE/pytest-modules"
+printf '%s\n' 'owned pytest workspaces/artificial credentials removed; evidence retained' > "$EVIDENCE/cleanup.txt"
+test -s "$EVIDENCE/revision.txt" && test -s "$EVIDENCE/modules.log"
+cat "$EVIDENCE/exits.txt" "$EVIDENCE/cleanup.txt"
+```
+
+今回のcommand／exit／条件／raw時間／node ID比較／cleanup記録は追跡外の今回専用`work/`配下へ保存します。27対象だけなら実生成は従来27回から2回、両module全体では既存revise seedの分を考慮して26回のrun反復を除きます。追加characterization checkも同じseedを使います。時間比較は同条件のfresh process前後各1回から始め、ばらつきが判断を左右するときだけ追加2回とし、固定秒数目標は置きません。Planの49件比較には未変更のPDF22件も含めますが、その前提生成は本項目では変更しません。工程削減を時間短縮率へ外挿せず、seed生成・コピー・公開load・追加checkを含む実測と区別します。Rootの正式チェック・別の実入口からの直接照合・独立Reviewはこの再現例だけで代替しません。実LLM意味品質、実Docling／OCR、viewer、他OS、remote CIはこのoffline確認の対象外です。
+
 ### PDF取得の検証境界
 
 `acquire_pdf`→`load_pdf_draft`の公開seamで、不足model・不正入力／range、raw item／ref／table cell／provenance、clipしないcharspan不一致、conversion status／errors、全対象ページ／PNG、直接描画scale／unload、artifact hash不一致、writer排他、参照replace失敗時の旧版保持を検査します。Doclingの外部公開`DocumentConverter.convert`と公開page backend境界だけを人工fixtureに置換し、保存・load・workspaceは実物を使います。private helper mockや未依頼CLIは追加しません。core-onlyでのPDF／EPUB API importも検査します。
