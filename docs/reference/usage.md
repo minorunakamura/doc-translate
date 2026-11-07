@@ -129,6 +129,10 @@ doc-translate run own.pdf --workspace work/pdf-book \
 
 PDFの`--pages A-B`は1始まり・両端含む所有範囲です。省略時は実PDF全ページが所有対象になります。既定の送信許可も所有範囲内だけで、外側は`--reference-pages A-B`で明示したページだけ参照専用に許可します。補正は所有5ページごとに、許可範囲内の前後各1ページだけをcontextとして使います。離れた参照指定を含むローカル取得範囲は広くなることがありますが、それはproviderへの送信許可を増やしません。参照ページは翻訳対象に追加せず、部分範囲をPDF全文処理完了と表示しません。EPUBは文書全体を対象にし、ページ指定を受け付けません。
 
+PDF補正では全所有ページの結果と根拠、見える原語本文・見出し・構造の全文を要求します。画像で確認した白紙にも理由・根拠を要求し、空抽出だけで白紙にしません。所有ページ結果の欠落**だけ**は、不足ページと固定理由を返して初回込み最大3回generate（訂正最大2回）します。毎回同じ範囲・画像で全chunkを再検証し、最後の完全応答だけを採用します。上限では所有chunk全体が失敗し、schema／別domain／認証・通信・保存・timeout・取消等にはこの訂正を追加しません。ページ内全文の網羅性や意味品質の保証ではありません。
+
+各generate内の既存transport retryは、既知の一時的エラーだけ最大3attempt（待機3/6秒）です。従って分割しない1回の補正呼出しの理論上限は**3generate×3attempt＝9 underlying attempt**で、「必ず3送信以内」ではありません。length／input上限の分割と後日のresumeは別で、永久予算はありません。訂正にも追加の利用枠・課金が発生し得ます。失敗・訂正を含む各呼出しのraw回答と観測usageを保存しますが、未保存応答や実請求額・exactly-once課金を保証しません。
+
 送信直前、stderrへ入力名・SHA-256・所有／参照の許可範囲・そのrequestの送信範囲と内容・段階・provider／model／thinking・実preflightの認証source／typeをJSONで表示してから送ります。tokenやcredentialは表示・workspace保存しません。画像／抽出下書きはPDF補正だけに送り、準備・翻訳には保存したunit／context／glossary等だけを送ります。実行コマンド自体が指定範囲の送信操作です。権利・機密性・送信先を事前に確認してください。
 
 準備中の用語根拠が原文と一致しない場合は、検証を緩めず、失敗理由と該当する用語・根拠引用をmodelへ返し、初回込み最大3回答まで再生成します。成功済みの収集結果は再利用し、再生成分の回答・usageも保存します。上限まで失敗すると`prepare_unknown_unit`／`prepare_quote_mismatch`／`prepare_term_mismatch`／`prepare_ungrounded_term`と原因を表示して停止します。schema不正・認証・保存・timeout・取消等にはこの再生成を行いません。再生成には追加の利用枠・料金が発生する可能性があります。
@@ -163,6 +167,14 @@ resumeは保存原本・範囲・非秘密設定を基準に、artifact hashと�
 SIGINT／SIGTERMは新規requestを止め、実行中helperの取消・認証保存drainを待ちます（強制killまで原則30秒）。SIGKILL・disk障害では応答・usageやOAuth refresh保存を保証できません。**送信済み応答を失うとusageは不明で、再送により重複課金される可能性があります。exactly-once課金は保証しません。** token保存に失敗した場合は必要に応じ再loginしてください。
 
 旧原本・snapshot・attempt・出力は削除しません。保存途中の一時fileや未検証回答は成功として採用せず、確定artifactだけを再検証します。hash不一致は送信前に明示停止し、破損fileを上書きしません。別writerが稼働中ならresume／直接stage／renderは拒否され、process終了後はOS lockが解放されます。exit codeはrunと同じ0／1／2です。未処理／失敗や次の候補採用待ちが残れば部分出力のままです。
+
+#### ページ欠落が残る既存PDFの復旧確認
+
+まず設定を上書きせず`doc-translate status DIR --json`で保存設定・failed/not_processed・candidate/revisionを確認します。実送信前に対象／参照範囲、provider/model/thinking、認証、追加利用量と後段再実行を確認し、別途実行承認を得てから`doc-translate resume DIR`を1回実行し、再度statusを確認してください。新しい`run`やworkspace再生成、lock削除、attemptの手編集は不要です。稼働writerは停止せず待ちます。
+
+Issue #47の調査時は成功331ページ・67chunk、失敗15ページ、未処理0でした。同じ状態なら新規所有送信は1–5／146–150／236–240、参照は[6]／[145,151]／[235,241]で、各組にcoverage訂正が最大2回加わり得ます。**成功331ページの再補正は不要**で、検証可能な保存draftは再取得しません。不足4ページだけを旧不完全回答へmergeしません。実行時のstatusが違えば現在の状態を優先します。
+
+resumeは補正だけで止まらず、原文更新後の準備・翻訳・出力にも進むため、課金対象は失敗3組の補正だけではありません。旧immutableは保持しますがrun・採用pointer・renderは更新されます。手動原文revisionがあれば既存の候補確認・明示採用契約で停止します。終了後はfailed/not_processed・candidate・後段状態・全補正attempt／usageと旧成果物hashを照合し、失敗が残れば記録を保って報告し、自動でresumeを繰り返さないでください。実料金額・回復成功は保証しません。この案内は実workspaceへの実行承認ではありません。
 
 ## 翻訳結果をAIに確認させる
 

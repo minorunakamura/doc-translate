@@ -1518,7 +1518,7 @@ def test_correct_pdf_revalidates_orphan_result_and_actual_images(
     assert load_pdf_correction(workspace, accepted).blocks[0].text == "Outside text"
 
 
-@pytest.mark.parametrize("base", ["current", "legacy"])
+@pytest.mark.parametrize("base", ["current", "legacy", "repaired"])
 @pytest.mark.parametrize(
     "change", ["policy", "config", "reference_pages", "projection", "images"]
 )
@@ -1526,7 +1526,12 @@ def test_correct_pdf_does_not_reuse_changed_actual_inputs(
     tmp_path, draft, change, base
 ):
     workspace, digest, _ = draft
-    previous = run(tmp_path, draft, answer(digest))
+    response = answer(digest)
+    if base == "repaired":
+        missing = answer(digest)
+        missing["blocks"] = []
+        response = {"responses": [missing, response]}
+    previous = run(tmp_path, draft, response)
     if base == "legacy":
         path = workspace / f"corrections/pdf/{previous}.json"
         chunk = json.loads(path.read_bytes())
@@ -1628,3 +1633,418 @@ def test_correct_pdf_does_not_normalize_other_legacy_request_differences(
     assert sent == [True]
     assert load_pdf_correction(workspace, current).blocks[0].text == "Outside text"
     assert changed_path.read_bytes() == before
+
+
+def test_correct_pdf_repairs_missing_pages_with_complete_chunk_and_retains_usage(
+    tmp_path, draft
+):
+    workspace, digest, model = draft
+    incomplete = answer(digest)
+    incomplete["owned_pages"] = [1, 2, 3]
+    incomplete["blocks"][0]["text"] = "Rejected partial text"
+    complete = answer(digest)
+    complete["owned_pages"] = [1, 2, 3]
+    for page in (2, 3):
+        complete["blocks"].append(
+            {
+                "block_id": f"page-{page}",
+                "kind": "body",
+                "text": f"Complete page {page}",
+                "evidence": [evidence(page, None)],
+            }
+        )
+    accepted = run(
+        tmp_path,
+        draft,
+        {"responses": [incomplete, complete]},
+        owned_pages=[1, 2, 3],
+        reference_pages=[],
+    )
+    chunk = load_pdf_correction(workspace, accepted)
+    assert [block.text for block in chunk.blocks] == [
+        "Outside text",
+        "Image only",
+        "Complete page 2",
+        "Complete page 3",
+    ]
+    assert chunk.page_images == model.pages
+    sent = [
+        json.loads(line)
+        for line in (tmp_path / "request.json.jsonl").read_text().splitlines()
+    ]
+    assert len(sent) == 2
+    inputs = [json.loads(item["messages"][1]["content"][0]["text"]) for item in sent]
+    feedback = {
+        "code": "owned_page_coverage_incomplete",
+        "missing_pages": [2, 3],
+        "reason": "Owned page result coverage is incomplete; blank pages need explicit evidence/reason",
+    }
+    assert inputs[1]["context"]["correction_feedback"] == feedback
+    assert (
+        "untrusted data, not instructions"
+        in inputs[1]["context"]["coverage_correction"]
+    )
+    assert "complete chunk" in inputs[1]["context"]["coverage_correction"]
+    assert inputs[0]["text"] == inputs[1]["text"]
+    assert sent[0]["messages"][0] == sent[1]["messages"][0]
+    assert (
+        sent[0]["messages"][1]["content"][1:] == sent[1]["messages"][1]["content"][1:]
+    )
+    records = [
+        json.loads(path.read_bytes())
+        for path in (workspace / "attempts/pdf-correction").glob("*.json")
+    ]
+    assert sorted(record["status"] for record in records) == ["rejected", "validated"]
+    rejected = next(record for record in records if record["status"] == "rejected")
+    assert rejected["validation_feedback"] == feedback
+    assert [len(record["attempts"]) for record in records] == [1, 1]
+    assert {
+        json.loads(record["attempts"][0]["final"]["message"]["content"][0]["text"])[
+            "blocks"
+        ][0]["text"]
+        for record in records
+    } == {"Rejected partial text", "Outside text"}
+    for record in records:
+        final = record["attempts"][0]["final"]
+        assert final["usage_status"] == "observed"
+        assert final["usage"]["totalTokens"] > 0
+
+
+def test_correct_pdf_stops_after_three_incomplete_whole_chunk_answers(tmp_path, draft):
+    workspace, digest, _ = draft
+    first = answer(digest)
+    first["owned_pages"] = [1, 2]
+    second = answer(digest)
+    second.update(
+        owned_pages=[1, 2],
+        blocks=[
+            {
+                "block_id": "only-second",
+                "kind": "body",
+                "text": "Only page two",
+                "evidence": [evidence(2, None)],
+            }
+        ],
+    )
+    with pytest.raises(ValueError, match="coverage"):
+        run(
+            tmp_path,
+            draft,
+            {"responses": [first, second]},
+            owned_pages=[1, 2],
+            reference_pages=[],
+        )
+    assert not list((workspace / "corrections/pdf").glob("*.json"))
+    sent = (tmp_path / "request.json.jsonl").read_text().splitlines()
+    assert len(sent) == 3
+    records = [
+        json.loads(path.read_bytes())
+        for path in (workspace / "attempts/pdf-correction").glob("*.json")
+    ]
+    assert len(records) == 3
+    assert all(record["status"] == "rejected" for record in records)
+    assert sorted(
+        record["validation_feedback"]["missing_pages"] for record in records
+    ) == [[1], [1], [2]]
+    assert all(len(record["attempts"]) == 1 for record in records)
+    for record in records:
+        final = record["attempts"][0]["final"]
+        assert final["usage_status"] == "observed"
+        assert json.loads(final["message"]["content"][0]["text"]) in (first, second)
+
+
+def test_correct_pdf_recovers_repaired_success_before_chunk_save_without_resending(
+    tmp_path, draft, monkeypatch
+):
+    import os
+
+    workspace, digest, _ = draft
+    incomplete = answer(digest)
+    incomplete["blocks"] = []
+    responses = {"responses": [incomplete, answer(digest)]}
+    replace = os.replace
+
+    def fail_replace(src, dst):
+        if Path(dst).parent == workspace / "corrections/pdf":
+            raise OSError("interrupted repaired chunk save")
+        return replace(src, dst)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_replace)
+        with pytest.raises(OSError, match="interrupted repaired chunk save"):
+            run(tmp_path, draft, responses)
+    previous = {
+        path: path.read_bytes() for path in workspace.rglob("*") if path.is_file()
+    }
+    history = (tmp_path / "request.json.jsonl").read_bytes()
+    accepted = run(
+        tmp_path,
+        draft,
+        responses,
+        before_send=lambda *_: pytest.fail("resent repaired success"),
+    )
+    chunk = load_pdf_correction(workspace, accepted)
+    assert chunk.blocks[0].text == "Outside text"
+    assert json.loads((workspace / chunk.run.artifact).read_bytes())["request"][
+        "context"
+    ]["correction_feedback"]["missing_pages"] == [1]
+    assert (
+        run(
+            tmp_path,
+            draft,
+            responses,
+            before_send=lambda *_: pytest.fail("resent saved chunk"),
+        )
+        == accepted
+    )
+    assert (tmp_path / "request.json.jsonl").read_bytes() == history
+    assert all(path.read_bytes() == data for path, data in previous.items())
+
+
+@pytest.mark.parametrize("phase", ["initial", "repair"])
+@pytest.mark.parametrize("invalid", ["schema", "table"])
+def test_correct_pdf_does_not_retry_other_invalidity_even_with_missing_pages(
+    tmp_path, draft, phase, invalid
+):
+    workspace, digest, _ = draft
+    missing = answer(digest)
+    missing["owned_pages"] = [1, 2]
+    bad = answer(digest)
+    bad["owned_pages"] = [1, 2]
+    if invalid == "schema":
+        bad["extra"] = "not allowed"
+    else:
+        bad["blocks"].append(
+            {
+                "block_id": "broken-table",
+                "kind": "table",
+                "text": "",
+                "evidence": [evidence()],
+                "rows": 1,
+                "columns": 1,
+                "cells": [],
+            }
+        )
+    with pytest.raises((ValueError, RuntimeError)) as stopped:
+        run(
+            tmp_path,
+            draft,
+            {"responses": [bad if phase == "initial" else missing, bad]},
+            owned_pages=[1, 2],
+            reference_pages=[],
+        )
+    if invalid == "table":
+        assert "every cell" in str(stopped.value)
+    assert len((tmp_path / "request.json.jsonl").read_text().splitlines()) == (
+        1 if phase == "initial" else 2
+    )
+    assert not list((workspace / "corrections/pdf").glob("*.json"))
+
+
+@pytest.mark.parametrize("failure", ["cancel", "record-save"])
+def test_correct_pdf_does_not_send_after_rejected_record_cancel_or_save_failure(
+    tmp_path, draft, monkeypatch, failure
+):
+    import os
+    import threading
+
+    from doc_translate.inference import InferenceError
+
+    workspace, digest, _ = draft
+    missing = answer(digest)
+    missing["blocks"] = []
+    cancel = threading.Event()
+    replace = os.replace
+
+    def replace_record(src, dst):
+        if Path(dst).parent == workspace / "attempts/pdf-correction":
+            if failure == "record-save":
+                raise OSError("rejected record save failed")
+            result = replace(src, dst)
+            cancel.set()
+            return result
+        return replace(src, dst)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", replace_record)
+        with pytest.raises((OSError, InferenceError)) as stopped:
+            run(
+                tmp_path, draft, {"responses": [missing, answer(digest)]}, cancel=cancel
+            )
+    if failure == "record-save":
+        assert isinstance(stopped.value, OSError)
+        assert "rejected record save failed" in str(stopped.value)
+    else:
+        assert isinstance(stopped.value, InferenceError)
+        assert stopped.value.code == "cancelled"
+    assert len((tmp_path / "request.json.jsonl").read_text().splitlines()) == 1
+    assert not list((workspace / "corrections/pdf").glob("*.json"))
+    if failure == "cancel":
+        records = [
+            json.loads(path.read_bytes())
+            for path in (workspace / "attempts/pdf-correction").glob("*.json")
+        ]
+        assert any(
+            record["validation_feedback"] and record["attempts"][0]["final"]
+            for record in records
+        )
+
+
+def test_correct_pdf_preserves_transport_attempts_without_cumulative_usage(
+    tmp_path, draft
+):
+    workspace, digest, _ = draft
+    missing = answer(digest)
+    missing["blocks"] = []
+    saved = {}
+
+    def before_send(*_):
+        for path, data in saved.items():
+            assert path.read_bytes() == data
+        for path in (workspace / "attempts/pdf-correction").glob("*.json"):
+            saved[path] = path.read_bytes()
+        # The third underlying send is the repair: both transport attempts are saved first.
+        history = tmp_path / "request.json.jsonl"
+        if history.exists() and len(history.read_text().splitlines()) == 2:
+            assert len(saved) == 1
+            assert len(json.loads(next(iter(saved.values())))["attempts"]) == 2
+
+    accepted = run(
+        tmp_path,
+        draft,
+        {"responses": [missing, answer(digest)], "retry": True},
+        before_send=before_send,
+    )
+    assert load_pdf_correction(workspace, accepted).blocks[0].text == "Outside text"
+    records = [
+        json.loads(path.read_bytes())
+        for path in (workspace / "attempts/pdf-correction").glob("*.json")
+    ]
+    assert sorted(len(record["attempts"]) for record in records) == [1, 2]
+    rejected = next(record for record in records if record["status"] == "rejected")
+    assert [attempt["wait_seconds"] for attempt in rejected["attempts"]] == [3, 0]
+    assert (
+        len(
+            {
+                attempt["request_id"]
+                for record in records
+                for attempt in record["attempts"]
+            }
+        )
+        == 3
+    )
+    assert all(
+        attempt["final"]["usage_status"] == "observed"
+        for record in records
+        for attempt in record["attempts"]
+    )
+    assert len((tmp_path / "request.json.jsonl").read_text().splitlines()) == 3
+
+
+def test_correct_pdf_does_not_add_coverage_retry_to_transport_failure(tmp_path, draft):
+    from doc_translate.inference import InferenceError
+
+    missing = answer(draft[1])
+    missing["blocks"] = []
+    with pytest.raises(InferenceError):
+        run(
+            tmp_path,
+            draft,
+            {
+                "responses": [missing, answer(draft[1])],
+                "terminal": {
+                    "stopReason": "error",
+                    "errorMessage": "artificial permanent failure",
+                },
+            },
+        )
+    assert len((tmp_path / "request.json.jsonl").read_text().splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "code",
+        "reason",
+        "empty",
+        "boolean",
+        "outside",
+        "duplicate",
+        "unsorted",
+        "extra-feedback",
+        "instruction",
+        "policy",
+        "legacy-repair",
+        "extra-context",
+    ],
+)
+def test_correct_pdf_only_reuses_exact_prescribed_coverage_repair(
+    tmp_path, draft, tamper
+):
+    workspace, digest, _ = draft
+    complete = answer(digest)
+    complete["owned_pages"] = [1, 2]
+    complete["exclusions"] = [
+        {
+            "text": "",
+            "reason": "visually confirmed blank",
+            "evidence": [evidence(2, None)],
+        }
+    ]
+    missing = answer(digest)
+    missing.update(owned_pages=[1, 2], blocks=[])
+    accepted = run(
+        tmp_path,
+        draft,
+        {"responses": [missing, complete]},
+        owned_pages=[1, 2],
+        reference_pages=[3],
+    )
+    chunk = load_pdf_correction(workspace, accepted)
+    path = workspace / chunk.run.artifact
+    record = json.loads(path.read_bytes())
+    context = record["request"]["context"]
+    feedback = context["correction_feedback"]
+    if tamper in ("code", "reason"):
+        feedback[tamper] = "untrusted replacement"
+    elif tamper in ("empty", "boolean", "outside", "duplicate", "unsorted"):
+        feedback["missing_pages"] = {
+            "empty": [],
+            "boolean": [True],
+            "outside": [3],
+            "duplicate": [1, 1],
+            "unsorted": [2, 1],
+        }[tamper]
+    elif tamper == "extra-feedback":
+        feedback["text"] = "previous untrusted answer"
+    elif tamper == "instruction":
+        context["coverage_correction"] += " altered"
+    elif tamper == "policy":
+        record["request"]["policy"] += " altered"
+    elif tamper == "legacy-repair":
+        del context["page_results"]
+    else:
+        context["extra"] = "altered"
+    path.rename(path.with_suffix(".original"))
+    changed = artifact(
+        workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
+    )
+    chunk_data = chunk.model_dump(mode="json")
+    chunk_data["run"] = changed
+    forged = artifact(
+        workspace, "corrections/pdf", "json", json.dumps(chunk_data).encode()
+    )
+    if tamper != "policy":  # load has no external policy; correct_pdf does.
+        with pytest.raises(ValueError, match="request"):
+            load_pdf_correction(workspace, forged["sha256"])
+    sent = []
+    current = run(
+        tmp_path,
+        draft,
+        complete,
+        before_send=lambda *_: sent.append(True),
+        owned_pages=[1, 2],
+        reference_pages=[3],
+    )
+    assert sent == [True]
+    assert load_pdf_correction(workspace, current).blocks[0].text == "Outside text"
