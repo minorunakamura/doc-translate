@@ -63,7 +63,9 @@ Rootの最新チェックは別core環境の`uv sync --locked --dev`と全pytest
 
 ## 正式チェック（順序を含む）
 
-必要なtoolは事前に導入します。以下の依存installだけはregistry接続を使います。model重み・認証・LLMは不要です。
+以下はfresh checkout／全件phaseの再現順序です。CIはcore全pytest、PDF4ファイル、全Node、品質、build／配布検査の現行契約を維持します。ローカルの変更ごとの正式実行範囲は次項で選び、必要なphase内の順序・失敗時停止は維持します。限定実行を理由にCIの対象を減らしません。
+
+必要なtoolは事前に導入します。以下の依存installだけはregistry接続を使います。model重み・認証・LLMは不要です。install／syncは毎編集の義務ではなく、環境不足・lock変更・同梱resourceの鮮度から必要性と許可を先に確認します。既存`.venv`を無断でcore／PDFに切り替えず、同期済みの別環境を使えます。
 
 ```sh
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
@@ -75,11 +77,12 @@ pnpm --dir ai exec oxlint --type-aware --type-check --deny-warnings .
 pnpm --dir ai exec vitest run
 uv run ruff check .
 uv run ruff format --check .
+uv run python -c 'import importlib.util; assert importlib.util.find_spec("docling") is None'
 uv run pytest
 uv run doc-translate --help
 ```
 
-Python packageは`ai/dist`を同梱するため、fresh checkoutでは`uv sync`より先にhelperの明示buildが必要です。既存editable環境で同梱resourceを更新する場合はbuild後に`uv sync --locked --dev --reinstall-package doc-translate`を使います。pytestのprocess契約もcompile済み公開`@doc-translate/ai/jsonl`を使います。Python側はbinary file行iterator、Node側は任意binary chunkのcodecです。警告をquiet／包括的disableで隠さず修正します。
+Python packageは`ai/dist`を同梱するため、fresh checkoutでは`uv sync`より先にhelperの明示buildが必要です。既存editable環境で同梱resourceの更新が必要なら、許可確認後にbuildと`uv sync --locked --dev --reinstall-package doc-translate`を行います（PDF環境は`--extra pdf`も保持）。pytestのprocess契約もcompile済み公開`@doc-translate/ai/jsonl`を使います。Python側はbinary file行iterator、Node側は任意binary chunkのcodecです。警告をquiet／包括的disableで隠さず修正します。
 
 `ai/tsconfig.build.json`の`skipLibCheck`はpi-ai 1.4.0配布declarationのJSON import属性欠落と、@google/genaiのoptional MCP SDK型参照不足に限定した互換性対応です。依存declaration自体の型検査は省きますが、自作sourceの型検査とoxlintのtype-aware／type-check／warning 0は維持します。実helperと両managerのclean installでruntime互換性を別途検査します。
 
@@ -92,19 +95,46 @@ uv run --locked --extra pdf python -c 'from docling.document_converter import Do
 uv run --locked --extra pdf pytest tests/test_pdf.py tests/test_run.py tests/test_review.py tests/test_pdf_candidate_acceptance.py
 ```
 
-共通テストはcore-onlyで全件実行し、CIのPDF extra付き検査はDocling依存のテストを含む上記4ファイルに限定しています。統合受入れでは正式Planに従って`uv run --locked --extra pdf pytest`で全件も確認します。PDF依存が必要なテストを別ファイルに追加する場合は、CIとこの手順の実行対象にも追加してください。
+共通テストの全件phaseはcore-onlyで実行し、CIのPDF extra付き検査はDocling依存のテストを含む上記4ファイルに限定しています。coreとPDFの重なりはoptional依存の有無を検査する異なる条件であり、単純な重複として除きません。統合受入れでPDF付き全pytestも要求する既存Approved Planは維持します。PDF依存が必要なテストを別ファイルに追加する場合は、CIとこの手順の実行対象にも追加してください。
 
 extraを保持するには`uv run --locked --extra pdf ...`（pytestは`uv run --locked --extra pdf pytest`を推奨）、またはsync済みの`.venv/bin/pytest`／`.venv/bin/ruff`／`.venv/bin/ty`を使い、`.venv/bin/pytest`を直接使う場合はvenvのactivateまたは`.venv/bin`のPATH追加が必要です。これは依存解決・importと人工fixture検証であり、それだけを実Docling変換、Apple Vision OCR、重みを使うlayout／table処理の成功と表示しません。
 
+### 変更影響から正式実行範囲を選ぶ
+
+Rootは毎回、次の順で選定します。test／doc／productionというファイル種別だけでは限定可否を決めません。局所production変更も、同じ根拠で影響を閉じて説明できれば限定できます。
+
+1. 要求・維持する保証と、変わる動作／前提を差分から特定します。公開CLI／API／保存物のどこで観測するかを決めます。
+2. 変更した定義の全callerとimportを検索し、関数内import、`pytest_plugins`、fixtureのscopeと全consumerまで辿ります。Python→実Node helper／JSONL→Pythonの接続、compile済みresource、`pyproject.toml`の`testpaths`、収集設定とCIの実行集合も確認します。単に同じdirectoryにあるか、module名にPDFを含むかでは判定しません。
+3. 影響が閉じるなら、変更ケースのfocused実行、影響module全体と必要なconsumer、品質チェック、保証に対応する実入口の直接確認をRoot自身が行います。新／変更fixtureは代表consumer単独のfresh processとmodule実行の両方で成立を確認します。収集node ID／parameter／skip理由で、限定した結果に対象漏れがないか照合します。
+4. shared fixture／helper、共通schema／hash／保存／lock、JSONL／helper接続、工程間の再利用／状態遷移、依存／lock／build／配布、収集／CI／検証規約の変更は広い影響を前提に、関連する全件phaseへ戻します。影響不明・consumerを列挙できない場合も同じです。狭くできる根拠がなければ省略しません。
+5. 選んだcommandと選択／除外理由、保証、環境／build鮮度、skip理由、期待／観測／未確認を既存の結果報告へ残します。自動selector、新runner、新しい台帳は作りません。
+
+Python変更時のRuff check／formatは上記の安価な全体コマンドを維持し、型検査は既存PDF extra環境で行います。Node変更時は既存Biome／type-aware oxlintを維持します。局所Node test本体なら関連Vitestを選べますが、shared helper／source／依存変更はVitest全件へ戻します。helper source変更時は明示buildとPython同梱resourceの鮮度確認も必要です。build／配布に影響するときは下のwheel検査も対象にし、必要なinstallの許可不足は未確認のまま成功とせずBLOCKEDとします。
+
+#### 現在の依存に基づく選定例
+
+以下は実行範囲を決める例であり、架空のproduction変更を実装する指示ではありません。既存PDF extra環境とbuild済みhelperを使い、実際の差分で依存を再検索します。
+
+- **閉じたEPUB test本体だけ**：例えば`test_revise.py`のpatch拒否case内だけなら、そのcaseと`pytest tests/test_revise.py`、品質と実CLI reviseの対応する受理／拒否を確認します。`malformed_source_seed`／workspaceはmodule-localで、malformed source拒否・patch拒否・QA target・移設checkがconsumerです。`pointer`等のexportやfixtureを変えていなければ、`pointer`をimportする`test_run.py`／`test_pdf_candidate_acceptance.py`をそれだけで再実行せず、PDF／全Nodeも非変更のため除外できます。reviewの局所test本体なら`pytest tests/test_review.py`を選びます。同moduleはPDF caseもあるので、EPUB変更という理由でPDFなしのskipだけを成功にしません。
+- **閉じたPDF test本体だけ**：table-cell／list-depth case内だけなら該当caseと`pytest tests/test_pdf_candidate_acceptance.py`、品質と実CLI reviseの受理／拒否を確認します。`pdf_evidence_seed`／workspaceはmodule-localで、この22件と移設checkだけがconsumerです。`pytest_plugins = ["test_run"]`、`test_revise.pointer`、`test_run.helper/run_args`等のimportは前提として必要ですが、import元が不変なら元moduleの全testを自動的に追加する必要はありません。非変更のcore全件／PDF4全体／全Nodeは除外できます。ただし同moduleの`start_pdf`は`test_review.py`内でもimportされるため、それを変えた場合は局所test本体の例には該当しません。
+- **局所seedと共有helperを区別**：`review_scope_seed`／workspaceは`test_review.py`内のscope拒否・empty／rejected answers・移設check専用です。一方で同moduleの`pytest_plugins`は`test_pdf`／`test_pdf_correction`／`test_run`を読み、`test_run.helper/run_args`もimportします。`test_run`自身も`test_pdf` pluginを読みます。`test_run.helper/run_args`には`test_revise`／`test_resume`／`test_cli_output`／`test_pdf_candidate_acceptance`等のconsumerもあり、共有helperやconverter fixtureの変更を「1ファイルだけ」として限定しません。module-local seed変更でも全consumerと移設／分離checkを含め、共有前提や保存不変条件へ影響したら全件へ戻します。
+- **共有保存／fixture・影響不明**：共通snapshot保存／hash／lockや上記共有fixture／helperの変更は、core全pytestとPDF4ファイルなど関連full phasesで確認します。Node接続へ及ぶなら全VitestとNode品質も含め、helper sourceならbuild／resource鮮度も確認します。収集／CI／検証規約の変更である今回（Issue #43）は、この限定方針で自身の全体確認を省略せず、Rootがcore全pytest、PDF4ファイル、全Vitest、既存品質／CLI help／PDF公開importを実行します。CIのbuild／配布契約は変更しません。
+
 ### 検証の分担・再実行・証拠
 
-上記の正式チェックの対象・条件・順序は変えません。各機能節のコマンドは境界ごとの再現入口であり、同じ担当が毎回すべてを重複実行するリストではありません。
+準備／翻訳／render／run／review／revise／resume各節のコマンドは境界ごとの再現入口です。全pytestやNode品質／testを併記した過去の例も、同じ担当への毎回の全コマンド実行義務ではありません。上の手順で必要な範囲を選び、既存Approved Planが追加で要求する検証は勝手に省略しません。
 
-- **Worker**：変更したconsumerの単独実行とmodule実行、関連公開seamのfocused regression、必要なlint／formatを実行し、保証・前提・除いた工程・残した実経路の対応を報告します。
-- **Root**：現在の差分を直接読み、自分で正式core-only全pytest／品質チェック／CLI help、PDF extraのty／公開import／上記4ファイルを実行します。既存環境・helper buildの鮮度を確認し、Node変更時は既存Node品質チェック、helper source変更時は明示buildも行います。pytestとは別に下記の人工run→公開load→コピー分離→不正revise拒否、render/status、訳文patchを直接照合します。Workerの成功で代替しません。
-- **Reviewer**：差分と今回の証拠から不足する具体的保証だけを追加検証します。実行主体の交代だけで全suiteを反復しません。修正後は影響した保証・正式チェック・直接確認を再実行し、shared fixture等の広い影響はfull suiteでも確認します。計測後に影響する差分が変われば再計測します。
+- **Worker**：変更consumerの代表単独とmodule実行、関連公開seamのfocused regression、必要な品質確認を担当し、保証・前提・除いた工程・残した実経路とcommand／exit／未確認を報告します。文書改訂では選定根拠・更新commandの関係確認とfocused検証を担当し、Rootと同じ全件一式を機械的に反復しません。
+- **Root**：現在差分を直接読み、選んだ正式チェックと実入口の直接確認を自ら実行します。既存環境／helper build鮮度を確認し、Workerの成功で代替しません。今回の最終受入れは上記全件一式に加え、pytestとは別に人工EPUB／PDFの実生成→元root退避→移設コピーの公開load／seed byte不変・非伝播、不正reviseのexit2／byte・request不変、正常採用／旧版保持、review範囲拒否／無送信と正常選択request／品質未承認を確認します。PDFの外部converter／page-backend fixtureと実Node／fauxを使い、全parameterを直接確認で重複再生する必要はありません。
+- **Reviewer**：差分と正式Plan、Rootの正式／直接結果、raw時間、選定根拠、未確認／cleanupから、不足する具体的保証だけを独立検証します。担当交代だけで同じ差分・条件の全suiteを反復しません。修正後はRootが影響した保証・正式チェック・直接確認を再実行し、共有部分なら関連full phasesへ戻します。計測へ影響する差分が変わればその部分も再計測します。
 
-前提再利用は同じ入力の実生成物をinvocation内で作り、全artifact／evidence／attempt／pointerを独立コピーした場合に限定します。公開loadで整合を確認し、seed／他ケースへの変更非伝播とseed byte不変を検査します。別入力へのhashの後付け、永続cache、hardlink、generate／validator／saveのmockは使いません。実準備→翻訳の対照、入力改変、取消、故障、再開の検査対象操作は実行します。Nodeの30秒grace／10.5秒以上のheartbeat、Pythonの実3／6秒retryは短縮しません。
+### 保証・境界を決めてからTDDを選ぶ
+
+要求／保証→公開境界→必要な整合前提→検査する最小経路の順で決めた後、対象ごとにTDD採否を判断します。今回のfixture Refactoring・収集漏れ修正・規約更新は非TDDで、既存テストと最小のcharacterization checkで等価性を確認します。機能／不具合修正も一律の種別指定でTDDへ送らず、採用する対象で既存TDD手順を使います。過去のTDD実装を理由に既存テストや歴史的Approved Planを削除せず、既存Planに明示されたTDDを解除する必要があれば再計画します。
+
+### 前提共有・比較・cleanup
+
+前提再利用は同じ入力・同じ整合条件の今回の実生成物をinvocation内で作り、全file（原本／draft／画像／artifact／evidence／attempt／履歴／pointer／run／render等）と初期request logを独立コピーした場合に限定します。既存のmodule-local seed／専用consumerを使い、session共通fixtureへ昇格しません。初期logのbyte一致、公開loadの整合、元root退避中の移設load、seed／他コピーへの変更非伝播とseed byte不変を検査します。別入力へのhashの後付け、永続cache、hardlink、generate／validator／saveのmockは使いません。実準備→翻訳の対照、入力改変、取消、故障、再開の検査対象操作は実行します。Nodeの30秒grace／10.5秒以上のheartbeat、Pythonの実3／6秒retryは短縮しません。
 
 直接例はrepository root、既存の開発環境とbuild済みhelperから開始します。依存の自動取得や既存環境の同期は行わず、必要なら正式手順と許可範囲を先に確認します。以下は新しい証拠directoryだけを作ります。
 
@@ -116,25 +146,32 @@ EVIDENCE=$(mktemp -d "$PWD/work/test-verification-XXXXXX")
 export EVIDENCE
 git rev-parse HEAD > "$EVIDENCE/revision.txt"
 git diff --stat > "$EVIDENCE/diff-scope.txt"
-git diff -- CONTRIBUTING.md tests/test_translation.py tests/test_revise.py > "$EVIDENCE/verification.diff"
+git diff -- CONTRIBUTING.md tests/test_revise.py tests/test_review.py tests/test_pdf_candidate_acceptance.py .github/workflows/ci.yml > "$EVIDENCE/verification.diff"
 { uname -sm; .venv/bin/python --version; node --version; pnpm --version; uv --version; } > "$EVIDENCE/tools.txt"
 ```
 
-`conditions.txt`へcore/PDF extra・依存同期の有無・Node build状態・PATH/offline条件・入力・cold/warm状態を記録します（raw環境変数やcredentialは記録しません）。各操作のcommand、exit、時刻／raw所要時間、期待／観測、未確認事項を証拠と対応付けます。過去Issueの成功は今回のrevisionの成功に上書きしません。JSON／assert成功も実LLM意味品質、実Docling/OCR、viewer、account利用権の保証ではなく、remote未実行は明記します。stderr保存はnetwork拒否付き人工fixtureに限り、実認証・秘密入りstderrは保存しません。
+`conditions.txt`へcore/PDF extra・依存／tool version・同期の有無・Node build状態・PATH/offline条件・signal handler・入力・cold/warm状態を記録します（raw環境変数やcredentialは記録しません）。各操作のcommand、exit、時刻／raw所要時間、期待／観測、未確認事項を証拠と対応付けます。過去Issueの成功は今回のrevisionの成功に上書きしません。JSON／assert成功も実LLM意味品質、実Docling/OCR、viewer、account利用権の保証ではなく、remote未実行は明記します。stderr保存はnetwork拒否付き人工fixtureに限り、実認証・秘密入りstderrは保存しません。
 
-性能比較は他のtest processと**非並行**、同じ環境／extra／入力／build／PATH/offlineで行います。候補は変更前後それぞれfresh pytest processを3回実行し、seed生成・追加checkも含めます。例えば各revisionで次を実行します（終了コードも保存し、失敗値を成功時間に混ぜません）。
+比較は他のtest processと**非並行・foreground**、同じ環境／extra／入力／build／PATH/offline／signal条件で行います。SIGINTはdefault handlerを確認し、background shell由来のignoreを持ち込みません。必要ならPython親processで`signal.signal(signal.SIGINT, signal.default_int_handler)`へ戻してからsubprocessを起動します。Planning値や別条件の過去の成功を新差分のbaselineへ流用しません。
+
+現在の[Approved Plan](docs/plans/verification-design-right-sizing.md)の代表49件は次の6関数のparameter集合です。同じPDF extra環境で変更前後各1回のfresh processを基本とし、seed生成・コピー・公開load／追加checkも含めます（下の49件選択自体には別の移設checkを含めません）。終了コードも保存し、失敗値を成功時間に混ぜません。
 
 ```sh
-for n in 1 2 3; do
-  if /usr/bin/time -p .venv/bin/pytest tests/test_translation.py tests/test_revise.py tests/test_render.py \
-      --durations=0 --durations-min=0 -q > "$EVIDENCE/candidate-$n.log" 2>&1; then code=0; else code=$?; fi
-  printf '%s\n' "$code" > "$EVIDENCE/candidate-$n.exit"
-  test "$code" -eq 0 || break
-done
-.venv/bin/pytest tests/test_translation.py tests/test_revise.py tests/test_render.py --collect-only -q > "$EVIDENCE/collection.log"
+python -c 'import signal; assert signal.getsignal(signal.SIGINT) == signal.default_int_handler'
+CASES='source_revision_validates_table_cell_evidence_against_original_scope or source_revision_validates_list_parent_depth_across_pages or review_invalid_scope_never_sends or review_empty_and_rejected_answers_keep_usage_without_quality_approval or translation_patch_rejects_invalid_inputs_without_changing_workspace or epub_source_validates_qa_targets_before_adoption'
+if /usr/bin/time -p .venv/bin/pytest tests/test_pdf_candidate_acceptance.py tests/test_review.py tests/test_revise.py \
+    -k "$CASES" -q --durations=0 --durations-min=0 > "$EVIDENCE/focused49.log" 2>&1; then code=0; else code=$?; fi
+printf '%s\n' "$code" > "$EVIDENCE/focused49.exit"
+test "$code" -eq 0
+.venv/bin/pytest tests/test_pdf_candidate_acceptance.py tests/test_review.py tests/test_revise.py \
+  -k "$CASES" --collect-only -q > "$EVIDENCE/collection.log"
 ```
 
-raw値・中央値・min/max・node別setup/call/teardown、collectionのnode ID／parametrize／skip理由を比較します。Issue #39では候補中央値がbeforeの90%以下、正式core/PDF/Node各phaseは同条件の前後各1回をまず比較します。after/beforeが1.05超または外乱で判断不能なphaseだけ双方追加2回の中央値で評価し、5%超悪化を受け入れません。正式チェックと同条件なら計測を兼用し、CI待ち時間やinstall/build時間と混ぜず、ローカル結果からCI短縮率を推定しません。
+core全件／PDF4ファイル／全Nodeも同条件の前後各1回を基本とし、正式チェックと一致すれば兼用します。ばらつき・外乱で判断不能な部分だけ双方を追加2回確認し、raw値と中央値・min/maxを報告します。node別setup/call/teardown、collectionのnode ID／parameter／skip理由も照合し、未実行phaseは0でなく理由を記録します。品質、install／build／配布、CI待ちはテスト時間と分け、ローカル結果からCI短縮率を推定しません。固定秒数・短縮率の合格閾値は置きません。
+
+同じ保証範囲の時間、49件の編集直後の確認、PDF3→4ファイルの48件追加による保証増分、無関係な全件再実行を除ける条件は分けて報告します。生成回数削減と時間短縮も同一視せず、短縮未確認を成功と表示しません。Issue #43の前後は#41／#42実装済みの文書改訂のみであり、その比較を過去のfixture軽量化効果にしません。
+
+**歴史的条件（Issue #39専用）**：当時は候補を前後3回計測して中央値beforeの90%以下を要求し、正式phaseは各1回、after/beforeが1.05超または外乱で判断不能なら双方追加2回、5%超悪化は不受理としました。これは過去の別契約であり、今後の一律3回／10%短縮ルールではありません。[過去Plan](docs/plans/test-verification-speedup.md)や実行記録は書き換えません。
 
 直接確認の証拠はworkspace外の`$EVIDENCE`へ残します。完了後、作ったprocessをwait／回収し、自分がこの例の`mktemp`で作った`WORKSPACE`／`RUN_FIXTURE`だけを削除します（人工credentialもその内側）。`work/`全体、他人のworkspace、既存venv／credential／modelは削除しません。証拠は削除せず、cleanup対象／結果と未確認範囲を記録し、`test -s "$EVIDENCE/revision.txt"`と各ログの再読込みで参照維持を確認します。障害復旧例末尾の一時directoryも、自分が今回作成したpathを確認してから同じ扱いにします。
 
@@ -289,7 +326,7 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 .venv/bin/pytest tests/test_preparation.py tests/test_units.py tests/test_inference.py tests/test_source_snapshot.py
 ```
 
-本節と次節のfocused pytestはWorkerの境界確認、全件はRootの正式チェックです。固定準備のコピーは前提作成だけに使い、実準備→実翻訳→公開load／無送信再利用の対照を維持します。
+本節と次節のfocused pytestは境界の再現入口です。Workerの回帰とRoot自身の正式／直接確認を区別し、Rootの範囲は上の変更影響の選定手順で決めます。固定準備のコピーは前提作成だけに使い、実準備→実翻訳→公開load／無送信再利用の対照を維持します。
 
 `tests/test_preparation.py`の自作PDF原文snapshotと実EPUB readerからの人工原文、`ai/tests/preparation-process.mjs`のnetwork拒否下の公開`fauxProvider`＋実`runHelper`を使います。内部`generate`／validator／保存helperをmockしません。保存故障注入はOSの`replace`境界だけです。faux processも通常のBiome／oxlint検査対象です。
 
@@ -630,7 +667,7 @@ login／refresh／TTL判定・認証変換はpi-ai 1.5.0の公開APIに任せま
 
 Pythonの`authenticate`はCLIから実helperへJSONLを送り、controlling TTYだけで非echo入力し、認証URL・device codeをterminalへ表示します。認証record／入力／URL・code／raw stderrやprovider例外をログへ残しません。SIGINT／SIGTERM／EOFで取消し、prompt取消・終了で入力queueをflushしてechoを復元します。進行中のstore callback／保存は取消から保護し`drain`、Pythonは強制kill前に30秒待ってchildを回収します。取消後の`storage_failed`も非秘密の保存エラーと再login案内を表示します。SIGKILL／disk障害時の保存・TTY復元は保証できません。
 
-承認済みの公開seamでTDDを行います。`ai/tests/credentials.test.ts`は実storeと公開`createModels/createProvider/getAuth`で同時refresh・失敗時のno fallback・保存維持を検査し、Nodeの実processでも排他・heartbeat・UUID・drainを確認します。`ai/tests/auth.test.ts`は公開provider／実helper境界、`tests/test_auth_cli.py`は公開CLI・実helper／外部fake・PTYで非echo、callbackによるprompt取消、SIGINT／SIGTERM／EOF、未送信secretの破棄、取消中の保存失敗とchild回収を検査します。実credentialを読み込まず、人工credentialとnetwork拒否で検証します。このoffline検査に実認証・実token refresh・推論・文書送信は含めません。個別承認後の実認証・小範囲送信は上記Issue #18の記録を参照し、新たな送信等には別途個別承認が必要です。
+認証の当時のApproved Planでは、承認済み公開seamでTDDを行いました。今後は上の「保証・境界を決めてからTDDを選ぶ」に従い、既存PlanのTDD指定は勝手に解除しません。既存の保証とテストは維持します。`ai/tests/credentials.test.ts`は実storeと公開`createModels/createProvider/getAuth`で同時refresh・失敗時のno fallback・保存維持を検査し、Nodeの実processでも排他・heartbeat・UUID・drainを確認します。`ai/tests/auth.test.ts`は公開provider／実helper境界、`tests/test_auth_cli.py`は公開CLI・実helper／外部fake・PTYで非echo、callbackによるprompt取消、SIGINT／SIGTERM／EOF、未送信secretの破棄、取消中の保存失敗とchild回収を検査します。実credentialを読み込まず、人工credentialとnetwork拒否で検証します。このoffline検査に実認証・実token refresh・推論・文書送信は含めません。個別承認後の実認証・小範囲送信は上記Issue #18の記録を参照し、新たな送信等には別途個別承認が必要です。
 
 ## 推論adapterの実装・検証境界
 
