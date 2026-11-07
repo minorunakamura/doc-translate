@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import shutil
 
 import pytest
 from test_epub import make_epub
@@ -10,18 +11,18 @@ from test_run import helper, run_args
 
 from doc_translate.cli import main
 from doc_translate.pdf import PDFPageImage
+from doc_translate.preparation import load_preparation
 from doc_translate.snapshot import load_source_snapshot
+from doc_translate.translation import load_translation
 
 pytest_plugins = ["test_pdf", "test_pdf_correction", "test_run"]
 
 
+REVIEW_EPUB_XHTML = b'<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Own</title></head><body><h1>UNSELECTED HEADING</h1><p id="chosen">SELECTED TEXT</p><p>SECRET OTHER UNIT</p></body></html>'
+
+
 def epub_workspace(tmp_path, capsys):
-    source = make_epub(
-        tmp_path,
-        extra={
-            "OPS/text/ch.xhtml": b'<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Own</title></head><body><h1>UNSELECTED HEADING</h1><p id="chosen">SELECTED TEXT</p><p>SECRET OTHER UNIT</p></body></html>'
-        },
-    )
+    source = make_epub(tmp_path, extra={"OPS/text/ch.xhtml": REVIEW_EPUB_XHTML})
     workspace = tmp_path / "new"
     main(run_args(source, workspace), process_command=helper(tmp_path))
     capsys.readouterr()
@@ -33,6 +34,71 @@ def requests(tmp_path):
         json.loads(line)
         for line in (tmp_path / "requests.jsonl").read_text().splitlines()
     ]
+
+
+@pytest.fixture(scope="module")
+def review_scope_seed(tmp_path_factory):
+    root = tmp_path_factory.mktemp("review-scope")
+    workspace = root / "new"
+    source = make_epub(root, extra={"OPS/text/ch.xhtml": REVIEW_EPUB_XHTML})
+    main(run_args(source, workspace), process_command=helper(root))
+    assert len(requests(root)) == 3
+    before = {p: p.read_bytes() for p in workspace.rglob("*") if p.is_file()}
+    initial_requests = (root / "requests.jsonl").read_bytes()
+    yield root
+    assert {p: p.read_bytes() for p in workspace.rglob("*") if p.is_file()} == before
+    assert (root / "requests.jsonl").read_bytes() == initial_requests
+
+
+@pytest.fixture
+def review_scope_workspace(tmp_path, review_scope_seed):
+    workspace = shutil.copytree(review_scope_seed / "new", tmp_path / "new")
+    shutil.copyfile(review_scope_seed / "requests.jsonl", tmp_path / "requests.jsonl")
+    assert (tmp_path / "requests.jsonl").read_bytes() == (
+        review_scope_seed / "requests.jsonl"
+    ).read_bytes()
+    assert {
+        p.relative_to(workspace): p.read_bytes()
+        for p in workspace.rglob("*")
+        if p.is_file()
+    } == {
+        p.relative_to(review_scope_seed / "new"): p.read_bytes()
+        for p in (review_scope_seed / "new").rglob("*")
+        if p.is_file()
+    }
+    load_source_snapshot(workspace)
+    load_preparation(workspace)
+    assert load_translation(workspace).processing.status == "completed"
+    return workspace
+
+
+def test_review_scope_workspace_is_relocatable_and_isolated(
+    tmp_path, review_scope_seed, review_scope_workspace
+):
+    workspace = review_scope_workspace
+    sibling = shutil.copytree(workspace, tmp_path / "sibling")
+    log = tmp_path / "requests.jsonl"
+    sibling_log = tmp_path / "sibling-requests.jsonl"
+    shutil.copyfile(log, sibling_log)
+    original_pointer = (sibling / "source-snapshot.json").read_bytes()
+    original_log = log.read_bytes()
+    held = review_scope_seed.with_name(review_scope_seed.name + "-held")
+    review_scope_seed.rename(held)
+    try:
+        for copy in (workspace, sibling):
+            load_source_snapshot(copy)
+            load_preparation(copy)
+            assert load_translation(copy).processing.status == "completed"
+        (workspace / "source-snapshot.json").write_bytes(b"changed copy")
+        log.write_bytes(b"changed request log")
+        helper(tmp_path, fail_stage="review")
+        assert (sibling / "source-snapshot.json").read_bytes() == original_pointer
+        assert (held / "new/source-snapshot.json").read_bytes() == original_pointer
+        assert sibling_log.read_bytes() == original_log
+        assert (held / "requests.jsonl").read_bytes() == original_log
+        assert json.loads((held / "faux.json").read_bytes()) == {}
+    finally:
+        held.rename(review_scope_seed)
 
 
 def test_review_units_saves_scoped_findings_without_changing_snapshots(
@@ -199,14 +265,19 @@ def test_review_pdf_pages_sends_only_selected_image_and_block_with_verified_posi
         (["--pages", "0-1"], "ascending positive"),
     ],
 )
-def test_review_invalid_scope_never_sends(tmp_path, capsys, arguments, expected):
-    workspace = epub_workspace(tmp_path, capsys)
+def test_review_invalid_scope_never_sends(
+    tmp_path, capsys, arguments, expected, review_scope_workspace
+):
+    workspace = review_scope_workspace
+    capsys.readouterr()
     count = len(requests(tmp_path))
+    initial_requests = (tmp_path / "requests.jsonl").read_bytes()
     with pytest.raises(SystemExit) as stopped:
         main(["review", str(workspace), *arguments], process_command=helper(tmp_path))
     assert stopped.value.code == 2
     assert expected in capsys.readouterr().err
     assert len(requests(tmp_path)) == count
+    assert (tmp_path / "requests.jsonl").read_bytes() == initial_requests
     assert not (workspace / "reviews").exists()
 
 
@@ -228,9 +299,11 @@ def test_review_invalid_scope_never_sends(tmp_path, capsys, arguments, expected)
     ],
 )
 def test_review_empty_and_rejected_answers_keep_usage_without_quality_approval(
-    tmp_path, capsys, findings, fail_stage, error
+    tmp_path, capsys, findings, fail_stage, error, review_scope_workspace
 ):
-    workspace = epub_workspace(tmp_path, capsys)
+    workspace = review_scope_workspace
+    capsys.readouterr()
+    count = len(requests(tmp_path))
     args = ["review", str(workspace), "--units", "unit-2"]
     command = helper(tmp_path, review_findings=findings, fail_stage=fail_stage)
     if error:
@@ -240,6 +313,7 @@ def test_review_empty_and_rejected_answers_keep_usage_without_quality_approval(
     else:
         main(args, process_command=command)
     result = json.loads(capsys.readouterr().out)
+    assert len(requests(tmp_path)) == count + 1
     assert result["content_review"]["meaning_quality_approved"] is False
     assert result["usage"]["attempts_by_stage"]["review"] == 1
     run = json.loads(

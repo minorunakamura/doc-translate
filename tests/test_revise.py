@@ -163,10 +163,51 @@ def malformed_source_workspace(tmp_path, malformed_source_seed):
     shutil.copyfile(
         malformed_source_seed / "requests.jsonl", tmp_path / "requests.jsonl"
     )
+    assert (tmp_path / "requests.jsonl").read_bytes() == (
+        malformed_source_seed / "requests.jsonl"
+    ).read_bytes()
+    assert {
+        p.relative_to(workspace): p.read_bytes()
+        for p in workspace.rglob("*")
+        if p.is_file()
+    } == {
+        p.relative_to(malformed_source_seed / "run"): p.read_bytes()
+        for p in (malformed_source_seed / "run").rglob("*")
+        if p.is_file()
+    }
     load_source_snapshot(workspace)
     load_preparation(workspace)
     assert load_translation(workspace).processing.status == "completed"
     return workspace
+
+
+def test_malformed_source_workspace_is_relocatable_and_isolated(
+    tmp_path, malformed_source_seed, malformed_source_workspace
+):
+    workspace = malformed_source_workspace
+    sibling = shutil.copytree(workspace, tmp_path / "sibling")
+    log = tmp_path / "requests.jsonl"
+    sibling_log = tmp_path / "sibling-requests.jsonl"
+    shutil.copyfile(log, sibling_log)
+    original_pointer = (sibling / "source-snapshot.json").read_bytes()
+    original_log = log.read_bytes()
+    held = malformed_source_seed.with_name(malformed_source_seed.name + "-held")
+    malformed_source_seed.rename(held)
+    try:
+        for copy in (workspace, sibling):
+            load_source_snapshot(copy)
+            load_preparation(copy)
+            assert load_translation(copy).processing.status == "completed"
+        (workspace / "source-snapshot.json").write_bytes(b"changed copy")
+        log.write_bytes(b"changed request log")
+        helper(tmp_path, fail_stage="review")
+        assert (sibling / "source-snapshot.json").read_bytes() == original_pointer
+        assert (held / "run/source-snapshot.json").read_bytes() == original_pointer
+        assert sibling_log.read_bytes() == original_log
+        assert (held / "requests.jsonl").read_bytes() == original_log
+        assert json.loads((held / "faux.json").read_bytes()) == {}
+    finally:
+        held.rename(malformed_source_seed)
 
 
 @pytest.mark.parametrize(
@@ -233,11 +274,11 @@ def test_source_replacement_rejects_malformed_whole_snapshot_before_adoption(
     "damage", ["stale", "unknown", "duplicate", "marker", "empty", "schema", "reason"]
 )
 def test_translation_patch_rejects_invalid_inputs_without_changing_workspace(
-    tmp_path, capsys, damage
+    tmp_path, capsys, damage, malformed_source_workspace
 ):
-    workspace = tmp_path / "run"
-    main(run_args(make_epub(tmp_path), workspace), process_command=helper(tmp_path))
+    workspace = malformed_source_workspace
     capsys.readouterr()
+    initial_requests = (tmp_path / "requests.jsonl").read_bytes()
     item = load_translation(workspace).translations[0].model_dump(mode="json")
     data = {
         "schema_version": 1,
@@ -274,6 +315,7 @@ def test_translation_patch_rejects_invalid_inputs_without_changing_workspace(
     assert rejected.value.code == 2
     assert all(p.read_bytes() == value for p, value in before.items())
     assert len(requests(tmp_path)) == 3
+    assert (tmp_path / "requests.jsonl").read_bytes() == initial_requests
 
 
 def test_policy_file_updates_fixed_inputs_and_qa_without_acquisition(tmp_path, capsys):
@@ -583,13 +625,13 @@ def test_epub_source_validates_only_dereferenced_original_nodes(
 @pytest.mark.parametrize("record_type", ["checks", "uncertainties", "content_reviews"])
 @pytest.mark.parametrize("target", ["unknown", "epub-1", "unit-1"])
 def test_epub_source_validates_qa_targets_before_adoption(
-    tmp_path, capsys, monkeypatch, record_type, target
+    tmp_path, capsys, monkeypatch, record_type, target, malformed_source_workspace
 ):
     from doc_translate.snapshot import load_source_snapshot
 
-    workspace = tmp_path / "run"
-    main(run_args(make_epub(tmp_path), workspace), process_command=helper(tmp_path))
+    workspace = malformed_source_workspace
     capsys.readouterr()
+    initial_requests = (tmp_path / "requests.jsonl").read_bytes()
     source = load_source_snapshot(workspace).model_dump(mode="json")
     records = {
         "checks": {"name": "Human check", "passed": True, "details": "Compared"},
@@ -629,6 +671,7 @@ def test_epub_source_validates_qa_targets_before_adoption(
         assert load_source_snapshot(workspace).model_dump(mode="json")[record_type][-1][
             "target_ids"
         ] == [target]
+    assert (tmp_path / "requests.jsonl").read_bytes() == initial_requests
 
 
 @pytest.mark.parametrize(
