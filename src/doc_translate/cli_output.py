@@ -2,6 +2,7 @@
 
 import shlex
 import unicodedata
+from datetime import UTC
 from pathlib import Path
 
 
@@ -214,4 +215,137 @@ def summary_text(operation: str, result: dict, workspace: Path) -> str:
         command = shlex.join(["doc-translate", "render", str(workspace)])
     if command:
         sections.append(_table([["次の操作", command]]))
+    return "\n\n".join(sections)
+
+
+def saved_status_text(result: dict, workspace: Path) -> str:
+    """Describe saved versions without claiming output validity or process liveness."""
+    from datetime import datetime
+
+    rows = [
+        ["Workspace", str(workspace)],
+        ["確認範囲", "保存記録のみ（成果物未検証）"],
+        ["形式", result["format"].upper()],
+    ]
+    run = result["run"]
+    if run:
+        rows.append(["保存入力名", run["source_name"]])
+        if result["format"] == "pdf":
+            rows.extend(
+                [
+                    [
+                        "保存run 所有範囲",
+                        _pages(run["owned_pages"])
+                        if run["owned_pages"] is not None
+                        else "全ページ（総数不明）",
+                    ],
+                    ["保存run 参照専用", _pages(run["reference_pages"])],
+                    ["保存run 補正成功", _pages(run["corrected_pages"])],
+                    ["保存run 補正失敗", _pages(run["failed_pages"])],
+                    ["保存run 補正未処理", _pages(run["not_processed_pages"])],
+                ]
+            )
+        if run["error"]:
+            rows.append(["保存run エラー記録", run["error"]])
+        if run["error_code"]:
+            rows.append(["保存run エラーコード", run["error_code"]])
+    translation = result["translation"]
+    if translation is None:
+        rows.append(
+            ["翻訳unit 総数・成功・失敗・未処理", "不明／未集計（訳文snapshotなし）"]
+        )
+    else:
+        rows.extend(
+            [
+                ["集計対象の保存訳文版", translation["sha256"]],
+                ["訳文の参照source版", translation["source_snapshot_sha256"]],
+                ["訳文の参照preparation版", translation["preparation_sha256"]],
+            ]
+        )
+        for key, label in (
+            ("total", "総数"),
+            ("succeeded", "成功"),
+            ("failed", "失敗（取消を除く）"),
+            ("not_processed", "未処理"),
+            ("cancelled", "取消"),
+        ):
+            rows.append(["保存訳文 " + label, f"{translation[key]} unit"])
+        for key, label in (
+            ("source_matches_pointer", "source採用pointerとの記録上の対応"),
+            ("preparation_matches_pointer", "preparation採用pointerとの記録上の対応"),
+        ):
+            rows.append(
+                [
+                    label,
+                    "同じ版"
+                    if translation[key]
+                    else "差異あり／採用pointerなし（詳細確認が必要）",
+                ]
+            )
+        if translation["run_settings_match"] is not None:
+            for key, matches in translation["run_settings_match"].items():
+                rows.append(
+                    [
+                        "保存訳文とrun設定 " + key,
+                        "同じ設定" if matches else "差異あり（詳細確認が必要）",
+                    ]
+                )
+    for name, digest in result["pointers"].items():
+        rows.append(["記録pointer " + name, digest])
+    for name, mtime in result["record_mtimes"].items():
+        rows.append(
+            [
+                "記録file更新時刻 " + name,
+                datetime.fromtimestamp(mtime, UTC).isoformat(),
+            ]
+        )
+    sections = [_table(rows)]
+    saved_render = result["render"]
+    if saved_render:
+        sections.append(
+            _table(
+                [
+                    [
+                        "過去renderの保存当時の結果",
+                        saved_render["processing"]["status"],
+                    ],
+                    ["過去render source版", saved_render["source_snapshot_sha256"]],
+                    [
+                        "過去render translation版",
+                        saved_render["translation_snapshot_sha256"] or "訳文なし",
+                    ],
+                    ["過去render 要確認", f"{saved_render['uncertainty_count']}件"],
+                ]
+            )
+        )
+        sections.append(
+            "保存記録上のpath（成果物未検証）\n"
+            + _table(
+                [
+                    [name, str(workspace / path)]
+                    for name, path in saved_render["artifacts"].items()
+                ]
+            )
+        )
+    if result["candidate"]:
+        sections.append(
+            "原文候補の記録あり（採用済み原文とは別です）。詳細検査で比較してください。"
+        )
+    sections.append(
+        "読まない成果物・原本・attempt・QA・内容品質は未検証です。新規／再利用数は未集計です。\n取消記録は実送信の有無を証明しません。記録更新時刻は最後の処理成功時刻ではなく、現在の生存状態も示しません。\n前後のpointer一致はtransaction整合性の保証ではありません。準備版の差だけで訳文の無効・再利用不可とは断定しません。"
+    )
+    sections.append(
+        _table(
+            [
+                [
+                    "詳細検査:",
+                    shlex.join(["doc-translate", "status", str(workspace), "--verify"]),
+                ],
+                [
+                    "完全JSON:",
+                    shlex.join(["doc-translate", "status", str(workspace), "--json"]),
+                ],
+            ]
+        )
+    )
     return "\n\n".join(sections)

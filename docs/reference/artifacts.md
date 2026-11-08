@@ -30,7 +30,7 @@ LLM回答は`ReviewAnswer`のみで、元位置・確認者・承認状態を自
 
 workspace writer lock下でattemptを先に、reviewを後にhash付きatomic保存します。保存失敗でも旧review／旧snapshot／採用参照／旧renderを保持し、既存source-snapshot／translation-snapshot／preparation／run参照を変えません。途中fileは履歴へ採用せず、再実行は新規独立推論です。失敗までに観測したusageは既存usage集計が段階別に保持し、応答損失や強制終了時のexactly-once課金は保証しません。
 
-CLIのstdoutは保存-only statusに`review: {status: validated|rejected, error, run, sha256?, artifact?}`を加えます。exitは0＝記録成功（findingsありも含む）、1＝推論／保存失敗、2＝入力・範囲・設定エラーです。review自体は出力を自動再生成しません。statusは現行hashの確認／未確認範囲を即時表示し、renderの鮮度判定は`content_review`も比較します。後のoffline renderは現行findingsを`stage:review`の位置／block／unit／output anchor付きQAと表示用`※`へ反映します。旧版reviewは履歴だけに残し、現行の確認範囲・目印には流用しません。機械検査成功・空findings・modelの自己申告のいずれも意味品質承認にせず、`meaning_quality_approved=false`を維持します。
+CLIのstdoutは保存-only statusに`review: {status: validated|rejected, error, run, sha256?, artifact?}`を加えます。exitは0＝記録成功（findingsありも含む）、1＝推論／保存失敗、2＝入力・範囲・設定エラーです。review自体は出力を自動再生成しません。詳細statusは現行hashの確認／未確認範囲を即時表示し、renderの鮮度判定は`content_review`も比較します。後のoffline renderは現行findingsを`stage:review`の位置／block／unit／output anchor付きQAと表示用`※`へ反映します。旧版reviewは履歴だけに残し、現行の確認範囲・目印には流用しません。機械検査成功・空findings・modelの自己申告のいずれも意味品質承認にせず、`meaning_quality_approved=false`を維持します。
 
 ## 新規run（Issue #14）
 
@@ -58,7 +58,7 @@ CLIの送信前表示は新しいpreflightを重ねず、既存推論の**prefli
 - 補正・準備・翻訳の失敗／部分出力はexit1。sourceがあるなら原文と受理済み訳文を保持して既存renderを試み、summaryの`processing.status=partial`、未処理／失敗unitと`scope.run`の意図したPDF範囲を表示します。
 - 入力／設定エラーはexit2。既存推論の`invalid_request/unknown_provider/unknown_model/unsupported_thinking/unsupported_image/invalid_image`はこの分類です。chunk縮小後の`length/input_limit`は処理上限失敗としてexit1です。設定不足や既存workspaceもexit2。hash／schema／認証の失敗を成功にしません。
 - sourceを1件も採用できなければMarkdownは作らず、partial summaryの`artifacts.original/run`と取得できた`pdf_draft`を返します。attemptは既存pathに残ります。
-- 新規runのrender/statusは文書hashと対応するmanifestを`scope.run`へ表示します。source未取得のrunもstatusで原本hashと保存pathを検査できます。status検査成功自体は内容失敗でもexit0。保存済みsourceを持つ旧workspaceの契約とNode不要は維持します。
+- 新規runのrender/statusは文書hashと対応するmanifestを`scope.run`へ表示します。source未取得のrunも詳細statusで原本hashと保存pathを検査できます（通常statusは記録上のpath・hashのみ）。status検査成功自体は内容失敗でもexit0。保存済みsourceを持つ旧workspaceの契約とNode不要は維持します。
 
 利用手順・オプションは[CLI詳細リファレンス](usage.md#文書を翻訳する通常利用)、offlineの実CLI直接確認は[開発ガイド](../../CONTRIBUTING.md#新規runの検証境界)を参照してください。
 
@@ -115,7 +115,7 @@ WORKSPACE/
 
 `source_adoption`は`status: pending`と`candidate_sha256/H/B/C/old_inputs/new_inputs/page_changes/envelope/next_operation/stale`を表示します。H/B/Cは`sha256/path`、`page_changes`は`added/removed/reassembled/note`で、成功所有ページ集合の差と共通部分を示す概要です。意味差分やblock対応表ではなく、全snapshot・原本位置・不変chunkを照合します。`envelope`と各pathはworkspace相対、CLI引数はcurrent directory基準です。`next_operation`は絶対path付き`revise … --reason TEXT && … resume …`で、TEXTを実際の理由に置換します。
 
-採用待ちは全体`processing.status=partial`、resume／render exit1、検査成功のstatus exit0、入力不正exit2です。status／renderはHだけを使います。`scope.adopted_source`は採用sourceの`machine_inputs`（ない場合null）、`scope.run`は現在のRunManifestであり、新候補の補正成功を採用・翻訳完了にしません。`adopted_output_current`は保存出力のsource／translation hash一致と訳文非staleを表し、`render_current`は候補状態・scope・usage・処理状態を含むsummaryの鮮度です。内容品質の判定とは別です。
+採用待ちは全体`processing.status=partial`、resume／render exit1、検査成功のstatus exit0、入力不正exit2です。status／renderはHだけを使います。`scope.adopted_source`は採用sourceの`machine_inputs`（ない場合null）、`scope.run`は現在のRunManifestであり、新候補の補正成功を採用・翻訳完了にしません。詳細statusの`adopted_output_current`は保存出力のsource／translation hash一致と訳文非staleを表し、`render_current`は候補状態・scope・usage・処理状態を含むsummaryの鮮度です。内容品質の判定とは別です。
 
 通常reviseでHを再修正すると旧雛形はstaleになり、resumeが保存済みCを現在Hへ結び直して再公開します。補正実入力変更／partial候補の回復で新版ができた場合も旧候補は残したまま古い採用を拒否します。採用待ち中は準備・翻訳requestを送らず、同じ入力の再確認では成功済み補正を再送しません。採用後のresumeで準備・unit・訳文・QA／出力を更新し、旧訳／手修正訳は**実request全体一致**の場合だけ再利用します。codeだけの変更で本文requestが同じなら本文を再送せず、不一致や曖昧な分割／統合は必要範囲を再翻訳します。
 
@@ -361,7 +361,7 @@ attempt→検証済みchunk artifact→snapshot→採用参照の順でfsync／a
 
 ## 安全Markdown・対応表・QA・render/status（Issue #13）
 
-公開APIは`doc_translate.render.render_document(workspace: Path) -> dict`と`workspace_status(workspace: Path) -> dict`です。CLIは`doc-translate render DIR`／`status DIR --json`で同じsummary JSONをstdoutへ返します。`status DIR`の既定は人向けの要約です。`providers`／`models`／`run`も既定は表または要約、`--json`で従来と同じ完全なJSONを出力します。保存artifact・Python API・終了コード・送信前通知は変わりません。原文を既存loadで検証し、訳文があれば`load_translation`経由で元準備版・実入力・全unit／保護markerを再検査します。現在のsource hashと訳文の出典が違う場合は`stale_translation: true`とし、旧訳は使わず原文を残した部分出力にします。取得・LLM・認証・Node・PDF native依存は呼びません。
+公開APIは`doc_translate.render.render_document(workspace: Path) -> dict`、詳細検査の`workspace_status(workspace: Path) -> dict`、軽量な`read_saved_status(workspace: Path) -> dict`です。CLIは`doc-translate render DIR`／`status DIR --json`で同じsummary JSONをstdoutへ返します。`status DIR`の既定は後述の保存記録readerによる人向け表示、`status DIR --verify`は`workspace_status`の人向け要約です。`providers`／`models`／`run`も既定は表または要約、`--json`で従来と同じ完全なJSONを出力します。保存artifact・Python API・終了コード・送信前通知は変わりません。renderと詳細検査は原文を既存loadで検証し、訳文があれば`load_translation`経由で元準備版・実入力・全unit／保護markerを再検査します。現在のsource hashと訳文の出典が違う場合は`stale_translation: true`とし、旧訳は使わず原文を残した部分出力にします。取得・LLM・認証・Node・PDF native依存は呼びません。
 
 ```text
 WORKSPACE/
@@ -376,7 +376,21 @@ WORKSPACE/
     summary.json
 ```
 
-renderは既存の非再入workspace lockと`_atomic_write`を使い、全出力を確定してから参照を切り替えます。旧版・未採用の途中出力は削除しません。保存例外は伝播し、旧参照を維持します。resume／復旧engineは追加しません。statusは書込みせず、出力参照のschema・workspace内path・全file hashと現在入力／保存attempt集合を比較します。`render_current`と、必要時の`previous_artifacts`で旧出力を区別します。
+renderは既存の非再入workspace lockと`_atomic_write`を使い、全出力を確定してから参照を切り替えます。旧版・未採用の途中出力は削除しません。保存例外は伝播し、旧参照を維持します。resume／復旧engineは追加しません。詳細statusは書込みせず、出力参照のschema・workspace内path・全file hashと現在入力／保存attempt集合を比較します。`render_current`と、必要時の`previous_artifacts`で旧出力を区別します。
+
+### 保存記録reader（Issue #49）
+
+`read_saved_status`はrun／採用pointer集合と必要なimmutable JSONの小さいprojectionを読み、`format/run/pointers/translation/render/candidate/record_mtimes`を返します。`translation`がnullならunit総数・成功数等は不明で、0ではありません。訳文があれば保存chunkのleaf unit／answer／errorから`total/succeeded/failed/not_processed/cancelled`を集計し、保存訳文hashとsource／preparation参照へ帰属させます。取消は実送信失敗や未送信の証明ではありません。保存snapshot自体の`processing.status: failed`契約は変更しません。
+
+読取り対象はrun.json、source／preparation／translation／PDF draftの採用pointer、render／candidate pointer、訳文snapshot、保存render summary、candidate envelope、runがない場合の形式確認sourceです。runと訳文がある場合は訳文参照preparationのpolicy／evidence hashとevidenceのuser_termsも読み、run.translation／policy／user_termsとの差を比較します。schema／必要field型・digest・workspace内path（symlinkを含む）・実際に読む参照先byte hashを検査します。完全なsource／preparation／translation domain検証の代替ではありません。差異は詳細確認が必要な記録上の差であり、準備hash差だけで翻訳無効と判定しません。
+
+Markdown／対応表／QAを再構成せず、unit生成、`load_translation`／`load_preparation`の完全検証、attempt／review履歴／correction／成果物全走査、原本decodeを行いません。新規／再利用数は未集計です。返すrender projectionは保存当時の処理状態・要確認件数・pathであり、現在の成果物は未検証です。`record_mtimes`は記録fileのmtimeで、最後の処理成功時刻でも生存証明でもありません。候補は採用sourceとは別記録として詳細検査へ案内します。
+
+runとpointerを前後比較し、変化時は一度だけ再読、なお変化すれば`RuntimeError`（CLI exit1）です。読取り成功はpartialでもexit0、壊れた必要記録は`ValueError`／`FileNotFoundError`（CLI exit2）です。前後一致はtransaction整合保証ではありません。書込み／reader lock／自動採用／再送はありません。詳細`workspace_status`とrun／resume／review／reviseの再利用前検証は軽量化せず、詳細検査中のpointer変化も`RuntimeError`で不成立にします。
+
+共有render分類では`chunk.error == "not_processed"`を`failed`から除き`not_processed`へ含めます。既存保存schemaは変えず、詳細JSONの従来の誤分類だけを修正します。読まない成果物の破損検出・厳密再利用判定・QA等が必要なら`workspace_status`／`status --verify`／`status --json`を使ってください。
+
+### 詳細検査・renderの出力
 
 - **source-map**: `blocks`はblock ID／kind／元locations／出力anchor（図内部等で独立出力しないblockはnull）。`units`は実際の翻訳入力unit全fieldと出力anchor。split時も親unit・元marker文字範囲を保持し、順に組み立てます。EPUBのanchorはsnapshot-bound node位置に対応し、文字精度を主張しません。
 - **QA**: sourceの機械検査、保存入力検証、両言語の実unit到達・anchor一意性／内部参照／local assets検査を分けます。`uncertainties`は元recordに`block_ids/unit_ids/output_anchors`を追加し、render由来の安全fallback／未訳も記録します。目印は表示だけの`※`で、code／formula内部に入れません。EPUBのblock対象uncertaintyに具体的なnode位置がある場合は、resource_pathとnode_snapshotが一致する位置の祖先／子孫unitだけに対応付けます。node pathは区切り単位で比較し、`/1/2/1`を`/1/2/10`へ広げません。head内のCSS参照など、本文unitと重ならない警告も元のtarget_ids・locationsと出力anchorをQAへ保持し、本文全体への目印には変換しません。node位置がrootまたは指定なしの章全体警告、明示的なunit／cell対象、PDFの対象対応は維持します。別node_snapshotの位置から現在のunitへは目印を伝播しません。

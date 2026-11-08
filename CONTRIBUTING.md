@@ -457,6 +457,14 @@ PY
 
 日本語側に原文＋`※`、英語側に原文、4-backtickのcode fence、数式、code原本欠損のQAが残ります。source mapから元ページ2へ戻れますが、PDF全文とは表示しません。訳文／分割／失敗usageを含む検証は`tests/test_render.py`の既存prepare/translate公開API＋faux fixtureを参照してください。実LLM・実credential・model取得・書籍・viewer・remote CIは使いません。
 
+### 軽量statusと詳細検査（Issue #49）
+
+通常`status DIR`は保存記録のみで成果物未検証です。`--verify`は詳細検査の人向け表示、`--json`／`--verify --json`は従来の詳細完全JSONです。上の`render-status.json`照合は詳細検査として維持します。軽量readerと共有`not_processed`分類の公開seamは`tests/test_render.py`、CLI／formatterは`tests/test_cli_output.py`です。内部workspace_status callerはrun／resume／review／reviseであり、再利用前の検証は軽量化しません。
+
+新しい直接操作・必要破損拒否・保存不変・証拠退避／cleanupの再実行手順は[project検証Skill](.pi/skills/verify-project/SKILL.md)と[Feature Map](.pi/skills/verify-project/references/feature-map.md)へ置きます。repositoryでPiのproject trustを確認し、新セッションまたは`/reload`後に`/skill:verify-project status`で呼ぶか、実ファイルを明示readします。Skillの成立は正式チェックやRootの受入れを代用しません。
+
+共有renderと詳細consumerの変更なので、Workerはtest_render／test_cli_outputと関連consumerのfocused回帰、Rootはcore全pytest・PDF4ファイル・Ruff全体・PDF環境ty・CLI helpを実行します。Node source／依存／lockが不変なら全Node／build／wheelを本Issueのためだけに追加しません。性能は正式PlanのPDF／EPUB人工100／3,000 unit再作成条件でbefore／afterを別途非並行計測し、任意規模・実書籍・同等完全検証の高速化とは主張しません。
+
 ## 新規runの検証境界
 
 Issue #14のseamは公開`cli.main(argv, process_command=...)`→workspace／Markdown／statusです。新しいworkflowは既存の取得・補正・準備・翻訳・render APIをつなぐだけで、内部generate／workflowはmockしません。`tests/test_run.py`は実EPUB ZIPと、`tests/test_pdf.py`のDocling公開converter／page backend・人工local model fixtureを使います。`ai/tests/run-process.mjs`は実`runHelper`と公開faux providerを接続し、network transportを拒否、credential directoryは一時pathのみです。helper sourceを変えないのでbuildは不要です。

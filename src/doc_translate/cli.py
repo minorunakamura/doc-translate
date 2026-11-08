@@ -8,10 +8,10 @@ from pathlib import Path
 
 from doc_translate import ai_runtime
 from doc_translate.auth import authenticate
-from doc_translate.cli_output import catalog_text, summary_text
+from doc_translate.cli_output import catalog_text, saved_status_text, summary_text
 from doc_translate.inference import Selection, resolve_config
 from doc_translate.preparation import Glossary, StylePolicy
-from doc_translate.render import render_document, workspace_status
+from doc_translate.render import read_saved_status, render_document, workspace_status
 from doc_translate.run import (
     CONFIG_ERROR_CODES,
     resume_document,
@@ -135,15 +135,20 @@ def main(
             operation,
             help="Regenerate outputs from saved snapshots only."
             if operation == "render"
-            else "Inspect saved processing, QA, scope, usage and output paths.",
-            description="No acquisition, correction, preparation, translation, Node, authentication or network access. Uses only adopted source H, never pending candidate C. Reports source_adoption with H/B/C paths, inputs, envelope and next_operation. Render exits 1 for partial output or pending adoption; status exits 0 when inspection succeeds. Input/configuration errors exit 2.",
+            else "Read saved progress records; use --verify for full inspection.",
+            description="No acquisition, correction, preparation, translation, Node, authentication or network access. Uses only adopted source H, never pending candidate C. Render exits 1 for partial output or pending adoption; status exits 0 when reading succeeds. Status reads saved records only by default; artifacts and liveness are unverified. --verify or --json performs full inspection, including source_adoption H/B/C paths, inputs, envelope and next_operation. No automatic adoption. Update conflicts exit 1; input/hash errors exit 2.",
         )
         command.add_argument("workspace", type=Path)
         if operation == "status":
             command.add_argument(
                 "--json",
                 action="store_true",
-                help="Output full summary JSON instead of readable text.",
+                help="Perform full verification and output the existing complete summary JSON.",
+            )
+            command.add_argument(
+                "--verify",
+                action="store_true",
+                help="Perform full saved-input and output verification with readable results.",
             )
     revise = commands.add_parser(
         "revise",
@@ -321,6 +326,8 @@ def main(
                 render_document(args.workspace)
                 if args.operation == "render"
                 else workspace_status(args.workspace)
+                if args.json or args.verify
+                else read_saved_status(args.workspace)
             )
         elif args.operation == "setup-ai":
             result = ai_runtime.setup(args.package_manager)
@@ -347,6 +354,8 @@ def main(
         parser.exit(1, f"doc-translate: {error}\n")
     if args.operation in {"providers", "models"} and not args.json:
         print(catalog_text(args.operation, result))
+    elif args.operation == "status" and not args.json and not args.verify:
+        print(saved_status_text(result, args.workspace))
     elif args.operation in {"run", "status"} and not args.json:
         print(summary_text(args.operation, result, args.workspace))
     else:

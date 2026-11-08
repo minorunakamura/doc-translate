@@ -132,12 +132,16 @@ doc-translate run book.pdf --workspace work/pdf-book \
 出力の`※`は確認が必要な箇所の目印です。詳しい理由はQAファイルで確認できます。**出力完了は、翻訳が正しいという保証ではありません。**
 
 ```sh
-# 現在の処理状況と出力先を見る（AIへの通信なし）
+# 保存記録の進捗と記録上の出力先を見る（成果物未検証・AI通信なし）
 doc-translate status work/book
+# 保存入力・成果物を詳しく検査する（AI通信なし）
+doc-translate status work/book --verify
 
 # 中断・失敗した処理の続きから再開する
 doc-translate resume work/book
 ```
+
+通常statusと詳細検査・完全JSONの違いは[CLIリファレンス](docs/reference/usage.md#保存済み正本の再出力状態確認)を参照してください。
 
 PDFの例で作った作業フォルダは`work/pdf-book`なので、上のパスを置き換えてください。
 `resume`は保存した設定を使って必要な箇所だけを処理します。ただし、送信後に応答を保存できなかった場合などは、再送によって重複課金される可能性があります。

@@ -26,7 +26,7 @@ Pythonのcore導入にDoclingやOCR modelは不要です。EPUBのrunはcoreだ�
 
 ## CLIの表示とJSON出力
 
-`providers`／`models`は表、`run`／`status`は処理結果・対象範囲・要確認件数・成果物path・必要な次の操作を読みやすいテキストで表示します。色や追加の表示用依存は不要です。`status`では出力全体の鮮度、採用原文・訳文との対応、訳文の入力対応を区別します。部分失敗・原文候補の採用待ち・古い訳文は完了扱いにしません。
+`providers`／`models`は表、`run`は処理結果の要約、通常の`status`は保存記録のみの軽量な人向け表示です。色や追加の表示用依存は不要です。`status --verify`は従来の詳細検査を人向けに表示し、出力全体の鮮度、採用原文・訳文との対応、訳文の入力対応を区別します。部分失敗・原文候補の採用待ち・古い訳文は完了扱いにしません。
 
 この4コマンドは`--json`で従来と同じ完全なJSONをstdoutへ出力します。**既存のJSON解析・pipe利用には`--json`を追加してください。** pipeやredirectでも自動でJSONに切り替わりません。JSONの成果物pathはworkspace相対、人向け表示ではworkspaceを先頭に付けたpathです。
 
@@ -34,7 +34,8 @@ Pythonのcore導入にDoclingやOCR modelは不要です。EPUBのrunはcoreだ�
 doc-translate models --provider openai             # 表
 doc-translate models --provider openai --json      # 完全なmetadata
 doc-translate providers --json
-doc-translate status ./work/book                  # 要約
+doc-translate status ./work/book                  # 保存記録のみ（成果物未検証）
+doc-translate status ./work/book --verify         # 詳細検査の人向け要約
 doc-translate status ./work/book --json            # hash・QA・利用記録等を含む詳細
 # runも既存の引数に --json を追加するとsummary JSONを出力
 ```
@@ -84,11 +85,13 @@ Ctrl-C／SIGTERM／入力EOF等の取消ではchildを回収し、進行中のcr
 
 ## 保存済み正本の再出力・状態確認
 
-既存の原文snapshotを保存したworkspaceを指定します。訳文snapshotがある場合は保存時の入力対応を再検査して使います。新規文書からは後述の`run`でworkspaceを作成します。
+保存済みworkspaceを指定します。runだけ／sourceだけの途中状態も確認できます。`render`と詳細statusは訳文snapshotがある場合に保存時の入力対応を再検査します。新規文書からは後述の`run`でworkspaceを作成します。
 
 ```sh
 doc-translate render DIR
 doc-translate status DIR
+# 保存入力・成果物を詳細検査する場合（書込みなし）
+doc-translate status DIR --verify
 # 詳細なsummary JSONが必要な場合
 doc-translate status DIR --json
 ```
@@ -96,7 +99,12 @@ doc-translate status DIR --json
 両操作とも取得・補正・準備・翻訳を呼びません。Node・認証・PDF extra・OCR model・外部通信は不要です。`render`は日本語／閲覧用英語Markdown、相対参照assets、source map、QA、usage、summaryを生成し、stdoutのJSONにworkspace相対の成果物pathを表示します。元snapshot・旧出力は削除しません。
 
 - `render`のexitは0＝指定された保存範囲が出力まで到達、1＝部分出力または保存等の実行失敗、2＝入力・hash・設定エラーです。訳文なし／部分失敗なら原文を残した部分出力とし、日本語側に`※`を付けます。現在原文と元snapshotが違う旧訳は自動流用しません。
-- `status`は検査成功なら部分出力でも0、入力／hashエラーは2、その他の実行失敗は1です。`render_current: false`は未出力またはsummary全体が現在状態に未追随であることを示します。`adopted_output_current`は既存出力が採用原文・訳文の入力に対応し、訳文がstaleでないかを別に示します。どちらも内容品質の承認ではありません。旧成果物がある場合は`previous_artifacts`で場所を確認できます。
+- 通常`status`はrun・採用pointer・必要なimmutable JSON（保存訳文・render summaryなど）だけを読み、Markdown／QA再構成、unit生成、attempt全走査、原本／成果物の検証、書込み、reader lock取得を行いません。訳文snapshotなしのunit数は不明／未集計で、今回の新規／再利用数も推測しません。保存chunkのleaf unitを成功／失敗／未処理／取消に分け、取消から送信の有無は断定しません。
+- 表示するpathは保存記録上のpathで成果物未検証、mtimeは記録file更新時刻です。最後の処理成功時刻や現在の生存状態ではありません。過去renderの結果は保存当時の結果であり、現在の出力の鮮度・正常性を保証しません。
+- 訳文のsource／preparation参照と現在pointer、runの翻訳設定／文体／利用者termsとの差を表示し、集計は参照先の保存訳文版に帰属します。準備hashの差だけで内容無効・再利用不可とは断定しません。候補は採用済みとは分け、詳細検査へ案内します。
+- 必要記録のschema／型・workspace内path（symlinkを含む）・digest・読んだ参照JSONのbyte hashを検査します。読まない成果物の破損は検知しません。run／pointer前後比較で変化時は最大1回再読し、なお変化する更新競合はexit1です。前後一致も複数pointerのtransaction整合保証ではありません。再送・採用・復旧を自動開始しません。
+- `status`は読取り／検査成功なら部分出力でも0、必要記録の入力／hashエラーは2、競合等の実行失敗は1です。`--verify`／`--json`（併用も可）は従来の詳細検査を行い、検査中のpointer変化も不成立／exit1にします。`--json`と`--verify --json`の完全JSONは従来どおりです。従来の通常statusで得ていた鮮度・QA等が必要なら`--verify`へ移行してください。
+- 詳細検査の`render_current: false`は未出力またはsummary全体が現在状態に未追随であることを示します。`adopted_output_current`は既存出力が採用原文・訳文の入力に対応し、訳文がstaleでないかを別に示します。どちらも内容品質の承認ではありません。旧成果物がある場合は`previous_artifacts`で場所を確認できます。
 - `※`は表示用の目印だけです。EPUBのnode位置が分かる警告は、同じresource／node snapshot内の該当箇所にだけ対応付けます。head内のCSS参照等の警告を章の全段落へ広げず、警告自体と位置への参照はQAに残します。明示された章全体の警告、未訳、特定の訳文や表示箇所の注意は引き続き表示します。理由・原本欠損か処理問題か・元位置・block／unit・出力anchorをQAで確認してください。コード／数式内部や保存済み原文／訳文には混ぜません。
 - summaryは出力到達／未処理／失敗、機械検査、原文の内容確認記録と訳文未確認範囲、usageを区別します。PDFの所有範囲を全文とみなさず、`pages_with_source_blocks`は本文の位置だけを示します。内容品質承認ではありません。
 - code・数式・図内文字は原文を保持します。単純表はMarkdown、結合表は安全なHTMLです。安全なMathML／画像を使い、表示不能な構造や危険なassetは不活性な原データ参照とQAを残します。外部画像は読込みません。
