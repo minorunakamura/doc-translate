@@ -19,7 +19,7 @@
 | --- | --- |
 | `run`／`resume`／`review`の実行画面 | 現在工程、ローカル処理／AI応答待ち、進捗、再利用、再試行・失敗・取消を表示する |
 | 通常の`status` | 既存の保存データから保存済み進捗を読み、出力再構成を避けて軽量に表示する |
-| 明示的な詳細検査 | 必要時に重い整合性検査を行う。具体的なCLI指定はPlanningで定める |
+| 明示的な詳細検査 | `status --verify`は詳細検査＋人向け要約、`--json`と`--verify --json`は詳細検査＋従来の完全JSON |
 
 現在工程を別プロセスへ共有するための新しい状態ファイル、永続heartbeat、PID管理は追加しない。既存の`run.json`にライブ状態を書き込む方式への置換も前提にしない。実行画面の現在状態は実行プロセス内で扱い、通常の`status`からその瞬間の工程やプロセスの生存を断定しない。
 
@@ -48,7 +48,7 @@ AI応答待ち… 経過 00:28
 - 下の欄は、今の処理対象・送信先・待機状態を示す。別の通知画面は増やさず、工程や対象の変更に合わせて更新する。
 - 実行中の工程にはspinner animationを付け、完了するとチェックマークへ変える。重い処理に入る前に工程を表示する。
 - ローカル処理中は、その工程と経過時間を示す。AIへの送信前の処理と応答待ちを混同しない。
-- 再試行・失敗の理由は上書きで消さず、短い履歴として残す。現在詳細と履歴の具体的な配置はPlanningで詰める。
+- 再試行・失敗の理由は上書きで消さず、現在詳細の下に最新3件の履歴を残す。再試行・失敗・取消の短い行はLive上方にも確定出力する。
 - 取消受付と処理終了を区別する。すぐに停止できない工程を、停止済みと表示しない。
 
 ### 状態と色
@@ -72,7 +72,7 @@ AI応答待ち… 経過 00:28
 - 総数を正確に把握できる工程だけ完了数／総数を出し、全工程共通の架空の進捗率は作らない。残り時間の推定は必須にしない。
 - 成功、再利用、失敗、未処理を区別する。再利用は成功の内訳であり、成功数へ二重加算しない。送信回数・訂正回数を完了数にしない。
 - 検証・保存前に成功とせず、PDFの参照専用ページを所有ページの完了数に含めない。
-- 翻訳の動的分割でunit／chunk数が変わる場合、初期総数を固定して誤った進捗を表示しない。具体的な集計単位と更新方法はPlanningで調査・定義する。
+- 翻訳の動的分割でunit／chunk数が変わる場合、初期総数を固定して誤った進捗を表示しない。分割後は総数を更新中とし、採用snapshotのleaf unitで更新する。別jobの分割が残る間は固定総数へ戻さない。
 - 並列実行の表示・集計を混線させず、複数のAI応答待ちを単一リクエストの待機と誤表示しない。
 - spinnerや経過時間の更新は処理前進・正常動作の証明ではない。総数が分からない検証・抽出は工程と経過時間を示し、完了数を捏造しない。
 - 保存結果だけで推論不要のresumeも、検証と再利用を示して終了できるようにする。
@@ -90,9 +90,9 @@ AI応答待ち… 経過 00:28
 
 進捗はstderr、最終結果はstdout。正式Planの合意に従いrun／resume／reviewは人向け既定、明示`--json`で従来の最終JSONを得る。`--events-json`は独立してstderrを従来用途の送信前JSONだけにする。reviewの通常stdoutは対象・確認記録の保存結果・今回の指摘件数・記録先・品質未承認を示し、本文／指摘全文は出さない。Richを理由に他コマンドの出力方式まで変更しない。
 
-詳細JSON通知の利用箇所、既存stderr解析、通常status／`status --json`の検証契約への影響はPlanningで調査し、必要な明示指定・移行方法を定める。`--verify`は正式Planでstatusの詳細検査指定として採用し、`--json`の詳細検査＋完全JSONを維持する。run／resumeの`--events-json`は#50、reviewは#52で接続する。互換性を無視した削除や、`--json`の意味変更を本書への合意に含めない。公開契約への変更が必要なら影響を示してユーザーと確認する。
+既存stderr JSON解析にはrun／resume／reviewの`--events-json`、resume／reviewのstdout JSON解析には`--json`を明示する。従来の通常statusで得た詳細検査結果は`--verify`で確認でき、`status --json`の詳細検査＋完全JSONは維持する。移行方法は[CLIリファレンス](../reference/usage.md#cliの表示とjson出力)を参照する。外部parserの実利用は未確認であり、互換性検証済みとは主張しない。公開契約への変更が必要なら影響を示してユーザーと確認する。
 
-### #50で具体化する責務
+### #50で具体化した責務
 
 共通`ProgressEvent`は任意observerへ同期通知する小さいmetadataで、永続化／IPC／汎用event busは持たない。発行元が既存unit／phaseを投影し、GenerationInput・prompt／context・保存requestへ表示用fieldを加えない。BeforeSendの3引数とflush責務はそのまま、CLIの小さいwrapperだけでunit_ids／phaseを渡す。collectは実unitとsection、organizeは文書全体の収集結果整理（unit_ids空、原文unit全文再送なし）、翻訳は実chunkのunitとする。PDFのcorrected_pages全体への誤fallbackは除く。
 
@@ -100,13 +100,13 @@ view stateはlock＋snapshot、workerはstate-onlyとする。main threadの工�
 
 requestは一意なattempt／jobを持ち、Popen失敗・preflight拒否・callback失敗・timeout・取消・例外でも終端通知する。helperへのgenerate書込み完了でのみ待機へ移る。翻訳は既存_adoptの保存後にsnapshot leaf unitを集計し、別jobのsplitが残る限り総数を更新中とする。別のactive-leaf正本・新unit生成・取消方式／retry変更は不要。EPUBは実順序、resumeは再利用前検証を最初に示し、PDF行やページ数は出さない。PDF補正固有工程は#51、明示範囲reviewは#52で接続する。
 
-### #51で具体化するPDF責務
+### #51で具体化したPDF責務
 
 PDFの新規runも最初はvalidateを示し、draftのhash／version／必須check／画像被覆とscopeを既存loadで検証する。再利用可能なら抽出再実行なしを表示し、必要時だけextractを開始する。correction開始後にimmutable chunk／orphan成功応答を既存条件で再検証・回収し、run manifest保存後に成功／再利用内訳を発行する。新しい成功も所有chunk検証・保存とmanifest保存が両方終わった後だけ反映し、参照ページは加算しない。所有分母は固定、補正のlength／input_limit分割を翻訳split集合へ混ぜない。
 
 correction observerは実owned／reference tupleとgenerate lifecycleを投影し、coverage repairは拒否記録保存後、検証済み応答は成功反映前のsavingとして表示する。BeforeSendの引数やprompt／context／保存schemaは変えない。source組立はassemble、採用前の比較／保存はvalidateで表示する。RuntimeErrorの早期returnや候補待ちで停止工程をdoneにせず、後段を未着手に保つ。取消受付と補正終了／後段の部分出力も分ける。document headerの所有意図（全ページなら抽出後確定）・追加参照許可と個別requestの実所有／隣接参照を区別する。EPUBへPDF stage／ページmetadataを出さない。
 
-### #52で具体化するreview責務
+### #52で具体化したreview責務
 
 reviewは重い`_inputs`・選択範囲検証・準備／review履歴検証の前から開始を表示する。工程順は保存データ・選択範囲の検証→AIによる内容確認→確認結果の保存→終了時の保存データ詳細検査とし、run／resumeの抽出・翻訳工程を表示しない。headerは明示選択、requestは既存selected／blocks／imagesのunit／block／画像ページを投影し、所有／参照として偽装しない。追加unit生成やprompt／context／保存request変更は行わない。
 
@@ -126,23 +126,23 @@ generateのrequest lifecycle・retry・非秘密設定／検証済みauthをscop
 
 訳文のsource／preparation参照と現在pointer、runのtranslation／policy／user_termsとの差を表示し、保存版へ帰属させる。preparation hash差だけで訳文無効とは断定しない。候補は採用済みと混ぜず詳細へ案内する。`status --verify`は既存詳細検査の人向け表示、`--json`および`--verify --json`は従来の詳細完全JSONとする。詳細検査中のpointer変化も不成立にし、内部`workspace_status`の完全検証は維持する。共有render分類も`not_processed`をfailedから除く。保存schemaとsnapshotの既存failed契約は変えない。
 
-## 確認済みのコード上の根拠
+## コード上の根拠と計画時点の記録
 
-以下は計画時点のソース確認であり、実動・性能検証の結果ではない。Issue #49では通常CLI statusのみ`read_saved_status`へ分離し、下記の詳細`workspace_status`は維持する。
+以下はソース上の責務と計画時点の問題の区別であり、Issue #53の統合実動・性能検証の結果ではない。Issue #49で通常CLI statusのみ`read_saved_status`へ分離し、下記の詳細`workspace_status`は維持している。
 
 - [`cli.py`](../../src/doc_translate/cli.py)の`_announce()`は送信直前にstderrへJSONを出す。計画時点であったprepare／translationのPDF送信対象の`run["corrected_pages"]`fallbackは#50で除き、対応不明を全ページで代用しない。
 - [`run.py`](../../src/doc_translate/run.py)の`run_document()`／`resume_document()`／`_continue_run()`が形式固有の取得と共通の準備・翻訳・renderをつなぐ。EPUBにPDF補正はない。
 - [`render.py`](../../src/doc_translate/render.py)の`workspace_status()`は`_build()`を呼ぶ。`_inputs()`によるunit生成・検証、`_Markdown`による出力再構成、`_usage()`によるattempt走査を通り、保存出力のhash検査も行う。
-- 計画時点では同じ`_build()`の失敗分類は`chunk.error`の有無でunitを集めていた。既存の[`translation.py`](../../src/doc_translate/translation.py)は未処理chunkへ`"not_processed"`を入れるため、未処理が失敗に含まれる経路があった。Issue #49は公開render／詳細statusの人工snapshot回帰で修正する。実Workspaceは操作しない。
+- 計画時点では同じ`_build()`の失敗分類は`chunk.error`の有無でunitを集めていた。既存の[`translation.py`](../../src/doc_translate/translation.py)は未処理chunkへ`"not_processed"`を入れるため、未処理が失敗に含まれる経路があった。Issue #49で共有分類を修正し、公開render／詳細statusの人工snapshot回帰を置いている。実Workspaceの検証を意味しない。
 - 翻訳には並列処理と動的な分割がある。準備には情報収集と全体整理がある。既存の送信直前callbackだけでは工程全体や再利用は通知されない。
 
-元の依頼では、実PDF Workspaceのstatusが30秒で応答せず、unit再生成・モデル検証・Markdown関連付けのスタックを観測したと報告されている。これは利用者からの報告で、今回測定したbaselineではない。EPUBを含む規模依存性と実測値は未確認。
+元の依頼では、実PDF Workspaceのstatusが30秒で応答せず、unit再生成・モデル検証・Markdown関連付けのスタックを観測したと報告されている。これは利用者からの報告で、人工入力のbaselineではない。計画時のPDF／EPUB人工100／3,000 unitの実測値と再作成条件は正式Planに記録し、変更後の比較・統合受入れとは区別する。
 
-既存契約・検証手順は[CLIリファレンス](../reference/usage.md)、[artifact契約](../reference/artifacts.md)、[開発ガイド](../../CONTRIBUTING.md)を参照する。本書は実装済み契約を更新したものではなく、今回変更する基本方針を示す。
+既存契約・検証手順は[CLIリファレンス](../reference/usage.md)、[artifact契約](../reference/artifacts.md)、[開発ガイド](../../CONTRIBUTING.md)を参照する。本書は正式Planに沿って実装した責務を反映するが、全完了条件の検証済み宣言ではない。
 
-## Planningで具体化すること
+## 計画時点の調査項目と統合検証
 
-基本方針を変えず、次を調査して実装・検証計画にする。
+以下はPlanningで具体化した調査項目であり、今後仕様を決める未決事項ではない。採用した範囲・性能目標・方法は正式Planに従い、実装後の成立は別に検証する。
 
 - PDF・EPUB両方について、重い処理前の表示位置、工程通知の接続、再利用・成功・失敗・取消・動的分割の集計根拠を確認する。
 - 通常statusに必要な読取り範囲と詳細検査の責務、世代競合・破損・古い情報の扱い、既存JSON利用への互換性と移行を具体化する。
@@ -150,6 +150,8 @@ generateのrequest lifecycle・retry・非秘密設定／検証済みauthをscop
 - Richの適合性、狭い端末・明暗の背景・非TTY／`NO_COLOR`、重いローカル処理中の更新可否、並列通知と異常終了時の表示の扱いを確認する。単なるspinner更新を処理前進の検証としない。
 - 新規run、部分完了resume、再利用のみのresume、訂正／通信retry、取消・異常終了、送信対象、stdout／stderr、保存・整合性・出力の回帰を保証する範囲と方法を選ぶ。
 - 既存のテスト・検証手順を優先し、必要な文書更新、検証手段の不足と最小補完、TDD採否を対象別に定める。実装後の確認をPlanningで検証済みとしない。
+
+Issue #53の統合確認は[検証Skill](../../.pi/skills/verify-project/SKILL.md)の既存status／EPUB／PDF／review手順と、[開発ガイド](../../CONTRIBUTING.md#進捗表示statusの統合受入れissue-53)の正式チェック・配布検査を使う。本書だけで未実施の実動・性能・配布確認を成功扱いにしない。
 
 合意した利用体験・責務・制約を変える必要が出たら、根拠と影響を示してユーザーと確認する。通常の実装詳細をすべて再承認させることも、未確認の仕様変更を実装詳細として確定することもしない。
 

@@ -22,8 +22,12 @@ import importlib.util
 import json
 import subprocess
 import sys
+from importlib.metadata import requires
 from pathlib import Path
 from zipfile import ZIP_STORED, ZipFile
+
+from rich.console import Console
+from rich.live import Live
 
 from doc_translate.epub import read_epub
 from doc_translate.epub_source import extract_epub_source
@@ -31,6 +35,8 @@ from doc_translate.snapshot import SourceDocument, load_source_snapshot, save_so
 from doc_translate.units import generate_translation_units
 
 assert importlib.util.find_spec("docling") is None
+assert "rich<16,>=15" in requires("doc-translate")
+assert callable(Console) and callable(Live)
 workspace = Path("epub-workspace")
 original = workspace / "originals/book.epub"
 original.parent.mkdir(parents=True)
@@ -66,10 +72,27 @@ assert summary["processing"]["status"] == "partial"
 assert "A journal preserves order." in html.unescape(
     (workspace / summary["artifacts"]["english"]).read_text())
 assert "※" in (workspace / summary["artifacts"]["japanese"]).read_text()
-status = subprocess.run([str(cli), "status", str(workspace), "--json"],
-                        capture_output=True, text=True, check=True)
-assert json.loads(status.stdout)["render_current"] is True
-print("core-only wheel EPUB reader/source/units + saved-only CLI render/status: OK")
+light = subprocess.run([str(cli), "status", str(workspace)],
+                       capture_output=True, text=True, check=True)
+assert "保存記録のみ" in light.stdout and "成果物未検証" in light.stdout
+assert "不明／未集計" in light.stdout
+verified = subprocess.run([str(cli), "status", str(workspace), "--verify"],
+                          capture_output=True, text=True, check=True)
+assert "最新" in verified.stdout
+statuses = []
+for flags in (["--json"], ["--verify", "--json"]):
+    status = subprocess.run([str(cli), "status", str(workspace), *flags],
+                            capture_output=True, text=True, check=True)
+    statuses.append(json.loads(status.stdout))
+assert statuses[0] == statuses[1]
+assert statuses[0]["render_current"] is True
+assert statuses[0]["processing"]["status"] == "partial"
+for operation in ("run", "resume", "review"):
+    help = subprocess.run([str(cli), operation, "--help"],
+                          capture_output=True, text=True, check=True)
+    assert "--json" in help.stdout and "--events-json" in help.stdout
+print("core-only wheel Rich dependency/imports + EPUB reader/source/units + "
+      "saved-only CLI render/status variants + run/resume/review flags: OK")
 '''
 SMOKE = """
 import assert from 'node:assert/strict';

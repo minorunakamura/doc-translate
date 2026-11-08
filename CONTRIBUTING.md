@@ -481,6 +481,12 @@ focused回帰は`tests/test_run.py -k pdf_progress`（通知時のchunk／manife
 
 共通state／表示と工程間reuseに及ぶため、Rootの正式範囲はcore全pytest、PDF4ファイル、Ruff全体check／format、既存PDF環境ty、CLI helpです。Workerは変更moduleとfocused consumer・手順変更部分を再実行します。依存／Node source／protocol／build差分はなく、#50で済んだRich依存化のwheel検査や全Node phaseは今回反復しません。差分がそこへ及べば再選定します。install／sync／model取得・実認証・課金は禁止し、既存環境のみ使います。
 
+## 進捗表示・statusの統合受入れ（Issue #53）
+
+[正式Plan](docs/plans/progress-and-status.md)の完了条件を照合します。再現入口は既存の[検証Skill](.pi/skills/verify-project/SKILL.md)／[Feature Map](.pi/skills/verify-project/references/feature-map.md)の「保存記録と詳細検査」「EPUB run／resumeと共通進捗」「PDF run／resumeの工程・所有ページ進捗」「明示範囲reviewの共通表示」を選び、重複したrunnerは作りません。Rootは各入口を別invocationで直接操作し、TTYの実画像、故障代表、両形式small／largeの性能と保存結果を照合します。過去Issueの成功やWorkerのfocused確認を今回の統合成功へ読み替えません。
+
+正式範囲は上の「正式チェック」に従うcore全pytest・PDF4ファイル・Ruff check／format・PDF環境ty・CLI helpと、下の[wheelの明示buildと導入検査](#wheelの明示buildと導入検査)です。Rich直接依存・実import、core-only空PATHの保存-only status全4指定、run／resume／reviewのJSON flagsも既存配布smokeで確認します。既存環境を同期変更せず、必要な隔離環境のinstall／registry取得は許可を確認します。Node source／protocol不変なら全Node phaseの反復は追加しません。実provider・実認証・実Docling／OCR・意味品質・任意規模／全端末・他OS・SIGKILL復元・remote CIはこの限定受入れの保証対象外です。証拠と所有物だけのcleanup・cleanup後再読は既存Skillと「前提共有・比較・cleanup」に従い、未確認は未確認として残します。
+
 ## 新規runの検証境界
 
 Issue #14のseamは公開`cli.main(argv, process_command=...)`→workspace／Markdown／statusです。新しいworkflowは既存の取得・補正・準備・翻訳・render APIをつなぐだけで、内部generate／workflowはmockしません。`tests/test_run.py`は実EPUB ZIPと、`tests/test_pdf.py`のDocling公開converter／page backend・人工local model fixtureを使います。`ai/tests/run-process.mjs`は実`runHelper`と公開faux providerを接続し、network transportを拒否、credential directoryは一時pathのみです。helper sourceを変えないのでbuildは不要です。
@@ -711,7 +717,7 @@ uv build
 uv run python scripts/check_distribution.py dist/doc_translate-0.1.0-py3-none-any.whl
 ```
 
-この検査は一時directoryで再compileして`ai/dist`と比較し、wheel内のdist／manifest／両lockをbyte比較します。core-onlyの別venvへwheelをinstallし、Nodeもmanagerもない空PATHで自作EPUB ZIPのreader→source保存／load→unit生成→実CLI render/statusを検査します。訳文なしのrenderはexit1・部分出力・`※`、statusはexit0・出力鮮度をassertし、実LLMや内容品質の成功とは扱いません。その後、workspace外の別々のclean data directoryで実CLI `setup-ai --package-manager MANAGER`を実行します（依存packageのregistry取得あり）。内部で使用する固定コマンドは次のとおりです。
+この検査は一時directoryで再compileして`ai/dist`と比較し、wheel内のdist／manifest／両lockをbyte比較します。core-onlyの別venvへwheelをinstallし、Nodeもmanagerもない空PATHで自作EPUB ZIPのreader→source保存／load→unit生成→実CLI render/statusを検査します。wheel metadataのRich直接依存（`>=15,<16`）と実import、run／resume／review helpの`--json`／`--events-json`も確認します。訳文なしのrenderはexit1・部分出力・`※`、通常statusはexit0・保存記録のみ／成果物未検証／総数不明、`--verify`はexit0・詳細検査の人向け表示、`--json`と`--verify --json`はexit0・同じ詳細JSON／出力鮮度をassertし、実LLMや内容品質の成功とは扱いません。その後、workspace外の別々のclean data directoryで実CLI `setup-ai --package-manager MANAGER`を実行します（依存packageのregistry取得あり）。内部で使用する固定コマンドは次のとおりです。
 
 - npm：`ci --omit=dev --ignore-scripts --no-audit --no-fund`
 - pnpm：`install --prod --frozen-lockfile --ignore-scripts`

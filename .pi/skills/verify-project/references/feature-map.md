@@ -2,6 +2,8 @@
 
 対象：公開CLIの軽量status／明示詳細検査／完全JSON、必要記録破損拒否、保存不変。EPUB／共通表示は末尾節が対象。PDF補正の工程・所有ページ進捗は末尾PDF節が対象。明示範囲reviewの表示は末尾review節が対象。対象外：実LLM品質、実PDF変換／OCR、他OS、remote CI、任意規模の性能保証。性能の別確認は[正式Plan](../../../../docs/plans/progress-and-status.md)の再作成条件・非並行before／after手順を使い、巨大benchmark基盤を追加しない。
 
+Issue #53の統合受入れは下の既存status／EPUB／PDF／review各節を選び、Rootが新しい証拠directoryの別invocationで再実行する。正式チェックとRich直接依存・core-only保存-only CLI／flagsを含む配布検査は[開発ガイドの#53節](../../../../CONTRIBUTING.md#進捗表示statusの統合受入れissue-53)と[wheel手順](../../../../CONTRIBUTING.md#wheelの明示buildと導入検査)に従う。Skillの各入口だけで性能・故障代表・全正式チェック・配布成功を代替しない。各実行の未確認・所有物cleanup・証拠再読を記録し、上記対象外を統合確認の成功へ含めない。
+
 ## 保存記録と詳細検査
 
 入口は`doc-translate status DIR`、`--verify`、`--json`、`--verify --json`。既存自作`tests/fixtures/render-source.pdf.json`を再利用し、Node／認証／network不要な公開CLIだけを操作する。repository rootで既存環境を使う（自動syncしない）。下の2ブロックを同じshellで順に実行する。

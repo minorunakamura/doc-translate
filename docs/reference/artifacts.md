@@ -50,7 +50,7 @@ WORKSPACE/
 
 `run.json`は`schema_version: 1/document/source_name/owned_pages/reference_pages/correction/translation/policy/user_terms/corrected_pages/failed_pages/not_processed_pages/chunk_sha256s/artifacts_path/error/error_code`です。`document`は`SourceDocument`、段階設定は既存`GenerationConfig`、`policy`は既存`StylePolicy`です。EPUBの`owned_pages`／`correction`はnull、ページ集合は空です。PDF全体を指定したときの`owned_pages`は取得前null、取得後に実ページ番号を固定します。明示所有範囲は取得前から保持します。参照指定と補正済み／失敗／未処理ページ、採用chunk digestは区別し、進行に応じatomicに更新します。credential・raw環境・秘密値・raw例外は保存しません。`error_code`は観測できた既存推論分類で、分類未観測時はnull、`error`は非秘密の工程失敗案内です。resume／途中artifact復旧の検証規則は次節を参照してください。
 
-CLIの送信前表示は新しいpreflightを重ねず、既存推論の**preflight→generate境界**を使います。`generate`と各stage公開APIに任意の`before_send: BeforeSend | None = None`を追加し、`BeforeSend = Callable[[GenerationConfig, GenerationInput, Preflight], None]`です。検証済みpreflightと画像を確認した後、実際のgenerate recordを送る直前に毎回（retryを含む）呼びます。CLIのrun／resumeは`--events-json`時にstderrへ入力名／hash、意図範囲、実requestの送信範囲・内容、段階provider／model／thinking、実`Preflight.auth.source/type`をflushします（reviewも`--events-json`時だけ従来noticeを出力）。原本fileや画像は準備／翻訳へ送らず、provider／model／認証fallbackやproductionのfake環境flagはありません。`cli.main(argv=None, *, process_command=None)`の明示process指定は既存adapterと同じ外部processテストseamだけです。productionは検証済み導入済みruntimeを使います。
+CLIの送信前表示は新しいpreflightを重ねず、既存推論の**preflight→generate境界**を使います。`generate`と各stage公開APIに任意の`before_send: BeforeSend | None = None`を追加し、`BeforeSend = Callable[[GenerationConfig, GenerationInput, Preflight], None]`です。検証済みpreflightと画像を確認した後、実際のgenerate recordを送る直前に毎回（retryを含む）呼びます。CLIのrun／resumeは`--events-json`時にstderrへ入力名／hash、意図範囲、実requestの送信範囲・内容種別（本文・画像payloadそのものは含めない）、段階provider／model／thinking、実`Preflight.auth.source/type`をflushします（reviewも`--events-json`時だけ従来noticeを出力）。原本fileや画像は準備／翻訳へ送らず、provider／model／認証fallbackやproductionのfake環境flagはありません。`cli.main(argv=None, *, process_command=None)`の明示process指定は既存adapterと同じ外部processテストseamだけです。productionは検証済み導入済みruntimeを使います。
 
 ### PDF／EPUB共通観測境界（Issue #50／#51／#52）
 
@@ -377,7 +377,7 @@ attempt→検証済みchunk artifact→snapshot→採用参照の順でfsync／a
 
 ## 安全Markdown・対応表・QA・render/status（Issue #13）
 
-公開APIは`doc_translate.render.render_document(workspace: Path) -> dict`、詳細検査の`workspace_status(workspace: Path) -> dict`、軽量な`read_saved_status(workspace: Path) -> dict`です。CLIは`doc-translate render DIR`／`status DIR --json`で同じsummary JSONをstdoutへ返します。`status DIR`の既定は後述の保存記録readerによる人向け表示、`status DIR --verify`は`workspace_status`の人向け要約です。`providers`／`models`／`run`も既定は表または要約、`--json`で従来と同じ完全なJSONを出力します。保存artifact・Python API・終了コード・送信前通知は変わりません。renderと詳細検査は原文を既存loadで検証し、訳文があれば`load_translation`経由で元準備版・実入力・全unit／保護markerを再検査します。現在のsource hashと訳文の出典が違う場合は`stale_translation: true`とし、旧訳は使わず原文を残した部分出力にします。取得・LLM・認証・Node・PDF native依存は呼びません。
+公開APIは`doc_translate.render.render_document(workspace: Path) -> dict`、詳細検査の`workspace_status(workspace: Path) -> dict`、軽量な`read_saved_status(workspace: Path) -> dict`です。CLIは`doc-translate render DIR`／`status DIR --json`で同じsummary JSONをstdoutへ返します。`status DIR`の既定は後述の保存記録readerによる人向け表示、`status DIR --verify`は`workspace_status`の人向け要約です。`providers`／`models`／`run`も既定は表または要約、`--json`で従来と同じ完全なJSONを出力します。保存artifact・Python API・終了コードは維持します。run／resume／reviewの従来用途の送信前JSON通知は`--events-json`で明示取得し、既定のstderrは人向け進捗です（stdoutの`--json`とは独立、全工程event streamではありません）。renderと詳細検査は原文を既存loadで検証し、訳文があれば`load_translation`経由で元準備版・実入力・全unit／保護markerを再検査します。現在のsource hashと訳文の出典が違う場合は`stale_translation: true`とし、旧訳は使わず原文を残した部分出力にします。取得・LLM・認証・Node・PDF native依存は呼びません。
 
 ```text
 WORKSPACE/
