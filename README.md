@@ -167,3 +167,5 @@ PDFの例で作った作業フォルダは`work/pdf-book`なので、上のパ�
 - 認証情報・秘密を含む文書やログを共有したり、Issueに添付したりしないでください。
 
 詳しいオプションや動作は[CLI詳細リファレンス](docs/reference/usage.md)、開発・build・検証範囲は[開発ガイド](CONTRIBUTING.md)にまとめています。
+
+開発用の自作入力によるPDF／EPUB計測・再実行条件は[offline性能baseline](docs/reference/performance.md)を参照してください（実provider／OCRの速度保証ではありません）。

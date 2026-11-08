@@ -1,6 +1,6 @@
 ---
 name: verify-project
-description: Verify doc-translate PDF/EPUB run/resume and scoped review progress, TTY and output flags, and saved-only status through isolated public CLI operations, with evidence and cleanup.
+description: Verify doc-translate PDF/EPUB run/resume, offline performance and render load, scoped review progress, TTY and output flags, and saved-only status through isolated public operations with evidence and cleanup.
 ---
 
 # doc-translateの実動確認
@@ -15,6 +15,10 @@ repository rootをcwdにし、既存の`.venv/bin/python`とCLIを使う。依�
 
 statusはMapの「保存記録と詳細検査」のshellとPythonを順に実行する。EPUBは「EPUB run／resumeと共通進捗」、PDFは「PDF run／resumeの工程・所有ページ進捗」、reviewは「明示範囲reviewの共通表示」の既存faux＋標準PTY手順を使う。PDFのみ既存PDF extraとDocling公開converter／page backend人工fixtureが必要で、実変換／OCRは起動しない。helper `scripts/capture_progress.py`は既存Pythonで起動し、stdout／stderr.ansi／frames.json／frames.htmlをworkspace外へ保存する。SGR保持の人工frameを既存Chromeで幅・明暗背景込みに実表示し、現在対象・異常理由の読取りとscreenshotを照合する。SGR検出／HTML生成だけで視認性合格とせず、観測条件と全端末等の未確認を記録する。既存の自作fixtureを公開saveから隔離workspaceへ保存し、実CLI renderで初期出力を作る。対象pathと保存source hashを記録し、statusの各指定を空PATHで操作する。processの存在だけを成功とせず、stdout・exit・file hash／mtimeを期待と照合する。異常時は今回のworkspace／fixture／source版を再確認し、期待値を緩めて製品不具合を隠さない。
 
+## 形式別の性能計測（Issue #54）
+
+今回の依頼がbaseline／render負荷の場合だけMapの「形式別run／resume性能とrender負荷」を選び、[性能reference](../../../docs/reference/performance.md)の起動→操作→期待値→証拠→cleanup手順を使う。既存PDF extra・実compiled Node helper／公開faux・network拒否・人工入力だけで、公開CLI run→fresh process resumeと公開save後のrender全体を測る。`scripts/performance_baseline.py`を既存Pythonで起動し、未作成のignore済みwork直下を`--evidence`へ指定する。固定recipeの通常before／after各3回はrepeatability controlであり、高速化を意味しない。diagnosticのprofile／counter passは別にし、停止budget・unknown・親／helperメモリ範囲を記録する。準備不足やresource hash不一致では停止し、install／buildしない。ID分離・新並列・取消最適化など未実装の将来機能は追加／検証済みとしない。既存status／進捗／review手順は変更しない。
+
 ## 証拠と後始末
 
 - 実行ごとに既存ignore済み`work/test-verification-<unique>/`を作る。Git ignoreは秘密保護境界ではない。秘密値・実書籍・未加工の個人情報・不要raw logは保存しない。本文は既存の自作fixtureのみ。
@@ -24,4 +28,4 @@ statusはMapの「保存記録と詳細検査」のshellとPythonを順に実行
 
 ## 再利用
 
-このrepositoryでPiを起動してproject trustを確認する。標準の`.pi/skills/`探索を使い、追加／更新後は新セッションか`/reload`を行う。`/skill:verify-project PDF progress`／`/skill:verify-project EPUB progress`／`/skill:verify-project review`または`/skill:verify-project status`で明示呼び出しするか、このSKILL.mdを明示readする。自動選択自体は保証しない。通常の関連変更では関係する手順／Mapだけを更新して再実行し、無関係な全Map点検を要求しない。共通Maintainはユーザー明示実行時の別用途で、今回の再実行には不要。
+このrepositoryでPiを起動してproject trustを確認する。標準の`.pi/skills/`探索を使い、追加／更新後は新セッションか`/reload`を行う。`/skill:verify-project performance`／`/skill:verify-project PDF progress`／`/skill:verify-project EPUB progress`／`/skill:verify-project review`または`/skill:verify-project status`で明示呼び出しするか、このSKILL.mdを明示readする。自動選択自体は保証しない。通常の関連変更では関係する手順／Mapだけを更新して再実行し、無関係な全Map点検を要求しない。共通Maintainはユーザー明示実行時の別用途で、今回の再実行には不要。

@@ -536,3 +536,15 @@ PY
 証拠はrevision／dirty／scope.diff、各形式operations.json（command＋exit）、stdout／stderr、TTY frame／HTML、人工request、受理record／hashとold-hashes、observations／cleanupです。workspace外へ退避済みで、末尾でcleanup後全参照を再読します。`tty-findings`の待機frameと`failure-narrow`の異常frameを上記Chrome手順で実表示／画像readし、unit／block／画像ページ・送信先・異常理由の文字が読めることを記録してください。HTML生成／SGR検出だけを視認性合格としません。Rootは別invocationで公開CLIを操作・照合します。
 
 保存拒否／旧byte維持は`test_review_atomic_save_failure_keeps_old_review_snapshots_and_observed_usage`、preflight拒否／request終端・保存前後・詳細検査接続は`tests/test_review.py`、共通表示の安全escape／stage順とrun／resume回帰は`tests/test_cli_output.py`を使います。retry／timeout／取消の共通generate境界は既存`test_inference`／`test_resume`を再利用し、reviewの推論前ローカル検証のsignal境界を変更して即停止を保証しません。実LLM品質・全signal×全工程・SIGKILL・全terminalは未確認です。
+
+## 形式別run／resume性能とrender負荷（Issue #54）
+
+入口は公開CLI `run`→別fresh Python processの`resume --json`、および公開`save_source_snapshot`後の`render_document`全体。既存status／進捗／reviewの保証は上記のまま維持し、Mapの進捗確認を性能baselineと扱わない。ID分離・新並列の機能は本節に含めない。
+
+前提・起動／操作command・入力recipe・停止予算・計数定義は[性能reference](../../../../docs/reference/performance.md#新しい隔離状態からの再実行)。repository rootの既存PDF extra付きPython／Node／compiled helper一致hash、人工credential・既存network拒否付きfauxだけを使い、追加install／sync／buildしない。`../scripts/performance_baseline.py --evidence work/issue54-<unique> --feature render --diagnostics`（既存Pythonで起動）または`--feature run-resume`で今回必要な機能だけ選ぶ。新規TemporaryDirectoryから起動するため履歴・既存workspace不要。
+
+期待：PDF所有6／35（2–7／2–36）・追加reference許可なし・200×100 point／1800px、EPUB2／20と成長200 sections／400 units・最小複数resource、typed render PDF／EPUB50／200／500。run／resumeはcompleted・QA／provenanceとunit数を照合。各無変更resumeは実faux log byte増加0・既存immutable SHA256不変。source-only renderのpartialは期待結果。before／after各3回・raw／median／min／maxは再現性control比較でありspeed improvementではない。
+
+証拠：新規ignore済みwork直下のmanifest／dirty／diff、operationごとのcommand／exit、内外wall／CPU、保存QA／map／summary、synthetic requests／attempts、別diagnosticの論理read／成功atomic replace数・bytes／実candidate比較とinclusive profile、親とreaped child peakの範囲、statistics／observations／cleanup。物理I/O・詳細miss理由・provider内部／active timeline・aggregate RSS等はunknown。source／fixture／helper hashとoffline／worker／cache条件を必ず残す。現実のsave／generate／validatorへ委譲し内部setterで代替しない。
+
+cleanup：所有child group／handleだけをinterrupt・drain・waitし、所有TemporaryDirectory（入力・人工model／認証・workspace）だけfinally削除。証拠は外側へ保持しcleanup後全fileを再読する。失敗は成功値へ混ぜず、予算到達なら停止して報告。実provider／OCR／layout／意味品質／他OSや将来最適化の保証にはしない。正式testとRootの独立再実行・Reviewer受入れは別に行う。

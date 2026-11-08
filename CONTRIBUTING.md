@@ -848,3 +848,7 @@ PY
 ```
 
 残る一時fileは採用対象でなく、試験workspaceも自動削除しません。実provider／実認証・OCRの新たな実行やmodel取得はこの検証に含めません。
+
+## PDF／EPUBのoffline性能baseline（Issue #54）
+
+形式別run／無変更resumeとrender負荷は[性能reference](docs/reference/performance.md)の固定recipe・停止予算・fresh process／warm filesystem条件で、他のtestと非並行で再実行します。既存[検証Skill](.pi/skills/verify-project/SKILL.md)／[Feature Map](.pi/skills/verify-project/references/feature-map.md#形式別runresume性能とrender負荷issue-54)を今回の範囲だけ選びます。通常3回のraw／median／min／maxと別diagnosticの計数・profile、実request増加0／旧immutable byte保持、cleanup後の証拠再読を分けます。同revisionのbefore／afterは再現性controlであって高速化ではありません。実provider／OCR・ID分離・新並列等の後続ticketは含めず、既存の正式チェック／Root・Reviewer受入れ手順を代用しません。
