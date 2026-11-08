@@ -1,6 +1,6 @@
 # PDF／EPUB共通 — 進捗表示・送信通知・statusの基本設計
 
-本書はDesign Discussionで合意した基本設計であり、Approved Planではない。具体的な変更範囲・性能目標・検証方法・作業分割は[正式Plan](../plans/progress-and-status.md)に従う。以下の責務具体化はIssue #49（status）／#50（EPUB＋共通表示）の範囲であり、PDF補正／review新表示の完成や実provider検証を意味しない。
+本書はDesign Discussionで合意した基本設計であり、Approved Planではない。具体的な変更範囲・性能目標・検証方法・作業分割は[正式Plan](../plans/progress-and-status.md)に従う。以下の責務具体化はIssue #49（status）／#50（EPUB＋共通表示）／#51（PDF接続）の範囲であり、review新表示の完成や実provider検証を意味しない。
 
 ## 目的と対象
 
@@ -98,7 +98,13 @@ AI応答待ち… 経過 00:28
 
 view stateはlock＋snapshot、workerはstate-onlyとする。main threadの工程start時の同期描画と表示threadの周期描画は、render_lock下でsnapshotを描画する。`Console(stderr=True)`、Liveのredirect両方False、約4Hz更新、finally終了を明示する。NO_COLORは値ではなく存在で判定し、Textによるmarkup不活性化とcontrol文字escapeを使う。表示失敗は表示層だけの小さい行fallbackとし、送信前JSON書込み失敗を隠して送信しない。raw例外／回答／本文／秘密を履歴へ流さない。
 
-requestは一意なattempt／jobを持ち、Popen失敗・preflight拒否・callback失敗・timeout・取消・例外でも終端通知する。helperへのgenerate書込み完了でのみ待機へ移る。翻訳は既存_adoptの保存後にsnapshot leaf unitを集計し、別jobのsplitが残る限り総数を更新中とする。別のactive-leaf正本・新unit生成・取消方式／retry変更は不要。EPUBは実順序、resumeは再利用前検証を最初に示し、PDF行やページ数は出さない。PDF補正／review固有工程の完成は#50の対象外。
+requestは一意なattempt／jobを持ち、Popen失敗・preflight拒否・callback失敗・timeout・取消・例外でも終端通知する。helperへのgenerate書込み完了でのみ待機へ移る。翻訳は既存_adoptの保存後にsnapshot leaf unitを集計し、別jobのsplitが残る限り総数を更新中とする。別のactive-leaf正本・新unit生成・取消方式／retry変更は不要。EPUBは実順序、resumeは再利用前検証を最初に示し、PDF行やページ数は出さない。PDF補正固有工程は#51で接続し、review新表示は後続Issueとする。
+
+### #51で具体化するPDF責務
+
+PDFの新規runも最初はvalidateを示し、draftのhash／version／必須check／画像被覆とscopeを既存loadで検証する。再利用可能なら抽出再実行なしを表示し、必要時だけextractを開始する。correction開始後にimmutable chunk／orphan成功応答を既存条件で再検証・回収し、run manifest保存後に成功／再利用内訳を発行する。新しい成功も所有chunk検証・保存とmanifest保存が両方終わった後だけ反映し、参照ページは加算しない。所有分母は固定、補正のlength／input_limit分割を翻訳split集合へ混ぜない。
+
+correction observerは実owned／reference tupleとgenerate lifecycleを投影し、coverage repairは拒否記録保存後、検証済み応答は成功反映前のsavingとして表示する。BeforeSendの引数やprompt／context／保存schemaは変えない。source組立はassemble、採用前の比較／保存はvalidateで表示する。RuntimeErrorの早期returnや候補待ちで停止工程をdoneにせず、後段を未着手に保つ。取消受付と補正終了／後段の部分出力も分ける。document headerの所有意図（全ページなら抽出後確定）・追加参照許可と個別requestの実所有／隣接参照を区別する。EPUBへPDF stage／ページmetadataを出さない。
 
 ## 通常statusと詳細検査
 

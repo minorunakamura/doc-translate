@@ -20,6 +20,8 @@ class ProgressEvent:
     kind: str
     phase: str = ""
     unit_ids: tuple[str, ...] = ()
+    owned_pages: tuple[int, ...] | None = None
+    reference_pages: tuple[int, ...] = ()
     job_id: str = ""
     request_id: str = ""
     reason: str = ""
@@ -94,20 +96,27 @@ class ProgressState:
                     self.requests.pop(event.request_id, None)
                 else:
                     self.requests[event.request_id] = event
-            elif event.kind == "split":
+            elif event.kind == "split" and event.stage == "translation":
                 self.splitting.add(event.job_id)
             elif event.kind == "adopted":
-                self.splitting.discard(event.job_id)
-                event = replace(event, total_updating=bool(self.splitting))
+                if event.stage == "translation":
+                    self.splitting.discard(event.job_id)
+                    event = replace(event, total_updating=bool(self.splitting))
                 self.stages[event.stage] = event
             elif event.kind in {"start", "done", "failed", "partial"}:
                 previous = self.stages.get(event.stage)
                 if (
                     previous
                     and previous.total is not None
-                    and event.kind in {"done", "partial"}
+                    and event.kind in {"done", "partial", "failed"}
                 ):
-                    event = replace(previous, kind=event.kind)
+                    event = replace(
+                        previous,
+                        kind=event.kind,
+                        reason=event.reason,
+                        owned_pages=event.owned_pages,
+                        reference_pages=event.reference_pages,
+                    )
                 self.stages[event.stage] = event
             self.current = event
             if event.kind in {

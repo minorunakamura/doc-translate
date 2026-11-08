@@ -52,9 +52,9 @@ WORKSPACE/
 
 CLIの送信前表示は新しいpreflightを重ねず、既存推論の**preflight→generate境界**を使います。`generate`と各stage公開APIに任意の`before_send: BeforeSend | None = None`を追加し、`BeforeSend = Callable[[GenerationConfig, GenerationInput, Preflight], None]`です。検証済みpreflightと画像を確認した後、実際のgenerate recordを送る直前に毎回（retryを含む）呼びます。CLIのrun／resumeは`--events-json`時にstderrへ入力名／hash、意図範囲、実requestの送信範囲・内容、段階provider／model／thinking、実`Preflight.auth.source/type`をflushします（reviewは従来noticeを維持）。原本fileや画像は準備／翻訳へ送らず、provider／model／認証fallbackやproductionのfake環境flagはありません。`cli.main(argv=None, *, process_command=None)`の明示process指定は既存adapterと同じ外部processテストseamだけです。productionは検証済み導入済みruntimeを使います。
 
-### EPUB／共通観測境界（Issue #50）
+### PDF／EPUB共通観測境界（Issue #50／#51）
 
-`run_document`／`resume_document`／`prepare_document`／`translate_document`／`generate`へ任意keyword `observer: Observer | None = None`を追加します。`doc_translate.progress.ProgressEvent`の工程／kind、phase、実unit ID、job／attemptのrequest ID、固定理由code、非秘密の設定と保存後件数だけを同期callbackへ渡します。独立Python API利用者にCLI／Rich表示を強制せず、既存戻り値・BeforeSendの3引数と送信前flush責務を維持します。observerは表示用metadataだけを扱い、本文／回答／payload／tokenや任意例外の文字列を含めません。callbackは呼出元threadで動くため、CLIはlock付きin-memory stateへ反映し、workerでRichを再構築しません。独立callerのcallback例外は処理へ伝播し得ますが、起動済みchildは既存finallyで回収しrequest終端を通知します。
+`run_document`／`resume_document`／`prepare_document`／`translate_document`／`correct_pdf`／`generate`へ任意keyword `observer: Observer | None = None`を追加します。`doc_translate.progress.ProgressEvent`の工程／kind、phase、実unit ID、job／attemptのrequest ID、固定理由code、非秘密の設定と保存後件数だけを同期callbackへ渡します。独立Python API利用者にCLI／Rich表示を強制せず、既存戻り値・BeforeSendの3引数と送信前flush責務を維持します。observerは表示用metadataだけを扱い、本文／回答／payload／tokenや任意例外の文字列を含めません。callbackは呼出元threadで動くため、CLIはlock付きin-memory stateへ反映し、workerでRichを再構築しません。独立callerのcallback例外は処理へ伝播し得ますが、起動済みchildは既存finallyで回収しrequest終端を通知します。
 
 metadataは既存の実unit／phaseから発行元で投影し、表示目的のunit再生成・GenerationInput field・prompt／context変更はありません。CLI向け`SendNotice` wrapperだけがBeforeSendとは別のmetadataを保持します。collectは送信unit／section、translationは実chunkのunit、organizeは文書全体の収集結果整理（`unit_ids=[]`、原文unit全文の再送なし）です。PDF補正のowned／referenceは既存request contextの実範囲を使い、準備／翻訳に補正済み全ページのfallbackを作りません。
 
@@ -62,7 +62,9 @@ requestはPopen前から一意なattempt IDで観測し、起動失敗・preflig
 
 翻訳件数は`_adopt`のsnapshot／pointer保存後、その採用chunkのleaf unitで成功／失敗／未処理を投影します。再利用は成功の内訳です。別並列jobのsplitが残る間は表示総数を更新中とし、新しいactive-leaf正本は持ちません。準備は検証済み収集記録の保存／再利用とorganizeを分け、最終採用前に工程全体を成功にしません。render完了も保存後に通知します。保存schema、immutable、採用pointer、再利用前の詳細検証は変更せず、進捗file／heartbeat／run.jsonのライブ更新を追加しません。
 
-今回の完成範囲はEPUB＋共通表示で、PDF補正の所有ページ集計／工程とreview新表示の完成を含みません。run／resume CLIの人向け既定と独立JSON flagsは[usage](usage.md#cliの表示とjson出力)、直接操作・証拠・cleanupは[検証Skill](../../.pi/skills/verify-project/SKILL.md)を参照してください。
+PDFはdraftの再利用検証前からvalidateを開始し、必要時extract、correction、assemble（source組立）、採用前validate、共通後段へ通知します。`ProgressEvent.owned_pages: tuple[int, ...] | None`／`reference_pages: tuple[int, ...]`はPDF用の任意metadataです。documentでは所有意図（Noneは全体・抽出後確定）と追加参照許可、correction requestでは実requestの所有／参照専用を表し、EPUBには投影しません。chunk再利用／成功応答回収は検証とrun manifest保存後、今回の成功は所有chunk検証・保存とmanifest更新後にのみ`adopted`で通知します。`succeeded`は所有ページ数、`reused`はその内訳、`total`は所有総数です。参照／訂正／通信retry／length・input_limit分割は成功数を増やさず、PDF分割は翻訳のsplit集合に入りません。取消ページは今回観測したEventに基づく表示内訳で、新しい永続状態は作りません。
+
+`correct_pdf`はvalidating／saving、coverage限定repair、既存generateのrequest lifecycle／transport retryを同じobserverへ伝播します。このchunk API単独ではrunの成功集計を発行しません。PDF早期returnは停止工程の失敗／部分状態とfinishedを区別し、候補変更時はvalidateの`candidate_adoption_required`で停止して後段を呼びません。再利用前検証・送信許可・BeforeSend・既存immutable byteは維持します。review新表示は後続Issueです。run／resume CLIの人向け既定と独立JSON flagsは[usage](usage.md#cliの表示とjson出力)、直接操作・証拠・cleanupは[検証Skill](../../.pi/skills/verify-project/SKILL.md)を参照してください。
 
 結果とexit：
 
@@ -475,7 +477,7 @@ conversionがsuccess以外、全対象ページのraw被覆不足、必須PNG欠
 
 ## PDF補正chunk（Issue #8）
 
-公開APIは`doc_translate.pdf_correction.correct_pdf(*, workspace: Path, draft_sha256: str, owned_pages: list[int], reference_pages: list[int], policy: str, config: GenerationConfig, process_command: Sequence[str] | None = None, cancel: threading.Event | None = None, before_send: BeforeSend | None = None) -> str`と`load_pdf_correction(workspace: Path, sha256: str) -> PDFCorrectionChunk`です。返り値は保存chunkのbyte列のSHA-256です。CLIはありません。`process_command`は既存`generate`と同じ外部process境界のテスト用指定です。
+公開APIは`doc_translate.pdf_correction.correct_pdf(*, workspace: Path, draft_sha256: str, owned_pages: list[int], reference_pages: list[int], policy: str, config: GenerationConfig, process_command: Sequence[str] | None = None, cancel: threading.Event | None = None, before_send: BeforeSend | None = None, observer: Observer | None = None) -> str`と`load_pdf_correction(workspace: Path, sha256: str) -> PDFCorrectionChunk`です。返り値は保存chunkのbyte列のSHA-256です。CLIはありません。`process_command`は既存`generate`と同じ外部process境界のテスト用指定です。
 
 ```python
 from pathlib import Path
