@@ -10,6 +10,7 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from doc_translate.render_assets import RenderAssets, safe_latex
+from doc_translate.saved_status import _status_records, read_saved_status
 from doc_translate.snapshot import (
     Contract,
     Sha256,
@@ -23,6 +24,8 @@ from doc_translate.snapshot import (
 from doc_translate.translation import load_translation
 from doc_translate.units import _MARKER, TranslationUnit, generate_translation_units
 from doc_translate.workspace import workspace_lock
+
+__all__ = ["read_saved_status", "render_document", "workspace_status"]
 
 
 class RenderReference(Contract):
@@ -1153,7 +1156,12 @@ def _build(workspace: Path):
     japanese, english = renderer.document(True), renderer.document(False)
     accepted = {item.unit_id for item in active.translations} if active else set()
     failed = (
-        [u.unit_id for chunk in active.chunks if chunk.error for u in chunk.units]
+        [
+            u.unit_id
+            for chunk in active.chunks
+            if chunk.error and chunk.error != "not_processed"
+            for u in chunk.units
+        ]
         if active
         else []
     )
@@ -1376,6 +1384,23 @@ def render_document(workspace: Path) -> dict:
 
 def workspace_status(workspace: Path) -> dict:
     """Inspect current saved inputs and verified output without writing or inference."""
+    before = _status_records(workspace)
+    try:
+        summary = _verified_status(workspace)
+    except OSError, ValueError:
+        if before != _status_records(workspace):
+            raise RuntimeError(
+                "保存記録が検査中に更新されました。statusを再実行してください"
+            ) from None
+        raise
+    if before != _status_records(workspace):
+        raise RuntimeError(
+            "保存記録が検査中に更新されました。statusを再実行してください"
+        )
+    return summary
+
+
+def _verified_status(workspace: Path) -> dict:
     if (
         not (workspace / "source-snapshot.json").exists()
         and (workspace / "run.json").exists()

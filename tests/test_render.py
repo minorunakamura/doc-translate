@@ -1368,3 +1368,466 @@ def test_epub_untranslated_attribute_marker_stays_outside_value_and_inside_list_
         and item["output_anchors"] == ["node-1-5"]
         for item in qa["uncertainties"]
     )
+
+
+def test_read_saved_status_source_only_leaves_totals_unknown_and_does_not_read_outputs(
+    tmp_path, monkeypatch
+):
+    from doc_translate.render import read_saved_status
+    from doc_translate.workspace import workspace_lock
+
+    workspace = save_source(
+        tmp_path, [{"block_id": "b", "kind": "paragraph", "text": "Own text"}]
+    )
+    before = {
+        p.relative_to(workspace): p.read_bytes()
+        for p in workspace.rglob("*")
+        if p.is_file()
+    }
+    read_bytes = Path.read_bytes
+
+    def limited_read(path):
+        assert (
+            path.name
+            in {
+                "run.json",
+                "source-snapshot.json",
+                "preparation-snapshot.json",
+                "translation-snapshot.json",
+                "render.json",
+                "source-candidate.json",
+                "pdf-draft.json",
+            }
+            or path.parent.name == "source"
+        )
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", limited_read)
+    with workspace_lock(workspace):
+        result = read_saved_status(workspace)
+    assert result["format"] == "pdf"
+    assert result["translation"] is None
+    assert result["render"] is None
+    assert result["run"] is None
+    assert {
+        p.relative_to(workspace): read_bytes(p)
+        for p in workspace.rglob("*")
+        if p.is_file()
+    } == before
+
+
+def test_read_saved_status_run_only_uses_manifest_progress_not_original(tmp_path):
+    from test_preparation import CONFIG
+
+    from doc_translate.preparation import StylePolicy
+    from doc_translate.render import read_saved_status
+    from doc_translate.run import RunManifest
+
+    run = RunManifest(
+        document={"format": "pdf", "sha256": "a" * 64, "artifact": "originals/own.pdf"},
+        source_name="Own.pdf",
+        owned_pages=[1, 2, 3],
+        reference_pages=[4],
+        corrected_pages=[1],
+        failed_pages=[2],
+        not_processed_pages=[3],
+        correction=CONFIG,
+        translation=CONFIG,
+        policy=StylePolicy(version="1", text="Own style"),
+        user_terms={},
+        error="cancelled",
+    )
+    (tmp_path / "run.json").write_text(run.model_dump_json())
+    result = read_saved_status(tmp_path)
+    assert result["run"]["corrected_pages"] == [1]
+    assert result["run"]["failed_pages"] == [2]
+    assert result["run"]["not_processed_pages"] == [3]
+    assert result["translation"] is None
+    assert (
+        result["record_mtimes"]["run.json"] == (tmp_path / "run.json").stat().st_mtime
+    )
+    assert not (tmp_path / ".writer.lock").exists()
+
+
+def test_render_and_detailed_status_classify_not_processed_separately_from_failed(
+    tmp_path,
+):
+    import threading
+
+    from test_preparation import rewrite_artifact
+    from test_translation import CONFIG, prepare_blocks
+
+    from doc_translate.render import render_document, workspace_status
+    from doc_translate.translation import load_translation, translate_document
+
+    workspace = prepare_blocks(tmp_path, [("body", "Own paragraph.")])
+    cancel = threading.Event()
+    cancel.set()
+    digest = translate_document(workspace=workspace, config=CONFIG, cancel=cancel)
+    snapshot = load_translation(workspace, digest).model_dump(mode="json")
+    snapshot["chunks"][0]["error"] = "not_processed"
+    changed = rewrite_artifact(workspace, "snapshots/translation", snapshot)
+    (workspace / "translation-snapshot.json").write_text(
+        json.dumps({"schema_version": 1, "sha256": changed})
+    )
+    assert load_translation(workspace).processing.status == "failed"
+    for result in (render_document(workspace), workspace_status(workspace)):
+        assert result["processing"]["failed"] == []
+        assert result["processing"]["not_processed"] == ["unit-1"]
+        assert result["processing"]["status"] == "partial"
+
+
+def save_status_translation(workspace, chunks, **extra):
+    from test_preparation import CONFIG, rewrite_artifact
+
+    value = {
+        "schema_version": 1,
+        "source_snapshot_sha256": json.loads(
+            (workspace / "source-snapshot.json").read_bytes()
+        )["sha256"],
+        "preparation_sha256": "b" * 64,
+        "config": CONFIG.model_dump(mode="json"),
+        "chunks": chunks,
+        **extra,
+    }
+    (workspace / "snapshots/translation").mkdir(parents=True, exist_ok=True)
+    digest = rewrite_artifact(workspace, "snapshots/translation", value)
+    (workspace / "translation-snapshot.json").write_text(
+        json.dumps({"schema_version": 1, "sha256": digest})
+    )
+    return digest
+
+
+def test_read_saved_status_counts_saved_leaf_answers_errors_and_cancellation(tmp_path):
+    from doc_translate.render import read_saved_status
+
+    workspace = save_source(tmp_path, [])
+    digest = save_status_translation(
+        workspace,
+        [
+            {
+                "units": [{"unit_id": "leaf-1"}],
+                "answer": {"translations": [{"unit_id": "leaf-1"}]},
+                "error": None,
+            },
+            {
+                "units": [{"unit_id": "leaf-2"}],
+                "answer": None,
+                "error": "not_processed",
+            },
+            {
+                "units": [{"unit_id": "leaf-3"}],
+                "answer": None,
+                "error": "generation_failed",
+            },
+            {"units": [{"unit_id": "leaf-4"}], "answer": None, "error": "cancelled"},
+        ],
+    )
+    result = read_saved_status(workspace)["translation"]
+    assert result["sha256"] == digest
+    assert result["total"] == 4
+    assert result["succeeded"] == 1
+    assert result["failed"] == 1
+    assert result["not_processed"] == 1
+    assert result["cancelled"] == 1
+    assert result["source_matches_pointer"] is True
+
+
+def test_read_saved_status_attributes_old_translation_and_detects_run_setting_differences(
+    tmp_path,
+):
+    from test_translation import CONFIG, prepare_blocks
+
+    from doc_translate.preparation import StylePolicy, load_preparation
+    from doc_translate.render import read_saved_status
+    from doc_translate.run import RunManifest
+
+    workspace = prepare_blocks(tmp_path, [("body", "Own text.")])
+    preparation = json.loads((workspace / "preparation-snapshot.json").read_bytes())[
+        "sha256"
+    ]
+    run = RunManifest(
+        document=load_source_snapshot(workspace).document,
+        source_name="own.pdf",
+        owned_pages=[1],
+        reference_pages=[],
+        correction=CONFIG,
+        translation=CONFIG.model_copy(update={"model": "different"}),
+        policy=StylePolicy(version="2", text="Changed"),
+        user_terms={"own": "自作"},
+    )
+    (workspace / "run.json").write_text(run.model_dump_json())
+    save_status_translation(
+        workspace, [], source_snapshot_sha256="a" * 64, preparation_sha256=preparation
+    )
+    (workspace / "preparation-snapshot.json").write_text(
+        json.dumps({"schema_version": 1, "sha256": "c" * 64})
+    )
+    result = read_saved_status(workspace)["translation"]
+    assert result["source_matches_pointer"] is False
+    assert result["preparation_matches_pointer"] is False
+    assert result["run_settings_match"] == {
+        "translation": False,
+        "policy": False,
+        "user_terms": False,
+    }
+    assert result["preparation_sha256"] == preparation
+    assert load_preparation(workspace, preparation).policy.version != "2"
+
+
+def test_read_saved_status_reads_past_render_summary_but_not_artifacts(
+    tmp_path, monkeypatch
+):
+    from doc_translate.render import (
+        read_saved_status,
+        render_document,
+        workspace_status,
+    )
+
+    workspace = save_source(
+        tmp_path, [{"block_id": "b", "kind": "paragraph", "text": "Own paragraph."}]
+    )
+    saved = render_document(workspace)
+    (workspace / saved["artifacts"]["japanese"]).write_text("damaged output")
+    read_bytes = Path.read_bytes
+
+    def limited_read(path):
+        assert path.name not in {
+            "japanese.md",
+            "english.md",
+            "qa.json",
+            "usage.json",
+            "source-map.json",
+        }
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", limited_read)
+    result = read_saved_status(workspace)
+    assert (
+        result["translation"] is None
+    )  # past render counts do not invent a current total
+    assert result["render"]["processing"]["status"] == "partial"
+    assert result["render"]["artifacts"] == saved["artifacts"]
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    with pytest.raises(ValueError, match="hash"):
+        workspace_status(workspace)
+
+
+@pytest.mark.parametrize("keep_changing", [False, True])
+def test_read_saved_status_retries_once_then_rejects_update_conflict(
+    tmp_path, monkeypatch, keep_changing
+):
+    from doc_translate.render import read_saved_status
+
+    workspace = save_source(tmp_path, [])
+    pointer = workspace / "source-snapshot.json"
+    first = pointer.read_bytes()
+    source = load_source_snapshot(workspace)
+    save_source_snapshot(workspace, source.model_copy(update={"snapshot_id": "other"}))
+    second = pointer.read_bytes()
+    pointer.write_bytes(first)
+    read_bytes = Path.read_bytes
+    reads = []
+
+    def updating_read(path):
+        data = read_bytes(path)
+        if path.parent.name == "source":
+            reads.append(path.name)
+            if keep_changing or len(reads) == 1:
+                pointer.write_bytes(second if len(reads) % 2 else first)
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", updating_read)
+    if keep_changing:
+        with pytest.raises(RuntimeError, match="更新競合"):
+            read_saved_status(workspace)
+    else:
+        assert (
+            read_saved_status(workspace)["pointers"]["source-snapshot.json"]
+            == json.loads(second)["sha256"]
+        )
+    assert len(reads) == 2
+
+
+def test_detailed_status_rejects_pointer_change_during_verification(
+    tmp_path, monkeypatch
+):
+    from doc_translate.render import workspace_status
+
+    workspace = save_source(tmp_path, [])
+    pointer = workspace / "source-snapshot.json"
+    first = pointer.read_bytes()
+    save_source_snapshot(
+        workspace,
+        load_source_snapshot(workspace).model_copy(update={"snapshot_id": "other"}),
+    )
+    second = pointer.read_bytes()
+    pointer.write_bytes(first)
+    read_bytes = Path.read_bytes
+
+    def updating_read(path):
+        data = read_bytes(path)
+        if path.parent.name == "source":
+            pointer.write_bytes(second)
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", updating_read)
+    with pytest.raises(RuntimeError, match="更新"):
+        workspace_status(workspace)
+
+
+def test_read_saved_status_keeps_candidate_separate_from_adopted_source(tmp_path):
+    from test_preparation import CONFIG, rewrite_artifact
+
+    from doc_translate.render import read_saved_status
+    from doc_translate.snapshot import PDFSourceInputs, SourceCandidate
+
+    workspace = save_source(tmp_path, [])
+    source_digest = json.loads((workspace / "source-snapshot.json").read_bytes())[
+        "sha256"
+    ]
+    candidate = SourceCandidate(
+        document=load_source_snapshot(workspace).document,
+        head_sha256=source_digest,
+        base_sha256="b" * 64,
+        source_sha256="c" * 64,
+        generation_sha256="d" * 64,
+        inputs=PDFSourceInputs(
+            draft_sha256="e" * 64,
+            chunk_sha256s=[],
+            correction=CONFIG,
+            correction_policy="Own policy",
+            owned_pages=[1],
+            reference_pages=[],
+            corrected_pages=[1],
+            failed_pages=[],
+            not_processed_pages=[],
+        ),
+    )
+    (workspace / "candidates/source").mkdir(parents=True)
+    digest = rewrite_artifact(
+        workspace, "candidates/source", candidate.model_dump(mode="json")
+    )
+    (workspace / "source-candidate.json").write_text(
+        json.dumps({"schema_version": 1, "sha256": digest})
+    )
+    result = read_saved_status(workspace)
+    assert result["candidate"]["sha256"] == digest
+    assert result["candidate"]["source_sha256"] == "c" * 64
+    assert result["pointers"]["source-snapshot.json"] == source_digest
+    assert result["translation"] is None
+
+
+def test_read_saved_status_rejects_boolean_schema_version(tmp_path):
+    from doc_translate.render import read_saved_status
+
+    workspace = save_source(tmp_path, [])
+    pointer = workspace / "source-snapshot.json"
+    value = json.loads(pointer.read_bytes())
+    value["schema_version"] = True
+    pointer.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="schema"):
+        read_saved_status(workspace)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "pointer-digest",
+        "source-hash",
+        "source-type",
+        "source-path",
+        "source-symlink",
+        "summary-hash",
+        "summary-type",
+        "summary-path",
+        "summary-symlink",
+        "leaf-type",
+    ],
+)
+def test_read_saved_status_rejects_damaged_required_records(tmp_path, damage):
+    import hashlib
+
+    from doc_translate.render import read_saved_status, render_document
+
+    workspace = save_source(tmp_path, [])
+    if damage.startswith("summary"):
+        saved = render_document(workspace)
+        path = workspace / saved["artifacts"]["summary"]
+        manifest = json.loads((workspace / "render.json").read_bytes())
+        if damage == "summary-hash":
+            path.write_text("{}")
+        elif damage == "summary-symlink":
+            outside = tmp_path / "outside.json"
+            outside.write_bytes(path.read_bytes())
+            path.unlink()
+            path.symlink_to(outside)
+        else:
+            summary = json.loads(path.read_bytes())
+            if damage == "summary-type":
+                summary["processing"]["output_reached"] = 0
+            else:
+                summary["artifacts"]["japanese"] = "../outside.md"
+            path.write_text(json.dumps(summary))
+            manifest["files"][saved["artifacts"]["summary"]] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+            (workspace / "render.json").write_text(json.dumps(manifest))
+    elif damage == "leaf-type":
+        save_status_translation(
+            workspace,
+            [{"units": [{"unit_id": 1}], "answer": None, "error": "not_processed"}],
+        )
+    else:
+        pointer = workspace / "source-snapshot.json"
+        reference = json.loads(pointer.read_bytes())
+        path = workspace / "snapshots/source" / (reference["sha256"] + ".json")
+        if damage == "pointer-digest":
+            reference["sha256"] = "../../outside"
+        elif damage == "source-hash":
+            path.write_text("{}")
+        elif damage == "source-symlink":
+            outside = tmp_path / "outside.json"
+            outside.write_bytes(path.read_bytes())
+            path.unlink()
+            path.symlink_to(outside)
+        else:
+            source = json.loads(path.read_bytes())
+            source["document"]["artifact" if damage == "source-path" else "format"] = (
+                "../outside.pdf" if damage == "source-path" else 1
+            )
+            data = json.dumps(source).encode()
+            reference["sha256"] = hashlib.sha256(data).hexdigest()
+            (path.parent / (reference["sha256"] + ".json")).write_bytes(data)
+        pointer.write_text(json.dumps(reference))
+    with pytest.raises(ValueError):
+        read_saved_status(workspace)
+
+
+def test_read_saved_status_handles_candidate_pointer_removed_at_read_boundary(
+    tmp_path, monkeypatch
+):
+    from doc_translate.render import read_saved_status
+
+    workspace = save_source(tmp_path, [])
+    candidate = workspace / "source-candidate.json"
+    candidate.write_text(json.dumps({"schema_version": 1, "sha256": "a" * 64}))
+    read_bytes = Path.read_bytes
+
+    def removing_read(path):
+        if path == candidate:
+            path.unlink(missing_ok=True)
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", removing_read)
+    assert read_saved_status(workspace)["candidate"] is None
+
+
+def test_read_saved_status_rejects_directory_in_place_of_required_json(tmp_path):
+    from doc_translate.render import read_saved_status
+
+    workspace = save_source(tmp_path, [])
+    (workspace / "source-snapshot.json").unlink()
+    (workspace / "source-snapshot.json").mkdir()
+    with pytest.raises(ValueError, match="record"):
+        read_saved_status(workspace)

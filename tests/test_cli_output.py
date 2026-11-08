@@ -9,7 +9,7 @@ from test_epub import make_epub
 from test_run import helper, run_args
 
 from doc_translate.cli import main
-from doc_translate.cli_output import catalog_text, summary_text
+from doc_translate.cli_output import catalog_text, saved_status_text, summary_text
 from doc_translate.render import workspace_status
 
 
@@ -161,6 +161,27 @@ def test_terminal_controls_in_catalog_are_escaped_without_losing_unicode():
     assert "\x1b" not in output
 
 
+def test_saved_status_escapes_workspace_controls_including_both_command_hints():
+    output = saved_status_text(
+        {
+            "format": "epub",
+            "run": None,
+            "translation": None,
+            "render": None,
+            "pointers": {},
+            "record_mtimes": {},
+            "candidate": None,
+        },
+        Path("work/日本語\x1b[2J\r\t\x07"),
+    )
+    assert (
+        not any(control in output for control in "\x1b\r\t\x07")
+        and output.count(r"日本語\x1b[2J\r\t\x07") == 3
+        and "--verify" in output
+        and "--json" in output
+    )
+
+
 def test_readable_run_and_saved_only_status_keep_json_artifacts(
     tmp_path, capsys, monkeypatch
 ):
@@ -188,7 +209,14 @@ def test_readable_run_and_saved_only_status_keep_json_artifacts(
     monkeypatch.setenv("PATH", "")
     main(["status", str(workspace)])
     text = capsys.readouterr().out
-    assert "最新" in text and "一致" in text and "有効" in text
+    assert "保存記録のみ" in text and "成果物未検証" in text
+    assert "保存訳文 成功" in text and "同じ版" in text
+    assert "最新" not in text and "有効" not in text
+    main(["status", str(workspace), "--verify"])
+    verified = capsys.readouterr().out
+    assert "最新" in verified and "一致" in verified and "有効" in verified
+    main(["status", str(workspace), "--verify", "--json"])
+    assert json.loads(capsys.readouterr().out) == saved
     main(["status", str(workspace), "--json"])
     assert json.loads(capsys.readouterr().out) == saved
 
