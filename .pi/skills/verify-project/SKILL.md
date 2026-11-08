@@ -7,6 +7,8 @@ description: Verify doc-translate PDF/EPUB run/resume and scoped review progress
 
 今回関係する機能だけを[Feature Map](references/feature-map.md)から選ぶ。対象は軽量status／`--verify`／`--json`・必要記録破損拒否・保存不変、およびEPUB run／resumeの共通進捗・TTY／行ログ・出力flag。PDF run／resumeの工程・所有／参照と保存後ページ集計はMapのPDF節、明示範囲reviewの検証→AI確認→保存→終了検査・今回の指摘件数／品質未承認・出力flagsはreview節に限定して扱う。全Map実行・製品修正・installの許可ではない。通常test・正式チェック・Root／Reviewerの受入判断を代用しない。
 
+Issue #53の統合受入れでは新手順を重複生成せず、Mapの既存「保存記録と詳細検査」「EPUB run／resumeと共通進捗」「PDF run／resumeの工程・所有ページ進捗」「明示範囲reviewの共通表示」を選ぶ。Rootが別invocationで各入口・TTY画像・故障代表・性能を直接照合し、[開発ガイドの#53節](../../../CONTRIBUTING.md#進捗表示statusの統合受入れissue-53)から正式チェックとwheel配布検査へ進む。これらは再実行の導線であり、統合成功の記録ではない。実provider／実認証・実Docling／OCR・意味品質・任意規模／全端末・他OS・SIGKILL復元・remote CIは保証しない。
+
 ## 前提と操作
 
 repository rootをcwdにし、既存の`.venv/bin/python`とCLIを使う。依存同期／追加install／実認証／実LLM／実Docling・OCR／model取得／利用者workspaceは使わない。既存環境でimportと`status --help`が成功しない場合は、不足・試した方法・未確認範囲を報告して止める。勝手な環境更新や危険な代替をしない。helperやNodeのbuildはstatus-only操作に不要。
