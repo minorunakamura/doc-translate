@@ -1,0 +1,141 @@
+"""Small checks for Issue #54's verification-only recipes, not timing thresholds."""
+
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+
+SCRIPTS = Path(__file__).resolve().parents[1] / ".pi/skills/verify-project/scripts"
+
+
+def load(name):
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+baseline = load("performance_baseline")
+operation = load("performance_operation")
+
+
+def test_performance_baseline_distribution_keeps_raw_order():
+    assert baseline.distribution([3, 1, 2]) == {
+        "raw": [3, 1, 2],
+        "median": 2,
+        "min": 1,
+        "max": 3,
+    }
+
+
+@pytest.mark.parametrize("format", ["pdf", "epub"])
+def test_performance_operation_render_recipe_uses_public_save_and_render(
+    tmp_path, format
+):
+    from doc_translate.render import render_document
+    from doc_translate.snapshot import load_source_snapshot, save_source_snapshot
+    from doc_translate.units import generate_translation_units
+
+    source = operation.render_source(format, 3)
+    save_source_snapshot(tmp_path, source)
+    assert load_source_snapshot(tmp_path) == source
+    assert len(generate_translation_units(source)) == 3
+    summary = render_document(tmp_path)
+    qa = json.loads((tmp_path / summary["artifacts"]["qa"]).read_bytes())
+    assert summary["processing"]["status"] == "partial"
+    assert (
+        sum(
+            issue["reason"] == "Self-authored uncertainty."
+            for issue in qa["uncertainties"]
+        )
+        == 3
+    )
+    assert len(qa["uncertainties"]) == 6  # Includes the three untranslated units.
+
+
+def test_performance_operation_observe_delegates_reads_and_atomic_writes(tmp_path):
+    from doc_translate.snapshot import _atomic_write
+
+    output = tmp_path / "diagnostic.json"
+    path = tmp_path / "snapshots/own.json"
+    path.parent.mkdir()
+    with operation.observe(tmp_path, output):
+        _atomic_write(path, b"abc")
+        assert path.read_bytes() == b"abc"
+        assert path.read_bytes() == b"abc"
+    diagnostic = json.loads(output.read_bytes())
+    assert diagnostic["counts"]["logical_read_bytes"] == 6
+    assert diagnostic["counts"]["replace_snapshots_bytes"] == 3
+    assert diagnostic["writes"] == {"snapshots/own.json": 1}
+    assert diagnostic["reads"] == {"snapshots/own.json": 2}
+    atomic_write = next(
+        row for row in diagnostic["profile"] if row["function"] == "_atomic_write"
+    )
+    assert atomic_write["calls"] == atomic_write["primitive_calls"] == 1
+    assert 0 <= atomic_write["self_seconds"] <= atomic_write["inclusive_seconds"]
+
+
+def test_performance_baseline_multiple_resources_are_real_epub_boundaries(tmp_path):
+    from doc_translate.epub import read_epub
+
+    source = baseline.epub_source(tmp_path / "input", 2, multiple=True)
+    book = read_epub(source)
+    assert len(book.spine) == 2
+    assert [item.resolved_id for item in book.spine] == ["ch0", "ch1"]
+    assert all(f"OPS/section-{i}.xhtml" in book.resources for i in range(2))
+
+
+@pytest.mark.parametrize(
+    "interruption", [KeyboardInterrupt, baseline.subprocess.TimeoutExpired]
+)
+def test_performance_baseline_interruption_bounds_drain_and_reaps_owned_group(
+    tmp_path, monkeypatch, interruption
+):
+    import traceback
+    from unittest.mock import Mock
+
+    initial = (
+        interruption("command", 1)
+        if interruption is baseline.subprocess.TimeoutExpired
+        else interruption("synthetic private exception detail")
+    )
+    process = Mock(pid=12345, returncode=-9)
+    process.communicate.side_effect = [
+        initial,
+        baseline.subprocess.TimeoutExpired("command", 45),
+        ("{}", "interrupted"),
+    ]
+    signals = []
+    monkeypatch.setattr(baseline.subprocess, "Popen", lambda *a, **kw: process)
+    monkeypatch.setattr(
+        baseline.os, "killpg", lambda pid, sig: signals.append((pid, sig))
+    )
+    with pytest.raises(
+        KeyboardInterrupt if interruption is KeyboardInterrupt else AssertionError
+    ) as raised:
+        baseline.invoke(["owned-command"], {}, tmp_path, 1)
+    assert signals == [
+        (12345, baseline.signal.SIGINT),
+        (12345, baseline.signal.SIGKILL),
+    ]
+    assert process.communicate.call_args_list[0].kwargs == {"timeout": 1}
+    assert process.communicate.call_args_list[1].kwargs == {"timeout": 45}
+    assert process.communicate.call_count == 3
+    assert (tmp_path / "stdout.json").read_text() == "{}"
+    assert (tmp_path / "stderr.txt").read_text() == "interrupted"
+    record = json.loads((tmp_path / "command.json").read_text())
+    assert record["command"] == ["owned-command"]
+    assert record["exit"] == -9
+    assert record["timed_out"] is (interruption is baseline.subprocess.TimeoutExpired)
+    assert record["external_process_wall_seconds"] >= 0
+    if interruption is KeyboardInterrupt:
+        assert raised.value is initial
+        frames = traceback.extract_tb(raised.value.__traceback__)
+        assert sum(frame.name == "invoke" for frame in frames) == 1
+        assert frames[-1].name == "_execute_mock_call"
+    assert all(
+        "synthetic private exception detail" not in path.read_text()
+        for path in tmp_path.iterdir()
+    )
