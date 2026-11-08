@@ -18,6 +18,7 @@ from doc_translate.inference import (
 from doc_translate.pdf import PDFPageImage
 from doc_translate.pdf_correction import _images, _load_pdf_correction
 from doc_translate.preparation import Visible, load_preparation
+from doc_translate.progress import Observer, emit, scoped_observer
 from doc_translate.snapshot import (
     Contract,
     Nonempty,
@@ -312,10 +313,12 @@ def review_document(
     selection: Selection | None = None,
     process_command: Sequence[str] | None = None,
     before_send: BeforeSend | None = None,
+    observer: Observer | None = None,
 ) -> dict:
     """Review only explicit IDs/range against current, validated adopted translations."""
     from doc_translate.render import _inputs, workspace_status
 
+    emit(observer, "review_validate", "start")
     with workspace_lock(workspace):
         if (unit_ids is None) == (pages is None):
             raise ValueError("Review requires exactly one of --units or --pages")
@@ -335,15 +338,35 @@ def review_document(
         selected, blocks, images = _scope(
             workspace, source, translation, units, unit_ids or [], pages
         )
+        run_manifest = None
+        if (workspace / "run.json").exists():
+            from doc_translate.run import RunManifest
+
+            run_manifest = RunManifest.model_validate_json(
+                (workspace / "run.json").read_bytes()
+            )
+        scope = {
+            "unit_ids": tuple(u.unit_id for u in selected),
+            "block_ids": tuple(b.block_id for b in blocks),
+            "pages": tuple(p.page for p in images),
+        }
+        emit(
+            observer,
+            "review_validate",
+            "document",
+            phase="review",
+            source_name=run_manifest.source_name
+            if run_manifest
+            else source.document.artifact,
+            document_sha256=source.document.sha256,
+            format=source.document.format,
+            **scope,
+        )
+        observer = scoped_observer(observer, **scope)
         saved = translation.config
         if pages is not None:
             saved = source.machine_inputs.correction if source.machine_inputs else None
-            if (workspace / "run.json").exists():
-                from doc_translate.run import RunManifest
-
-                run_manifest = RunManifest.model_validate_json(
-                    (workspace / "run.json").read_bytes()
-                )
+            if run_manifest is not None:
                 saved = run_manifest.correction
         config = GenerationConfig.model_validate(
             {
@@ -354,6 +377,14 @@ def review_document(
         preparation = load_preparation(workspace, translation.preparation_sha256)
         load_reviews(workspace)
         request = _request(selected, blocks, images, translation, preparation)
+        emit(observer, "review_validate", "done")
+        emit(observer, "review", "start")
+        request_observer = scoped_observer(
+            observer,
+            provider=config.provider,
+            model=config.model,
+            thinking=config.thinking,
+        )
         started = time.monotonic()
         error = None
         findings = []
@@ -365,6 +396,7 @@ def review_document(
                 images=_images(workspace, images),
                 process_command=process_command,
                 before_send=before_send,
+                observer=request_observer,
             )
         except InferenceError as failure:
             attempts, error = failure.attempts, failure.code
@@ -374,6 +406,13 @@ def review_document(
                 findings = _locate(result.answer, selected, blocks, images)
             except ValueError as failure:
                 error = str(failure)
+        emit(
+            observer,
+            "review",
+            "failed" if error else "done",
+            reason="review_rejected" if error else "",
+        )
+        emit(observer, "review_save", "start")
         run = _store(
             workspace,
             "attempts/review",
@@ -408,7 +447,17 @@ def review_document(
             )
             digest = _store(workspace, "reviews", record)
             review.update(sha256=digest, artifact=f"reviews/{digest}.json")
-        return {**workspace_status(workspace), "review": review}
+        emit(observer, "review_save", "done")
+        emit(observer, "review_verify", "start")
+        status = workspace_status(workspace)
+        emit(observer, "review_verify", "done")
+        emit(
+            observer,
+            "review_verify",
+            "finished",
+            reason="review_rejected" if error else "",
+        )
+        return {**status, "review": review}
 
 
 def load_reviews(workspace: Path) -> list[dict]:

@@ -15,6 +15,10 @@ from doc_translate.cli_output import _safe
 from doc_translate.progress import ProgressEvent, ProgressState
 
 _STAGES = {
+    "review_validate": "保存データ・選択範囲の検証",
+    "review": "AIによる内容確認",
+    "review_save": "確認結果の保存",
+    "review_verify": "終了時の保存データ検査",
     "extract": "本文・構造抽出",
     "validate": "保存データ検証",
     "correction": "PDF補正",
@@ -65,7 +69,16 @@ def _target(event):
     )
     if len(ids) > 2:
         target += " …（省略）"
-    return target
+    if event.pages is not None:
+        target += f" / 対象 {len(event.block_ids)} block"
+        if event.block_ids:
+            target += ": " + ", ".join(_safe(i) for i in event.block_ids[:2])
+            if len(event.block_ids) > 2:
+                target += " …（省略）"
+        target += (
+            f" / 画像 {_pages(event.pages)}ページ" if event.pages else " / 画像なし"
+        )
+    return target.removeprefix(" / ")
 
 
 def _line(event):
@@ -79,6 +92,8 @@ def _line(event):
         if event.stage == "correction" and event.kind == "adopted"
         else _KINDS.get(event.kind, _safe(event.kind))
     )
+    if event.stage == "review" and event.kind == "done":
+        label = "内容確認回答の検証完了（記録は未保存）"
     text = f"{name}: {label}"
     if event.reason == "candidate_adoption_required":
         text += " / 候補の明示採用待ち（後段は未実行）"
@@ -95,7 +110,7 @@ def _line(event):
     if event.kind == "adopted":
         unit = "ページ" if event.stage == "correction" else "unit"
         text += f" 成功 {event.succeeded}/{'更新中' if event.total_updating else event.total} {unit}（うち再利用 {event.reused}）／失敗 {event.failed}／取消 {event.cancelled_count}／未処理 {event.not_processed}"
-    if event.unit_ids or event.owned_pages is not None:
+    if event.unit_ids or event.owned_pages is not None or event.pages is not None:
         text += " / " + _target(event)
     if event.provider:
         text += f" / 送信先 {_safe(event.provider)} / {_safe(event.model)} · thinking {_safe(event.thinking)}"
@@ -107,6 +122,8 @@ def _line(event):
 
 
 def _header(event):
+    if event.phase == "review":
+        return f"原本 {_safe(event.source_name)} / {_safe(event.format.upper())} 明示選択 {_target(event)} / SHA-256 {_safe(event.document_sha256)}"
     scope = (
         "全体"
         if event.format == "epub"
@@ -219,6 +236,8 @@ class ProgressDisplay:
                     "translation",
                     "render",
                 ]
+            if (header and header.phase == "review") or "review_validate" in stages:
+                order = ["review_validate", "review", "review_save", "review_verify"]
             for stage in order:
                 event = stages.get(stage)
                 kind = event.kind if event else "pending"

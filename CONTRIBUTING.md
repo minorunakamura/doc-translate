@@ -618,6 +618,10 @@ pnpm --dir ai test
 - 正常／空findings／未知対象拒否／provider失敗／metadata設定失敗とusage observed/unknown、原文／訳文／準備／run参照と旧byte hash不変、明示overrideとambient非適用、writer lock／atomic artifact保存失敗時の旧版・観測usage保持を検査します。故障注入はOSのreplace境界だけです。
 - 保存-only status/renderの現行確認／未確認範囲、機械チェックとの分離、QAの元位置／block／unit／出力anchor、旧reviewの履歴保持と修正後非current、candidate待ちでも採用hashに結ぶことを確認します。空findingsでもmeaning_quality_approved=falseです。
 
+Issue #52ではreviewも共通進捗へ接続し、stdoutを人向け既定へ変更します。JSON consumerは`--json`、送信前stderr JSON consumer（fauxの`settings.notices`を含む）は独立して`--events-json`を明示してください。BeforeSendの3引数／Python戻り値／保存schemaは維持します。`tests/test_review.py`で4組合せ、今回記録だけの指摘件数／品質未承認、重い処理前の通知・保存後・終了検査・request終端、拒否／保存失敗と旧byte維持を照合し、共通表示変更は`tests/test_cli_output.py`とrun／resume consumerも回帰します。共有`test_run.helper/run_args`はこの変更のためには変更しません。
+
+新隔離状態でのreview起動→選択request／record hash照合→終了検査→証拠退避→cleanupとTTY実表示は[Feature Mapのreview手順](.pi/skills/verify-project/references/feature-map.md#明示範囲reviewの共通表示issue-52)を使います。既存capture／PDF外部fixture／実Node fauxを再利用し、WorkerとRootは別invocationで操作します。HTML生成だけを視認性合格とせず、既存Chromeの実表示／画像読取りを記録します。実provider・実認証・model取得・新操作基盤は不要です。
+
 公開CLIの直接人工確認は上の`RUN_FIXTURE/new`作成後に、同じ外部process seamで実行できます（通常の利用者CLIは導入済みhelper／実providerを使うため、これはfaux限定例です）。
 
 ```sh

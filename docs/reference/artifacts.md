@@ -4,14 +4,14 @@ Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Is
 
 ## 明示範囲review（Issue #17）
 
-公開CLIは`review DIR --units unit-1,unit-2`またはPDFの`review DIR --pages A-B`、APIは`doc_translate.review.review_document(workspace=..., unit_ids=[...], selection=Selection(...), process_command=..., before_send=...)`（ページ指定時は`unit_ids`に代えて`pages=(A,B)`）です。`load_reviews(workspace)`はhash・歴史的source／translation・実request・helper結果・対象ID／元位置を保存-onlyで再検証します。独立推論は既存`generate(stage="review")`を使い、別Runner／会話履歴／自動全体reviewは追加しません。
+公開CLIは`review DIR --units unit-1,unit-2`またはPDFの`review DIR --pages A-B`、APIは`doc_translate.review.review_document(workspace=..., unit_ids=[...], selection=Selection(...), process_command=..., before_send=..., observer=...)`（ページ指定時は`unit_ids`に代えて`pages=(A,B)`）です。`load_reviews(workspace)`はhash・歴史的source／translation・実request・helper結果・対象ID／元位置を保存-onlyで再検証します。独立推論は既存`generate(stage="review")`を使い、別Runner／会話履歴／自動全体reviewは追加しません。
 
 ### 入力と範囲
 
 - exactly oneの明示unit IDs／ページ範囲が必要です。IDは現在の有効translation chunkの分割済みunit（`.part-N`含む）を使い、未知ID／親IDの推測展開・古い訳のIDだけjoinはしません。現在のsource、準備、runのpolicy／terms／translation設定に対応し、選択unitの受理済み訳文が必要です。未訳・staleなら無送信で不足条件を示し、勝手に翻訳しません。candidateがpendingでも有効な採用版の照合は可能です。
 - unitモードの`text.units`には選択unitのID・block/cell/node/attribute・親unit／source_range、種別、marker原文・対応訳、選択inline tokenのmarker／kind／text、表の行列・spanだけを投影します。tokenの任意metadata／属性や他unit本文を含む`unit.context`、全文`preparation.context`、block全文、画像を無条件に送りません。固定policy／採用glossaryを添えます。
 - PDFページモードは保存`page_images`のうち指定ページだけをページ順に使い、PNG bytes／hash／実寸／scale／座標・描画条件を既存画像境界で検査します。指定ページのblock本文・最小構造（table cells等）と対応unit訳だけを送ります。全chunkの画像／fragments／raw下書きを送りません。block位置だけでなく保存table cell evidence・unit位置・図regionのページも検査し、選択外へ跨る本文／訳文は送らず具体的な範囲エラーにします。黙ってskipや送信範囲の拡大はしません。
-- 明示設定 > 保存該当段階設定（unitsはtranslation snapshot、pagesはrunまたは採用sourceのcorrection設定）。不足は明示エラーで、ambient `PI_*`／別providerへのfallbackや保存設定の変更はありません。送信前通知は原資料hash・両snapshot hash、選択ID／ページ／画像と、preflightで判明したprovider/model/thinking／auth source/typeを含みます。
+- 明示設定 > 保存該当段階設定（unitsはtranslation snapshot、pagesはrunまたは採用sourceのcorrection設定）。不足は明示エラーで、ambient `PI_*`／別providerへのfallbackや保存設定の変更はありません。CLIの既定のstderr進捗は原本名・文書hashを冒頭に、実選択unit／block／画像ページと、preflightで判明したprovider/model/thinking・非秘密auth source/typeを送信前に表示します。原資料hash・source／translation snapshot両hash、選択ID／ページ／画像とprovider/model/thinking・非秘密auth source/typeを含む完全な従来の送信前JSON通知は、`--events-json`指定時だけstderrへ出力します。
 
 ### 回答・保存・QA
 
@@ -30,7 +30,7 @@ LLM回答は`ReviewAnswer`のみで、元位置・確認者・承認状態を自
 
 workspace writer lock下でattemptを先に、reviewを後にhash付きatomic保存します。保存失敗でも旧review／旧snapshot／採用参照／旧renderを保持し、既存source-snapshot／translation-snapshot／preparation／run参照を変えません。途中fileは履歴へ採用せず、再実行は新規独立推論です。失敗までに観測したusageは既存usage集計が段階別に保持し、応答損失や強制終了時のexactly-once課金は保証しません。
 
-CLIのstdoutは保存-only statusに`review: {status: validated|rejected, error, run, sha256?, artifact?}`を加えます。exitは0＝記録成功（findingsありも含む）、1＝推論／保存失敗、2＝入力・範囲・設定エラーです。review自体は出力を自動再生成しません。詳細statusは現行hashの確認／未確認範囲を即時表示し、renderの鮮度判定は`content_review`も比較します。後のoffline renderは現行findingsを`stage:review`の位置／block／unit／output anchor付きQAと表示用`※`へ反映します。旧版reviewは履歴だけに残し、現行の確認範囲・目印には流用しません。機械検査成功・空findings・modelの自己申告のいずれも意味品質承認にせず、`meaning_quality_approved=false`を維持します。
+Python戻り値とCLIの`--json`は終了時の詳細statusに`review: {status: validated|rejected, error, run, sha256?, artifact?}`を加えます。exitは0＝記録成功（findingsありも含む）、1＝推論／保存失敗、2＝入力・範囲・設定エラーです。review自体は出力を自動再生成しません。詳細statusは現行hashの確認／未確認範囲を即時表示し、renderの鮮度判定は`content_review`も比較します。後のoffline renderは現行findingsを`stage:review`の位置／block／unit／output anchor付きQAと表示用`※`へ反映します。旧版reviewは履歴だけに残し、現行の確認範囲・目印には流用しません。機械検査成功・空findings・modelの自己申告のいずれも意味品質承認にせず、`meaning_quality_approved=false`を維持します。
 
 ## 新規run（Issue #14）
 
@@ -50,11 +50,11 @@ WORKSPACE/
 
 `run.json`は`schema_version: 1/document/source_name/owned_pages/reference_pages/correction/translation/policy/user_terms/corrected_pages/failed_pages/not_processed_pages/chunk_sha256s/artifacts_path/error/error_code`です。`document`は`SourceDocument`、段階設定は既存`GenerationConfig`、`policy`は既存`StylePolicy`です。EPUBの`owned_pages`／`correction`はnull、ページ集合は空です。PDF全体を指定したときの`owned_pages`は取得前null、取得後に実ページ番号を固定します。明示所有範囲は取得前から保持します。参照指定と補正済み／失敗／未処理ページ、採用chunk digestは区別し、進行に応じatomicに更新します。credential・raw環境・秘密値・raw例外は保存しません。`error_code`は観測できた既存推論分類で、分類未観測時はnull、`error`は非秘密の工程失敗案内です。resume／途中artifact復旧の検証規則は次節を参照してください。
 
-CLIの送信前表示は新しいpreflightを重ねず、既存推論の**preflight→generate境界**を使います。`generate`と各stage公開APIに任意の`before_send: BeforeSend | None = None`を追加し、`BeforeSend = Callable[[GenerationConfig, GenerationInput, Preflight], None]`です。検証済みpreflightと画像を確認した後、実際のgenerate recordを送る直前に毎回（retryを含む）呼びます。CLIのrun／resumeは`--events-json`時にstderrへ入力名／hash、意図範囲、実requestの送信範囲・内容、段階provider／model／thinking、実`Preflight.auth.source/type`をflushします（reviewは従来noticeを維持）。原本fileや画像は準備／翻訳へ送らず、provider／model／認証fallbackやproductionのfake環境flagはありません。`cli.main(argv=None, *, process_command=None)`の明示process指定は既存adapterと同じ外部processテストseamだけです。productionは検証済み導入済みruntimeを使います。
+CLIの送信前表示は新しいpreflightを重ねず、既存推論の**preflight→generate境界**を使います。`generate`と各stage公開APIに任意の`before_send: BeforeSend | None = None`を追加し、`BeforeSend = Callable[[GenerationConfig, GenerationInput, Preflight], None]`です。検証済みpreflightと画像を確認した後、実際のgenerate recordを送る直前に毎回（retryを含む）呼びます。CLIのrun／resumeは`--events-json`時にstderrへ入力名／hash、意図範囲、実requestの送信範囲・内容、段階provider／model／thinking、実`Preflight.auth.source/type`をflushします（reviewも`--events-json`時だけ従来noticeを出力）。原本fileや画像は準備／翻訳へ送らず、provider／model／認証fallbackやproductionのfake環境flagはありません。`cli.main(argv=None, *, process_command=None)`の明示process指定は既存adapterと同じ外部processテストseamだけです。productionは検証済み導入済みruntimeを使います。
 
-### PDF／EPUB共通観測境界（Issue #50／#51）
+### PDF／EPUB共通観測境界（Issue #50／#51／#52）
 
-`run_document`／`resume_document`／`prepare_document`／`translate_document`／`correct_pdf`／`generate`へ任意keyword `observer: Observer | None = None`を追加します。`doc_translate.progress.ProgressEvent`の工程／kind、phase、実unit ID、job／attemptのrequest ID、固定理由code、非秘密の設定と保存後件数だけを同期callbackへ渡します。独立Python API利用者にCLI／Rich表示を強制せず、既存戻り値・BeforeSendの3引数と送信前flush責務を維持します。observerは表示用metadataだけを扱い、本文／回答／payload／tokenや任意例外の文字列を含めません。callbackは呼出元threadで動くため、CLIはlock付きin-memory stateへ反映し、workerでRichを再構築しません。独立callerのcallback例外は処理へ伝播し得ますが、起動済みchildは既存finallyで回収しrequest終端を通知します。
+`run_document`／`resume_document`／`prepare_document`／`translate_document`／`correct_pdf`／`review_document`／`generate`へ任意keyword `observer: Observer | None = None`を追加します。`doc_translate.progress.ProgressEvent`の工程／kind、phase、実unit ID、job／attemptのrequest ID、固定理由code、非秘密の設定と保存後件数だけを同期callbackへ渡します。独立Python API利用者にCLI／Rich表示を強制せず、既存戻り値・BeforeSendの3引数と送信前flush責務を維持します。observerは表示用metadataだけを扱い、本文／回答／payload／tokenや任意例外の文字列を含めません。callbackは呼出元threadで動くため、CLIはlock付きin-memory stateへ反映し、workerでRichを再構築しません。独立callerのcallback例外は処理へ伝播し得ますが、起動済みchildは既存finallyで回収しrequest終端を通知します。
 
 metadataは既存の実unit／phaseから発行元で投影し、表示目的のunit再生成・GenerationInput field・prompt／context変更はありません。CLI向け`SendNotice` wrapperだけがBeforeSendとは別のmetadataを保持します。collectは送信unit／section、translationは実chunkのunit、organizeは文書全体の収集結果整理（`unit_ids=[]`、原文unit全文の再送なし）です。PDF補正のowned／referenceは既存request contextの実範囲を使い、準備／翻訳に補正済み全ページのfallbackを作りません。
 
@@ -64,7 +64,9 @@ requestはPopen前から一意なattempt IDで観測し、起動失敗・preflig
 
 PDFはdraftの再利用検証前からvalidateを開始し、必要時extract、correction、assemble（source組立）、採用前validate、共通後段へ通知します。`ProgressEvent.owned_pages: tuple[int, ...] | None`／`reference_pages: tuple[int, ...]`はPDF用の任意metadataです。documentでは所有意図（Noneは全体・抽出後確定）と追加参照許可、correction requestでは実requestの所有／参照専用を表し、EPUBには投影しません。chunk再利用／成功応答回収は検証とrun manifest保存後、今回の成功は所有chunk検証・保存とmanifest更新後にのみ`adopted`で通知します。`succeeded`は所有ページ数、`reused`はその内訳、`total`は所有総数です。参照／訂正／通信retry／length・input_limit分割は成功数を増やさず、PDF分割は翻訳のsplit集合に入りません。取消ページは今回観測したEventに基づく表示内訳で、新しい永続状態は作りません。
 
-`correct_pdf`はvalidating／saving、coverage限定repair、既存generateのrequest lifecycle／transport retryを同じobserverへ伝播します。このchunk API単独ではrunの成功集計を発行しません。PDF早期returnは停止工程の失敗／部分状態とfinishedを区別し、候補変更時はvalidateの`candidate_adoption_required`で停止して後段を呼びません。再利用前検証・送信許可・BeforeSend・既存immutable byteは維持します。review新表示は後続Issueです。run／resume CLIの人向け既定と独立JSON flagsは[usage](usage.md#cliの表示とjson出力)、直接操作・証拠・cleanupは[検証Skill](../../.pi/skills/verify-project/SKILL.md)を参照してください。
+`correct_pdf`はvalidating／saving、coverage限定repair、既存generateのrequest lifecycle／transport retryを同じobserverへ伝播します。このchunk API単独ではrunの成功集計を発行しません。PDF早期returnは停止工程の失敗／部分状態とfinishedを区別し、候補変更時はvalidateの`candidate_adoption_required`で停止して後段を呼びません。再利用前検証・送信許可・BeforeSend・既存immutable byteは維持します。reviewも共通表示に接続します。run／resume／review CLIの人向け既定と独立JSON flagsは[usage](usage.md#cliの表示とjson出力)、直接操作・証拠・cleanupは[検証Skill](../../.pi/skills/verify-project/SKILL.md)を参照してください。
+
+reviewは`review_validate`を`_inputs`・範囲照合・準備／過去review再検証の前に開始し、`review`（AI内容確認）、`review_save`（attempt／受理記録保存）、`review_verify`（従来の`workspace_status`詳細検査）の順に通知します。指摘ありもAI確認の正常終了であり、推論／対象拒否は固定理由`review_rejected`の失敗とします。保存完了はatomic書込み後、終了は詳細検査後だけです。`ProgressEvent.block_ids`／`pages`は既存selected／blocks／imagesから投影するreview専用metadataで、pagesは画像ページ（空tupleは画像なし）、所有／参照ページではありません。generateのrequest lifecycle・設定・検証済み非秘密auth・retry／取消を同じobserverへ接続し、新しい取消engineや推論前検証のsignal handlerは追加しません。通常stdoutの件数は今回のartifact／hashと一致する返却`content_review.review_history`の記録から取得し、永続集計・schema・Python戻り値は変更しません。失敗時は指摘件数を未確定とし、attempt記録先と品質未承認を示します。本文・指摘全文・raw回答は通常表示へ出しません。
 
 結果とexit：
 

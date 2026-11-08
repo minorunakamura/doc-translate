@@ -41,6 +41,8 @@ class ProgressEvent:
     source_name: str = ""
     document_sha256: str = ""
     format: str = ""
+    block_ids: tuple[str, ...] = ()
+    pages: tuple[int, ...] | None = None
 
 
 Observer = Callable[[ProgressEvent], None]
