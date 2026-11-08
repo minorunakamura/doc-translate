@@ -26,6 +26,7 @@ from doc_translate.pdf import (
     _store,
     load_pdf_draft,
 )
+from doc_translate.progress import Observer, emit, scoped_observer
 from doc_translate.snapshot import Contract, Nonempty, Sha256
 from doc_translate.workspace import workspace_lock
 
@@ -843,8 +844,13 @@ def correct_pdf(
     process_command: Sequence[str] | None = None,
     cancel: threading.Event | None = None,
     before_send: BeforeSend | None = None,
+    observer: Observer | None = None,
 ) -> str:
     """Generate, validate and save one chunk; never adopt a source snapshot."""
+    observer = scoped_observer(
+        observer, owned_pages=tuple(owned_pages), reference_pages=tuple(reference_pages)
+    )
+    emit(observer, "correction", "validating")
     config = GenerationConfig.model_validate(config.model_dump())
     with workspace_lock(workspace):
         _draft, pages, items = _authorized_draft(
@@ -865,6 +871,7 @@ def correct_pdf(
                 workspace, run, record, config, request, pages, items, projection
             )
             if recovered is not None:
+                emit(observer, "correction", "reused")
                 return recovered
         current_request = request
         for number in range(3):
@@ -877,10 +884,12 @@ def correct_pdf(
                     process_command=process_command,
                     cancel=cancel,
                     before_send=before_send,
+                    observer=observer,
                 )
             except InferenceError as error:
                 _record(workspace, "rejected", current_request, config, error.attempts)
                 raise
+            emit(observer, "correction", "validating")
             try:
                 _validate_answer(result.answer, draft_sha256, owned_pages, items, pages)
             except _PageCoverageError as error:
@@ -894,12 +903,19 @@ def correct_pdf(
                 )
                 if number == 2:
                     raise
+                emit(
+                    observer,
+                    "correction",
+                    "repair",
+                    reason="owned_page_coverage_incomplete",
+                )
                 current_request = _repair_request(request, error.feedback)
             except ValueError:
                 _record(workspace, "rejected", current_request, config, result.attempts)
                 raise
             else:
                 break
+        emit(observer, "correction", "saving")
         run = _record(workspace, "validated", current_request, config, result.attempts)
         chunk = _make_chunk(
             result.answer, reference_pages, pages, run, projection["problems"]

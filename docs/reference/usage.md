@@ -51,7 +51,9 @@ TTYでは固定位置更新・最新3件履歴（再試行／失敗／取消は�
 
 **stderr JSON解析にはrun／resumeへ`--events-json`を追加してください。** この指定時だけ従来用途の送信前JSONをflushし、人向け進捗を混ぜません（全工程event streamではありません）。`--json`は最終stdoutだけの指定で、stderr進捗を止めません。両flagは独立です。送信通知の`transmission`に実対象`unit_ids`／`phase`（collectはsectionも）を互換的に追加します。organizeの`unit_ids=[]`は原文unit全文の再送ではなく文書全体の収集結果を整理する意味で、対応不明の一般表現ではありません。準備／翻訳のPDFページ対応不明時に、補正済み全ページを実送信範囲として代用しません。外部parserの実利用は未確認です。
 
-今回完成した範囲はEPUB＋共通表示です。PDF補正の工程／所有ページの保存後集計とreviewの新しい進捗・人向け結果／flagsは後続Issueで、完成扱いしません。reviewは従来の最終JSON／送信前noticeを維持します。PDFを含むrun／resumeの最終flagsの移行自体は共通です。通常のparser診断／致命的エラーはstderrへ出ることがあります。
+PDFのrun／resumeも重い検証の前から、draft検証／再利用→必要時の本文・レイアウト抽出→PDF補正→source組立→採用前検証・保存→翻訳準備／翻訳／Markdown出力を表示します。冒頭の所有意図・追加参照許可と、実requestの所有／参照専用ページは別です。参照は成功数に含めず、所有chunkの検証・保存とrun manifest更新後だけページ成功数を反映します。再利用は成功の内訳で、分母は所有ページ数のままです。length／入力上限の補正分割は翻訳leaf unitの総数更新とは別です。coverage限定の回答訂正は通信retryと分け、成功保存前は検証／保存中、取消受付は終了待ちとして表示します。保存済み補正だけのresumeも検証・再利用を示し、再送しません。全ページ指定の正確なページ数は抽出検証後に確定します。
+
+補正不能の早期終了では後段を完了とせず、候補が変わった場合は明示採用待ちで停止します。補正全ページ成功は候補の採用／翻訳完了を意味しません。reviewの新しい進捗・人向け結果／flagsは後続Issueで、従来の最終JSON／送信前noticeを維持します。通常のparser診断／致命的エラーはstderrへ出ることがあります。
 
 ## provider／modelを調べる（任意）
 
@@ -152,7 +154,7 @@ PDF補正では全所有ページの結果と根拠、見える原語本文・�
 
 各generate内の既存transport retryは、既知の一時的エラーだけ最大3attempt（待機3/6秒）です。従って分割しない1回の補正呼出しの理論上限は**3generate×3attempt＝9 underlying attempt**で、「必ず3送信以内」ではありません。length／input上限の分割と後日のresumeは別で、永久予算はありません。訂正にも追加の利用枠・課金が発生し得ます。失敗・訂正を含む各呼出しのraw回答と観測usageを保存しますが、未保存応答や実請求額・exactly-once課金を保証しません。
 
-送信直前、stderrへ入力名・SHA-256・所有／参照の許可範囲・そのrequestの送信範囲と内容・段階・provider／model／thinking・実preflightの認証source／typeをJSONで表示してから送ります。tokenやcredentialは表示・workspace保存しません。画像／抽出下書きはPDF補正だけに送り、準備・翻訳には保存したunit／context／glossary等だけを送ります。実行コマンド自体が指定範囲の送信操作です。権利・機密性・送信先を事前に確認してください。
+送信直前、stderrの進捗へ実requestの所有／参照・段階・provider／model／thinking・実preflightの認証source／typeを表示します。入力名・SHA-256・全体許可範囲は冒頭へまとめます。`--events-json`時は従来の入力名・SHA-256・全体許可範囲・実requestの送信範囲と内容等を送信前JSONとしてflushします。tokenやcredentialは表示・workspace保存しません。画像／抽出下書きはPDF補正だけに送り、準備・翻訳には保存したunit／context／glossary等だけを送ります。実行コマンド自体が指定範囲の送信操作です。権利・機密性・送信先を事前に確認してください。
 
 準備中の用語根拠が原文と一致しない場合は、検証を緩めず、失敗理由と該当する用語・根拠引用をmodelへ返し、初回込み最大3回答まで再生成します。成功済みの収集結果は再利用し、再生成分の回答・usageも保存します。上限まで失敗すると`prepare_unknown_unit`／`prepare_quote_mismatch`／`prepare_term_mismatch`／`prepare_ungrounded_term`と原因を表示して停止します。schema不正・認証・保存・timeout・取消等にはこの再生成を行いません。再生成には追加の利用枠・料金が発生する可能性があります。
 

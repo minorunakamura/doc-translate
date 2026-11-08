@@ -473,6 +473,14 @@ TTYの固定更新、36×10狭幅／狭高さ、dark／light背景、空値NO_CO
 
 今回の共通Python接続・依存変更の正式範囲は上記のcore全pytest／PDF4ファイル／Ruff check＋format／PDF環境ty／CLI helpとwheel build＋check_distributionです。既存venv sync／追加installは禁止、Rich直接依存`>=15,<16`とlock／隔離core・wheel依存導入だけを許可範囲で確認します。Node source／protocolへ差分が及ぶ場合は正式Node phasesも追加します。
 
+## PDF進捗・保存後所有ページ集計の検証（Issue #51）
+
+[Feature MapのPDF手順](.pi/skills/verify-project/references/feature-map.md#pdf-runresumeの工程所有ページ進捗issue-51)に、新規公開CLI・Docling公開converter／page backendの既存人工fixture入口、80桁TTY／36桁NO_COLOR、実所有／参照request、部分回復／空PATH再利用のみ、coverage repair／length・input_limit分割／候補待ちの期待・証拠・finally cleanupをまとめます。EPUB／status手順は維持し、Rootは新しい証拠directoryの別invocationで実行・照合します。実Docling／OCR／実providerや書籍品質の保証ではありません。
+
+focused回帰は`tests/test_run.py -k pdf_progress`（通知時のchunk／manifest実体、manifest保存前の成功ゼロ、再利用の二重加算なし、length／input_limit）、`test_pdf_correction.py::test_correct_pdf_preserves_transport_attempts_without_cumulative_usage`（通信retryとcoverage訂正・request終端）、`test_cli_output.py::test_pdf_progress_split_keeps_owned_denominator_and_translation_state_separate`です。既存の所有許可／部分PDF／fills_failed／coverage回復／候補／cancel・record保存失敗も維持します。pytestは上記のSIGINT default復元方式を使います。内部workflow／保存・validatorのmockは加えません。
+
+共通state／表示と工程間reuseに及ぶため、Rootの正式範囲はcore全pytest、PDF4ファイル、Ruff全体check／format、既存PDF環境ty、CLI helpです。Workerは変更moduleとfocused consumer・手順変更部分を再実行します。依存／Node source／protocol／build差分はなく、#50で済んだRich依存化のwheel検査や全Node phaseは今回反復しません。差分がそこへ及べば再選定します。install／sync／model取得・実認証・課金は禁止し、既存環境のみ使います。
+
 ## 新規runの検証境界
 
 Issue #14のseamは公開`cli.main(argv, process_command=...)`→workspace／Markdown／statusです。新しいworkflowは既存の取得・補正・準備・翻訳・render APIをつなぐだけで、内部generate／workflowはmockしません。`tests/test_run.py`は実EPUB ZIPと、`tests/test_pdf.py`のDocling公開converter／page backend・人工local model fixtureを使います。`ai/tests/run-process.mjs`は実`runHelper`と公開faux providerを接続し、network transportを拒否、credential directoryは一時pathのみです。helper sourceを変えないのでbuildは不要です。

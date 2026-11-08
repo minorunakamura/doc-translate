@@ -1854,6 +1854,7 @@ def test_correct_pdf_does_not_send_after_rejected_record_cancel_or_save_failure(
     missing = answer(digest)
     missing["blocks"] = []
     cancel = threading.Event()
+    events = []
     replace = os.replace
 
     def replace_record(src, dst):
@@ -1869,7 +1870,11 @@ def test_correct_pdf_does_not_send_after_rejected_record_cancel_or_save_failure(
         patch.setattr(os, "replace", replace_record)
         with pytest.raises((OSError, InferenceError)) as stopped:
             run(
-                tmp_path, draft, {"responses": [missing, answer(digest)]}, cancel=cancel
+                tmp_path,
+                draft,
+                {"responses": [missing, answer(digest)]},
+                cancel=cancel,
+                observer=events.append,
             )
     if failure == "record-save":
         assert isinstance(stopped.value, OSError)
@@ -1879,6 +1884,10 @@ def test_correct_pdf_does_not_send_after_rejected_record_cancel_or_save_failure(
         assert stopped.value.code == "cancelled"
     assert len((tmp_path / "request.json.jsonl").read_text().splitlines()) == 1
     assert not list((workspace / "corrections/pdf").glob("*.json"))
+    assert not any(e.succeeded or e.kind == "adopted" for e in events)
+    assert len([e for e in events if e.kind == "request_end"]) == 1
+    if failure == "cancel":
+        assert any(e.kind == "cancelled" for e in events)
     if failure == "cancel":
         records = [
             json.loads(path.read_bytes())
@@ -1897,6 +1906,7 @@ def test_correct_pdf_preserves_transport_attempts_without_cumulative_usage(
     missing = answer(digest)
     missing["blocks"] = []
     saved = {}
+    events = []
 
     def before_send(*_):
         for path, data in saved.items():
@@ -1914,8 +1924,20 @@ def test_correct_pdf_preserves_transport_attempts_without_cumulative_usage(
         draft,
         {"responses": [missing, answer(digest)], "retry": True},
         before_send=before_send,
+        observer=events.append,
     )
     assert load_pdf_correction(workspace, accepted).blocks[0].text == "Outside text"
+    assert [e.kind for e in events if e.kind in {"retry", "repair"}] == [
+        "retry",
+        "repair",
+    ]
+    assert next(e for e in events if e.kind == "retry").wait_seconds == 3
+    assert all(e.owned_pages == (1,) and e.reference_pages == (2,) for e in events)
+    assert len([e for e in events if e.kind == "request_end"]) == 3
+    assert {e.request_id for e in events if e.kind == "request_start"} == {
+        e.request_id for e in events if e.kind == "request_end"
+    }
+    assert not any(e.succeeded or e.kind == "adopted" for e in events)
     records = [
         json.loads(path.read_bytes())
         for path in (workspace / "attempts/pdf-correction").glob("*.json")

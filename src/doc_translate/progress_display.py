@@ -17,6 +17,8 @@ from doc_translate.progress import ProgressEvent, ProgressState
 _STAGES = {
     "extract": "本文・構造抽出",
     "validate": "保存データ検証",
+    "correction": "PDF補正",
+    "assemble": "PDF source組立",
     "prepare": "翻訳準備",
     "translation": "翻訳",
     "render": "Markdown出力",
@@ -31,8 +33,10 @@ _KINDS = {
     "saved": "検証済み収集記録保存（準備全体は未採用）",
     "reused": "検証済み記録を再利用（成功の内訳）",
     "repair": "回答訂正",
-    "split": "入力分割／総数更新中",
+    "split": "入力分割",
     "adopted": "採用snapshot保存済み",
+    "validating": "ローカル検証中（未保存）",
+    "saving": "検証済み回答を保存中（成功数は未反映）",
     "request_start": "helper起動・preflight検証中",
     "before_send": "送信前（provider到達は未確認）",
     "waiting": "AI応答待ち（helperへの書込み完了）",
@@ -44,7 +48,17 @@ _KINDS = {
 }
 
 
+def _pages(pages):
+    if not pages:
+        return "なし"
+    if list(pages) == list(range(pages[0], pages[-1] + 1)):
+        return str(pages[0]) if len(pages) == 1 else f"{pages[0]}–{pages[-1]}"
+    return ", ".join(map(str, pages[:6])) + (" …（省略）" if len(pages) > 6 else "")
+
+
 def _target(event):
+    if event.owned_pages is not None:
+        return f"所有 {_pages(event.owned_pages)}ページ／参照専用 {_pages(event.reference_pages)}ページ"
     ids = event.unit_ids
     target = (
         f"対象 {len(ids)} unit: " + ", ".join(_safe(i) for i in ids[:2]) if ids else ""
@@ -55,7 +69,21 @@ def _target(event):
 
 
 def _line(event):
-    text = f"{_STAGES.get(event.stage, _safe(event.stage))}: {_KINDS.get(event.kind, _safe(event.kind))}"
+    name = (
+        "PDF本文・レイアウト抽出"
+        if event.stage == "extract" and event.phase == "pdf"
+        else _STAGES.get(event.stage, _safe(event.stage))
+    )
+    label = (
+        "所有chunk・run manifest保存反映済み"
+        if event.stage == "correction" and event.kind == "adopted"
+        else _KINDS.get(event.kind, _safe(event.kind))
+    )
+    text = f"{name}: {label}"
+    if event.reason == "candidate_adoption_required":
+        text += " / 候補の明示採用待ち（後段は未実行）"
+    if event.kind == "split" and event.stage == "translation":
+        text += "／総数更新中"
     if event.reason:
         text += f" / 理由 {_safe(event.reason)}"
     if event.phase:
@@ -65,8 +93,9 @@ def _line(event):
             else f" / {_safe(event.phase)}"
         )
     if event.kind == "adopted":
-        text += f" 成功 {event.succeeded}/{'更新中' if event.total_updating else event.total} unit（うち再利用 {event.reused}）／失敗 {event.failed}／取消 {event.cancelled_count}／未処理 {event.not_processed}"
-    if event.unit_ids:
+        unit = "ページ" if event.stage == "correction" else "unit"
+        text += f" 成功 {event.succeeded}/{'更新中' if event.total_updating else event.total} {unit}（うち再利用 {event.reused}）／失敗 {event.failed}／取消 {event.cancelled_count}／未処理 {event.not_processed}"
+    if event.unit_ids or event.owned_pages is not None:
         text += " / " + _target(event)
     if event.provider:
         text += f" / 送信先 {_safe(event.provider)} / {_safe(event.model)} · thinking {_safe(event.thinking)}"
@@ -75,6 +104,21 @@ def _line(event):
     if event.wait_seconds:
         text += f" / {event.wait_seconds}秒待機"
     return text
+
+
+def _header(event):
+    scope = (
+        "全体"
+        if event.format == "epub"
+        else (
+            f"所有意図 {_pages(event.owned_pages)}ページ"
+            if event.owned_pages is not None
+            else "所有意図 全ページ（抽出検証後に確定）"
+        )
+    )
+    if event.format == "pdf":
+        scope += f"／追加参照許可 {_pages(event.reference_pages)}ページ（requestでは所有外の隣接のみ参照）"
+    return f"原本 {_safe(event.source_name)} / {_safe(event.format.upper())} {scope} / SHA-256 {_safe(event.document_sha256)}"
 
 
 class ProgressDisplay:
@@ -141,9 +185,7 @@ class ProgressDisplay:
         if self.live is None:
             for event in lines:
                 if event.kind == "document":
-                    self._write(
-                        f"原本 {_safe(event.source_name)} / {_safe(event.format.upper())} {'全体' if event.format == 'epub' else '許可範囲は送信前JSON参照'} / SHA-256 {_safe(event.document_sha256)}"
-                    )
+                    self._write(_header(event))
                 else:
                     self._write(_line(event))
             return
@@ -157,7 +199,7 @@ class ProgressDisplay:
             if header:
                 rows.append(
                     Text(
-                        f"原本 {_safe(header.source_name)} / {_safe(header.format.upper())} {'全体' if header.format == 'epub' else '許可範囲は送信前JSON参照'} / SHA-256 {_safe(header.document_sha256)}",
+                        _header(header),
                         overflow="fold",
                     )
                 )
@@ -168,9 +210,15 @@ class ProgressDisplay:
             )
             order += ["prepare", "translation", "render"]
             if header and header.format == "pdf":
-                order = list(
-                    stages
-                )  # PDF correction-specific display belongs to its own work item.
+                order = [
+                    "validate",
+                    "extract",
+                    "correction",
+                    "assemble",
+                    "prepare",
+                    "translation",
+                    "render",
+                ]
             for stage in order:
                 event = stages.get(stage)
                 kind = event.kind if event else "pending"
@@ -187,10 +235,16 @@ class ProgressDisplay:
                     if kind in {"failed", "partial"}
                     else ("⠋⠙⠹⠸"[int(time.monotonic() * 4) % 4], "実行中", "cyan")
                 )
-                row = Text(f"{symbol} {_STAGES.get(stage, stage)} {label}", style=style)
+                name = (
+                    "PDF本文・レイアウト抽出"
+                    if stage == "extract" and header and header.format == "pdf"
+                    else _STAGES.get(stage, stage)
+                )
+                row = Text(f"{symbol} {name} {label}", style=style)
                 if event and event.total is not None:
+                    unit = "ページ" if stage == "correction" else "unit"
                     row.append(
-                        f" 成功 {event.succeeded}/{'更新中' if splitting and stage == 'translation' else event.total} unit（再利用 {event.reused}）／失敗 {event.failed}／取消 {event.cancelled_count}／未処理 {event.not_processed}",
+                        f" 成功 {event.succeeded}/{'更新中' if splitting and stage == 'translation' else event.total} {unit}（再利用 {event.reused}）／失敗 {event.failed}／取消 {event.cancelled_count}／未処理 {event.not_processed}",
                         style="default",
                     )
                 rows.append(row)

@@ -332,7 +332,7 @@ def test_run_without_any_corrected_source_reports_failure_and_saved_paths(
     workspace = tmp_path / "new"
     with pytest.raises(SystemExit) as stopped:
         main(
-            run_args(pdf_input, workspace)
+            [arg for arg in run_args(pdf_input, workspace) if arg != "--events-json"]
             + [
                 "--pages",
                 "2-3",
@@ -344,7 +344,11 @@ def test_run_without_any_corrected_source_reports_failure_and_saved_paths(
             process_command=helper(tmp_path, correction_fail_page=2),
         )
     assert stopped.value.code == 1
-    summary = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out)
+    assert "PDF補正: 失敗" in captured.err and "child・保存処理終了" in captured.err
+    assert "PDF補正: 保存・処理完了" not in captured.err
+    assert "翻訳準備:" not in captured.err and "Markdown出力:" not in captured.err
     assert summary["processing"]["status"] == "partial"
     assert summary["scope"]["run"]["failed_pages"] == [2, 3]
     assert "japanese" not in summary["artifacts"]
@@ -1080,7 +1084,10 @@ def test_revised_partial_pdf_saves_candidate_without_downstream_or_pointer_chang
     with pytest.raises(SystemExit) as waiting:
         main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     assert waiting.value.code == 1
-    summary = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out)
+    assert "候補の明示採用待ち" in captured.err
+    assert "翻訳準備:" not in captured.err and "Markdown出力:" not in captured.err
     sent = requests(tmp_path)[count:]
     assert [item["context"]["owned_pages"] for item in sent] == [[7]]
     assert all(
@@ -1855,7 +1862,11 @@ def test_resume_pdf_repairs_coverage_only_for_failed_ownership_and_retains_all_u
         ["resume", "--json", str(workspace)],
         process_command=helper(tmp_path, correction_omit_pages=[7]),
     )
-    resumed = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    resumed = json.loads(captured.out)
+    assert "成功 5/6 ページ（うち再利用 5）" in captured.err
+    assert "成功 6/6 ページ（うち再利用 5）" in captured.err
+    assert "回答訂正" in captured.err and "通信再試行" not in captured.err
     assert resumed["processing"]["status"] == "completed"
     assert resumed["scope"]["run"]["corrected_pages"] == [2, 3, 4, 5, 6, 7]
     assert resumed["scope"]["run"]["failed_pages"] == []
@@ -1896,3 +1907,137 @@ def test_resume_pdf_repairs_coverage_only_for_failed_ownership_and_retains_all_u
     assert final["usage"]["attempts_by_stage"]["correction"] == 6
     assert len(requests(tmp_path)) == count
     assert_preserved(old_files)
+
+
+@pytest.mark.parametrize(
+    "options,split_reason",
+    [
+        ({}, None),
+        ({"correction_length_above": 2}, "length"),
+        ({"image_limit": 4}, "input_limit"),
+    ],
+)
+def test_pdf_progress_counts_only_published_owned_chunks_and_reuse(
+    tmp_path, pdf_input, local_models, monkeypatch, options, split_reason
+):
+    from doc_translate.inference import GenerationConfig
+    from doc_translate.pdf_correction import load_pdf_correction
+    from doc_translate.run import resume_document, run_document
+
+    workspace = tmp_path / "observed"
+    events = []
+
+    def observe(event):
+        events.append(event)
+        if event.stage == "correction" and event.kind == "adopted":
+            saved = json.loads((workspace / "run.json").read_bytes())
+            chunks = [
+                load_pdf_correction(workspace, sha) for sha in saved["chunk_sha256s"]
+            ]
+            assert event.total == 6 and not event.total_updating
+            assert event.succeeded == len(saved["corrected_pages"])
+            assert event.succeeded == sum(len(chunk.owned_pages) for chunk in chunks)
+            assert event.failed + event.cancelled_count == len(saved["failed_pages"])
+            assert event.not_processed == len(saved["not_processed_pages"])
+
+    command = helper(tmp_path, **options)
+    summary = run_document(
+        source=pdf_input,
+        workspace=workspace,
+        artifacts_path=local_models,
+        pages=(2, 7),
+        reference_pages=(9, 9),
+        translation=GenerationConfig(provider="faux", model="text", thinking="off"),
+        correction=GenerationConfig(provider="faux", model="vision", thinking="off"),
+        process_command=command,
+        observer=observe,
+    )
+    assert summary["processing"]["status"] == "completed"
+    stages = [(e.stage, e.kind) for e in events]
+    assert stages.index(("validate", "start")) < stages.index(("extract", "start"))
+    assert (
+        stages.index(("correction", "start"))
+        < stages.index(("assemble", "start"))
+        < stages.index(("prepare", "start"))
+    )
+    counts = [e for e in events if e.stage == "correction" and e.kind == "adopted"]
+    assert counts[0].succeeded == 0 and counts[-1].succeeded == 6
+    assert all(e.reused == 0 for e in counts)
+    splits = [e for e in events if e.stage == "correction" and e.kind == "split"]
+    assert {e.reason for e in splits} == ({split_reason} if split_reason else set())
+    requests = [
+        e for e in events if e.stage == "correction" and e.kind == "before_send"
+    ]
+    assert requests and all(
+        e.owned_pages and set(e.owned_pages).isdisjoint(e.reference_pages)
+        for e in requests
+    )
+    sent = [
+        json.loads(json.loads(line)["messages"][1]["content"][0]["text"])
+        for line in (tmp_path / "requests.jsonl").read_text().splitlines()
+    ]
+    assert [(list(e.owned_pages), list(e.reference_pages)) for e in requests] == [
+        (item["context"]["owned_pages"], item["context"]["reference_pages"])
+        for item in sent
+        if "owned_pages" in item["context"]
+    ]
+    assert {e.request_id for e in events if e.kind == "request_start"} == {
+        e.request_id for e in events if e.kind == "request_end"
+    }
+    immutable = {
+        p: p.read_bytes()
+        for directory in ("originals", "drafts", "corrections", "attempts", "snapshots")
+        for p in (workspace / directory).rglob("*")
+        if p.is_file()
+    }
+    old_requests = (tmp_path / "requests.jsonl").read_bytes()
+    events.clear()
+    monkeypatch.setenv("PATH", "")
+    summary = resume_document(workspace=workspace, observer=observe)
+    assert summary["processing"]["status"] == "completed"
+    assert not any(
+        e.request_id or (e.stage == "extract" and e.kind == "start") for e in events
+    )
+    counts = [e for e in events if e.stage == "correction" and e.kind == "adopted"]
+    assert len(counts) == 1 and counts[0].succeeded == counts[0].reused == 6
+    assert all(p.read_bytes() == data for p, data in immutable.items())
+    assert (tmp_path / "requests.jsonl").read_bytes() == old_requests
+
+
+def test_pdf_progress_does_not_publish_success_before_run_save(
+    tmp_path, pdf_input, local_models, monkeypatch
+):
+    from doc_translate.inference import GenerationConfig
+    from doc_translate.run import run_document
+
+    workspace = tmp_path / "interrupted"
+    events = []
+    replace = os.replace
+
+    def fail_manifest(src, dst):
+        if (
+            Path(dst) == workspace / "run.json"
+            and json.loads(Path(src).read_bytes())["corrected_pages"]
+        ):
+            raise OSError("artificial manifest failure")
+        return replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", fail_manifest)
+    with pytest.raises(OSError, match="artificial manifest failure"):
+        run_document(
+            source=pdf_input,
+            workspace=workspace,
+            artifacts_path=local_models,
+            pages=(2, 7),
+            translation=GenerationConfig(provider="faux", model="text", thinking="off"),
+            correction=GenerationConfig(
+                provider="faux", model="vision", thinking="off"
+            ),
+            process_command=helper(tmp_path),
+            observer=events.append,
+        )
+    assert list((workspace / "corrections/pdf").glob("*.json"))
+    assert json.loads((workspace / "run.json").read_bytes())["corrected_pages"] == []
+    assert not any(
+        e.succeeded or e.kind == "done" for e in events if e.stage == "correction"
+    )

@@ -422,3 +422,65 @@ def test_progress_stage_is_visible_before_main_thread_enters_heavy_work(
         worker.join()
         assert worker not in render_threads
     assert threading.main_thread() in render_threads
+
+
+def test_pdf_progress_split_keeps_owned_denominator_and_translation_state_separate(
+    capsys,
+):
+    from doc_translate.progress import ProgressEvent, ProgressState
+    from doc_translate.progress_display import ProgressDisplay
+
+    state = ProgressState()
+    state.observe(ProgressEvent("translation", "split", job_id="translate"))
+    state.observe(
+        ProgressEvent("correction", "split", reason="length", owned_pages=(2, 3))
+    )
+    state.observe(
+        ProgressEvent("correction", "adopted", total=6, succeeded=2, reused=1)
+    )
+    snapshot = state.snapshot()
+    assert snapshot[3] and not snapshot[1]["correction"].total_updating
+    assert state.splitting == {"translate"}
+    state.observe(
+        ProgressEvent(
+            "correction",
+            "failed",
+            reason="correction_rejected",
+            owned_pages=(4,),
+            reference_pages=(3,),
+        )
+    )
+    failed = state.snapshot()[1]["correction"]
+    assert failed.total == 6 and failed.succeeded == 2
+    assert failed.owned_pages == (4,) and failed.reference_pages == (3,)
+    with ProgressDisplay() as observe:
+        observe(
+            ProgressEvent(
+                "validate",
+                "document",
+                format="pdf",
+                source_name="self.pdf",
+                owned_pages=(2, 3, 4),
+                reference_pages=(6,),
+            )
+        )
+        observe(
+            ProgressEvent(
+                "correction",
+                "before_send",
+                request_id="one",
+                owned_pages=(2, 3),
+                reference_pages=(4,),
+            )
+        )
+        observe(ProgressEvent("correction", "adopted", total=3, succeeded=2, reused=1))
+        observe(ProgressEvent("correction", "split", reason="length", owned_pages=(4,)))
+        observe(
+            ProgressEvent("validate", "partial", reason="candidate_adoption_required")
+        )
+    output = capsys.readouterr().err
+    assert "所有意図 2–4ページ" in output and "追加参照許可 6ページ" in output
+    assert "所有 2–3ページ／参照専用 4ページ" in output
+    assert "成功 2/3 ページ（うち再利用 1）" in output
+    assert "総数更新中" not in output
+    assert "候補の明示採用待ち（後段は未実行）" in output

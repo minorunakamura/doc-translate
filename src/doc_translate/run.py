@@ -102,7 +102,8 @@ def run_document(
         raise ValueError("PDF requires --artifacts-path and correction model settings")
     if workspace.exists() or workspace.is_symlink():
         raise ValueError(f"Workspace already exists: {workspace}")
-    emit(observer, "extract", "start")
+    initial_stage = "validate" if format == "pdf" else "extract"
+    emit(observer, initial_stage, "start")
     if process_command is None:
         ai_runtime.installed_runtime()
     with source.open("rb") as original:
@@ -116,11 +117,15 @@ def run_document(
     digest = hashlib.sha256(data).hexdigest()
     emit(
         observer,
-        "extract",
+        initial_stage,
         "document",
         source_name=source.name,
         document_sha256=digest,
         format=format,
+        owned_pages=tuple(range(pages[0], pages[1] + 1)) if pages else None,
+        reference_pages=tuple(range(reference_pages[0], reference_pages[1] + 1))
+        if reference_pages
+        else (),
     )
     document = SourceDocument(
         format=format, sha256=digest, artifact=f"originals/{digest}.{format}"
@@ -208,6 +213,8 @@ def resume_document(
             source_name=manifest.source_name,
             document_sha256=manifest.document.sha256,
             format=manifest.document.format,
+            owned_pages=tuple(manifest.owned_pages) if manifest.owned_pages else None,
+            reference_pages=tuple(manifest.reference_pages),
         )
         _original(workspace, manifest)
         # Validate old adopted references before any possible paid request or replacement.
@@ -586,7 +593,11 @@ def _continue_run(
     from doc_translate.render import render_document
     from doc_translate.translation import load_translation, translate_document
 
-    emit(observer, "extract", "start")
+    emit(
+        observer,
+        "validate" if manifest.document.format == "pdf" else "extract",
+        "start",
+    )
     revision = _saved_source_revision(workspace, manifest)
     if manifest.document.format == "pdf":
         try:
@@ -600,10 +611,12 @@ def _continue_run(
                 process_command,
                 before_send,
                 cancelled,
+                observer,
             )
         except RuntimeError:
             manifest.error = "PDF acquisition/correction failed; inspect saved original, draft and attempts"
             _save_run(workspace, manifest)
+            emit(observer, "run", "finished", reason="source_unavailable")
             if (workspace / "source-snapshot.json").exists():
                 from doc_translate.render import workspace_status
 
@@ -617,7 +630,8 @@ def _continue_run(
             document=manifest.document,
             snapshot_id="source-1",
         )
-    emit(observer, "extract", "done")
+    if manifest.document.format == "epub":
+        emit(observer, "extract", "done")
     emit(observer, "validate", "start")
     if (workspace / "source-snapshot.json").exists():
         previous = load_source_snapshot(workspace)
@@ -637,6 +651,8 @@ def _continue_run(
             )
             manifest.error = "PDF machine source changed; explicit source candidate adoption required"
             _save_run(workspace, manifest)
+            emit(observer, "validate", "partial", reason="candidate_adoption_required")
+            emit(observer, "validate", "finished", reason="candidate_adoption_required")
             from doc_translate.render import workspace_status
 
             return workspace_status(workspace)
@@ -715,7 +731,14 @@ def _continue_run(
 
 
 def _pdf_source(
-    workspace, manifest, artifacts_path, pages, process_command, before_send, cancelled
+    workspace,
+    manifest,
+    artifacts_path,
+    pages,
+    process_command,
+    before_send,
+    cancelled,
+    observer=None,
 ) -> SourceSnapshot:
     from doc_translate.pdf import PDF_VERSIONS, acquire_pdf, load_pdf_draft
     from doc_translate.pdf_correction import (
@@ -757,23 +780,38 @@ def _pdf_source(
             reusable = False
         if not reusable:
             draft = None
+    if draft is not None:
+        emit(observer, "validate", "reused", reason="pdf_draft")
+    emit(observer, "validate", "done")
     if draft is None:
+        emit(observer, "extract", "start", phase="pdf")
         if artifacts_path is None:
             raise ValueError("PDF acquisition needs saved or explicit --artifacts-path")
         if cancelled.is_set():
+            emit(observer, "extract", "cancelled")
+            emit(observer, "extract", "partial", reason="cancelled")
             raise InferenceError("cancelled", [])
-        draft_digest = acquire_pdf(
-            workspace / manifest.document.artifact,
-            workspace=workspace,
-            artifacts_path=artifacts_path,
-            pages=acquisition,
-        )
-        draft = load_pdf_draft(workspace, draft_digest)
+        try:
+            draft_digest = acquire_pdf(
+                workspace / manifest.document.artifact,
+                workspace=workspace,
+                artifacts_path=artifacts_path,
+                pages=acquisition,
+            )
+            draft = load_pdf_draft(workspace, draft_digest)
+        except RuntimeError:
+            emit(observer, "extract", "failed", reason="pdf_acquisition_failed")
+            raise
+        emit(observer, "extract", "done", phase="pdf")
+    else:
+        emit(observer, "extract", "reused", reason="pdf_draft")
+        emit(observer, "extract", "done", phase="pdf")
     if manifest.owned_pages is None:
         manifest.owned_pages = list(draft.target_pages)
     allowed = set(manifest.owned_pages) | set(manifest.reference_pages)
     if not allowed <= set(draft.target_pages):
         raise ValueError("Requested PDF pages are outside document")
+    emit(observer, "correction", "start")
     # Reconcile immutable chunks first, including a crash before progress publication.
     accepted = []
     covered = set()
@@ -814,6 +852,25 @@ def _pdf_source(
         page for page in manifest.owned_pages if page not in covered
     ]
     _save_run(workspace, manifest)
+    reused = len(covered)
+    cancelled_pages = set()
+
+    def progress():
+        emit(
+            observer,
+            "correction",
+            "adopted",
+            total=len(manifest.owned_pages),
+            succeeded=len(manifest.corrected_pages),
+            reused=reused,
+            failed=len(set(manifest.failed_pages) - cancelled_pages),
+            cancelled_count=len(cancelled_pages),
+            not_processed=len(manifest.not_processed_pages),
+        )
+
+    progress()
+    if reused:
+        emit(observer, "correction", "reused")
     stopped = False
 
     def correct(owned):
@@ -832,6 +889,7 @@ def _pdf_source(
                 process_command=process_command,
                 before_send=before_send,
                 cancel=cancelled,
+                observer=observer,
             )
         except (InferenceError, ValueError) as error:
             limited = isinstance(error, InferenceError) and (
@@ -844,11 +902,31 @@ def _pdf_source(
                 )
             )
             if limited and len(owned) > 1:
+                emit(
+                    observer,
+                    "correction",
+                    "split",
+                    owned_pages=tuple(owned),
+                    reference_pages=tuple(references),
+                    reason="input_limit" if error.code == "input_limit" else "length",
+                )
                 middle = len(owned) // 2
                 correct(owned[:middle])
                 correct(owned[middle:])
                 return
             manifest.failed_pages.extend(owned)
+            if cancelled.is_set():
+                cancelled_pages.update(owned)
+                emit(observer, "correction", "cancelled")
+            else:
+                emit(
+                    observer,
+                    "correction",
+                    "failed",
+                    reason="correction_rejected",
+                    owned_pages=tuple(owned),
+                    reference_pages=tuple(references),
+                )
             manifest.error = "PDF correction failed; inspect saved draft and attempts"
             manifest.error_code = (
                 error.code if isinstance(error, InferenceError) else "answer_invalid"
@@ -858,6 +936,9 @@ def _pdf_source(
                 "storage_failed",
                 "cancelled",
             }
+        except RuntimeError:
+            emit(observer, "correction", "failed", reason="correction_failed")
+            raise
         else:
             manifest.chunk_sha256s.append(chunk)
             manifest.corrected_pages.extend(owned)
@@ -865,23 +946,42 @@ def _pdf_source(
             page for page in manifest.not_processed_pages if page not in owned
         ]
         _atomic_write(workspace / "run.json", manifest.model_dump_json().encode())
+        progress()
 
     pending = list(manifest.not_processed_pages)
     for start in range(0, len(pending), 5):
         correct(pending[start : start + 5])
     manifest.corrected_pages.sort()
     _save_run(workspace, manifest)
+    if cancelled.is_set():
+        emit(observer, "correction", "cancelled")
+    emit(
+        observer,
+        "correction",
+        "failed"
+        if not manifest.chunk_sha256s
+        else "partial"
+        if manifest.failed_pages or manifest.not_processed_pages
+        else "done",
+    )
+    emit(observer, "correction", "finished")
     if not manifest.chunk_sha256s:
         raise RuntimeError(
             "No PDF correction chunk was accepted; see saved draft and attempts"
         )
-    source = assemble_pdf_source(
-        workspace=workspace,
-        chunk_sha256s=manifest.chunk_sha256s,
-        snapshot_id="source-1",
-    )
-    source = _pdf_scope(source, manifest)
-    source.machine_inputs = _candidate_current_generation(workspace, manifest)
+    emit(observer, "assemble", "start")
+    try:
+        source = assemble_pdf_source(
+            workspace=workspace,
+            chunk_sha256s=manifest.chunk_sha256s,
+            snapshot_id="source-1",
+        )
+        source = _pdf_scope(source, manifest)
+        source.machine_inputs = _candidate_current_generation(workspace, manifest)
+    except RuntimeError:
+        emit(observer, "assemble", "failed", reason="pdf_assembly_failed")
+        raise
+    emit(observer, "assemble", "done")
     return source
 
 

@@ -1,6 +1,6 @@
-# Feature Map: 保存記録status／EPUB共通進捗
+# Feature Map: 保存記録status／PDF・EPUB共通進捗
 
-対象：公開CLIの軽量status／明示詳細検査／完全JSON、必要記録破損拒否、保存不変。EPUB／共通表示は末尾節が対象。対象外：PDF補正／review新表示の完成、実LLM品質、実PDF変換／OCR、他OS、remote CI、任意規模の性能保証。性能の別確認は[正式Plan](../../../../docs/plans/progress-and-status.md)の再作成条件・非並行before／after手順を使い、巨大benchmark基盤を追加しない。
+対象：公開CLIの軽量status／明示詳細検査／完全JSON、必要記録破損拒否、保存不変。EPUB／共通表示は末尾節が対象。PDF補正の工程・所有ページ進捗は末尾PDF節が対象。対象外：review新表示の完成、実LLM品質、実PDF変換／OCR、他OS、remote CI、任意規模の性能保証。性能の別確認は[正式Plan](../../../../docs/plans/progress-and-status.md)の再作成条件・非並行before／after手順を使い、巨大benchmark基盤を追加しない。
 
 ## 保存記録と詳細検査
 
@@ -237,4 +237,158 @@ Rootは**別invocation**で実行し、以下を直接観測・記録します�
 - 並列待機／split：`tests/test_translation.py`の`prepare_blocks`＋`translate`は実helperの再利用入口。`{'barrier':True}`と3×6500文字、`{'length_above':80}`と人工`'word '*40`でobserverを記録し、複数waitingの識別／request終端、splitから採用まで総数更新中、各`adopted`時点の公開`load_translation`のleaf件数を照合する。別jobのsplitが残る状態は`test_progress_state_keeps_other_split_pending_until_its_adoption`の小さいstate境界も参照する。新たなleaf正本は作らない。
 - retry／domain repair／取消／例外：既存`test_inference`の実3/6秒`http-retry`、`test_preparation`のevidence repair、`test_translation`のmarker repair／parallel cancel、`test_resume`のOS replace境界を再利用する。まず既存fixtureの引数をreadし、Rootが別workspaceで選んだ代表を操作する。`retry`と`repair`、Event観測時の取消受付とchild drain・保存終了を別に照合し、送信前をprovider到達と記録しない。signal handlerのI/Oやretry／30秒drain変更で試験を短縮しない。全TTY条件×全signalの恒久E2E化はしない。
 
-期待／観測／commandとexit、未確認、revision／dirty、必要人工logと保存hashを各runの証拠へ記録し、所有する一時workspace／credential／childだけfinallyでcleanup後、証拠の全参照を再読します。外部parserの実利用、実provider、実LLM品質、実PDF補正／review完成、他OS、SIGKILLの画面復元は保証しません。正式pytest／品質／配布検査やRootの受入判断を代替しません。
+期待／観測／commandとexit、未確認、revision／dirty、必要人工logと保存hashを各runの証拠へ記録し、所有する一時workspace／credential／childだけfinallyでcleanup後、証拠の全参照を再読します。外部parserの実利用、実provider、実LLM品質、実Docling／OCR／review新表示完成、他OS、SIGKILLの画面復元は保証しません。正式pytest／品質／配布検査やRootの受入判断を代替しません。
+
+## PDF run／resumeの工程・所有ページ進捗（Issue #51）
+
+対象はdraft検証／再利用・必要時抽出・所有補正・source組立・後段prepare／translation／render、実requestの所有／参照、保存後集計、部分回復／再利用のみ、coverage訂正／length・input_limit分割、候補採用待ちです。実Docling／OCR・モデル・実providerの成功とは扱いません。上のEPUB／status手順は維持します。
+
+既存PDF extra環境・build済みNode helper・pytestが必要です。`scripts/pdf_progress_fixture.py`は既存`test_pdf.conversion/local_models`と`test_run.pdf_input`の自作9ページを再利用する外部入口で、公開Docling converter／page backendだけを置換して実CLIを呼びます。workflow・保存・validatorは実物、Nodeは既存network拒否付き`run-process.mjs`です。新規runの人工原本／modelは所有fixture-dirへ生成し、resumeでは生成しません。既存のfixture-dirは拒否するため、過去入力／workspaceを渡さないでください。依存の同期・setup・model取得は行いません。
+
+下をrepository rootで実行します。Rootも**別invocation**の新しいEVIDENCEで同じ入口を実行し、期待／観測を自ら照合します。SIGINT defaultを戻し、foreground・非並行で操作します。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+EVIDENCE=$(mktemp -d "$PWD/work/test-verification-issue51-pdf-XXXXXX")
+export EVIDENCE
+.venv/bin/python - <<'PY'
+import hashlib, json, os, re, shutil, signal, subprocess, sys, tempfile
+from pathlib import Path
+signal.signal(signal.SIGINT, signal.default_int_handler)
+root, evidence = Path.cwd(), Path(os.environ['EVIDENCE'])
+python = str(Path(sys.executable).absolute())
+node = shutil.which('node')
+assert node, 'existing Node required; no install'
+entry = root / '.pi/skills/verify-project/scripts/pdf_progress_fixture.py'
+capture = root / '.pi/skills/verify-project/scripts/capture_progress.py'
+for name, command in [('revision.txt', ['git', 'rev-parse', 'HEAD']), ('dirty.txt', ['git', 'status', '--short']), ('scope.diff', ['git', 'diff'])]:
+    (evidence / name).write_bytes(subprocess.check_output(command))
+observations = []
+
+def immutable(workspace):
+    return {p.relative_to(workspace): p.read_bytes() for directory in ('originals', 'drafts', 'corrections', 'attempts', 'snapshots')
+            for p in (workspace / directory).rglob('*') if p.is_file()}
+
+def inputs(log):
+    return [json.loads(json.loads(line)['messages'][1]['content'][0]['text']) for line in log.read_text().splitlines()]
+
+try:
+    with tempfile.TemporaryDirectory(prefix='pdf-progress-owned-') as owned:
+        temporary = Path(owned)
+        for name, settings, tty, columns, no_color in [
+            ('dark', {'delay_ms': 600}, True, 80, False),
+            ('narrow-no-color', {'correction_fail_page': 7, 'delay_ms': 600}, True, 36, True),
+            ('coverage', {'correction_omit_pages': [7]}, False, 80, False),
+            ('length', {'correction_length_above': 2}, False, 80, False),
+            ('input-limit', {'image_limit': 4}, False, 80, False),
+            ('candidate', {'correction_fail_page': 7}, False, 80, False),
+        ]:
+            case = temporary / name
+            case.mkdir()
+            fixture, workspace, log = case / 'fixture', case / 'workspace', case / 'requests.jsonl'
+            config = case / 'settings.json'
+            config.write_text(json.dumps(settings))
+            helper = [node, str(root / 'ai/tests/run-process.mjs'), str(case / 'credentials'), str(config), str(log)]
+            prefix = [python, str(entry), '--fixture-dir', str(fixture), '--helper', json.dumps(helper), '--']
+            env = {**os.environ, 'TERM': 'xterm-256color', 'COLORFGBG': '15;0'}
+            env.pop('NO_COLOR', None)
+            if no_color:
+                env['NO_COLOR'] = ''
+            directory = evidence / name
+            operations = []
+
+            def invoke(label, arguments, expected=0, use_tty=False, empty_path=False):
+                command = [*prefix, *arguments]
+                actual_env = {**env, **({'PATH': ''} if empty_path else {})}
+                if use_tty:
+                    command = [python, str(capture), '--evidence', str(directory / label), '--columns', str(columns), '--rows', '24' if columns == 80 else '10', '--', *command]
+                    result = subprocess.run(command, env=actual_env, check=False)
+                    out = (directory / label / 'stdout.txt').read_text()
+                    err = (directory / label / 'stderr.ansi').read_text()
+                else:
+                    directory.mkdir(parents=True, exist_ok=True)
+                    result = subprocess.run(command, env=actual_env, text=True, capture_output=True, check=False)
+                    out, err = result.stdout, result.stderr
+                    (directory / (label + '.stdout')).write_text(out)
+                    (directory / (label + '.stderr')).write_text(err)
+                operations.append({'label': label, 'command': command, 'exit': result.returncode, 'expected_exit': expected})
+                (directory / 'operations.json').write_text(json.dumps(operations, indent=2))
+                assert result.returncode == expected, (name, label, result.returncode, err)
+                return out, err
+
+            failed = 'correction_fail_page' in settings
+            out, err = invoke('run', ['run', str(fixture / 'own.pdf'), '--workspace', str(workspace), '--pages', '2-7', '--reference-pages', '9-9', '--artifacts-path', str(fixture / 'models'), '--provider', 'faux', '--model', 'text', '--thinking', 'off', '--correction-model', 'vision', '--json'], 1 if failed else 0, tty)
+            summary = json.loads(out)
+            assert summary['processing']['status'] == ('partial' if failed else 'completed')
+            assert all(word in err for word in ('保存データ検証', 'PDF補正', 'PDF source組立', '翻訳準備', 'Markdown出力'))
+            assert 'ONLY_PAGE' not in err
+            if name == 'candidate':
+                assert '所有 7ページ／参照専用 6ページ' in err
+            corrections = [i['context'] for i in inputs(log) if 'owned_pages' in i['context']]
+            allowed = {2,3,4,5,6,7,9}
+            assert all(set(c['owned_pages']).isdisjoint(c['reference_pages']) and set(c['owned_pages'] + c['reference_pages']) <= allowed for c in corrections)
+            if name in ('dark', 'narrow-no-color', 'coverage', 'candidate'):
+                assert corrections[0]['owned_pages'] == [2,3,4,5,6] and corrections[0]['reference_pages'] == [7]
+            if name == 'coverage':
+                assert [c['owned_pages'] for c in corrections] == [[2,3,4,5,6], [7], [7]]
+                assert '回答訂正' in err and '通信再試行' not in err
+            if name in ('length', 'input-limit'):
+                assert '入力分割' in err and ('length' if name == 'length' else 'input_limit') in err
+                assert not any('総数更新中' in line for line in err.splitlines() if line.startswith('PDF補正:'))
+            if no_color:
+                assert not re.search(r'\x1b\[[0-9;]*m', err)
+            if tty:
+                frames = json.loads((directory / 'run/frames.json').read_text())
+                assert any('PDF補正' in frame['text'] for frame in frames)
+                if name == 'dark':
+                    assert any('AI応答待ち 1件' in frame['text'] and '所有 2–6ページ／参照専用 7ページ' in frame['text'] for frame in frames)
+            previous = immutable(workspace)
+            before_count = len(inputs(log))
+            if name == 'candidate':
+                source = json.loads((workspace / 'source-snapshot.json').read_text())['sha256']
+                from doc_translate.snapshot import load_source_snapshot
+                replacement = load_source_snapshot(workspace).model_dump(mode='json')
+                next(b for b in replacement['blocks'] if b['kind'] == 'body')['text'] = 'Self-authored manual correction.'
+                envelope = case / 'manual.json'
+                envelope.write_text(json.dumps({'schema_version': 1, 'base_source_sha256': source, 'source': replacement}))
+                invoke('revise', ['revise', str(workspace), '--source', str(envelope), '--reason', 'Self-authored check'])
+                pointers = {p: (workspace / p).read_bytes() for p in ('source-snapshot.json', 'preparation-snapshot.json', 'translation-snapshot.json', 'render.json')}
+            if failed:
+                config.write_text('{}')
+                out, err = invoke('recover', ['resume', str(workspace), '--json'], 1 if name == 'candidate' else 0)
+                assert '成功 5/6 ページ（うち再利用 5）' in err and '成功 6/6 ページ（うち再利用 5）' in err
+                new_corrections = [i['context'] for i in inputs(log)[before_count:] if 'owned_pages' in i['context']]
+                assert [(c['owned_pages'], c['reference_pages']) for c in new_corrections] == [([7], [6])]
+                assert all((workspace / p).read_bytes() == data for p, data in previous.items())
+                if name == 'candidate':
+                    assert json.loads(out)['source_adoption']['status'] == 'pending'
+                    assert '候補の明示採用待ち' in err and '翻訳準備:' not in err
+                    assert all((workspace / p).read_bytes() == data for p, data in pointers.items())
+            previous = immutable(workspace)
+            before = log.read_bytes()
+            out, err = invoke('reuse', ['resume', str(workspace), '--json'], 1 if name == 'candidate' else 0, empty_path=True)
+            assert log.read_bytes() == before and all((workspace / p).read_bytes() == data for p, data in previous.items())
+            assert '成功 6/6 ページ（うち再利用 6）' in err
+            assert 'AI応答待ち' not in err
+            if name == 'dark':
+                out, err = invoke('reuse-events', ['resume', str(workspace), '--json', '--events-json'], empty_path=True)
+                assert err == '' and json.loads(out)['processing']['status'] == 'completed'
+            (directory / 'requests.jsonl').write_bytes(log.read_bytes())
+            (directory / 'immutable-hashes.json').write_text(json.dumps({str(p): hashlib.sha256(data).hexdigest() for p, data in previous.items()}, indent=2))
+            observations.append({'case': name, 'operations': operations, 'owned_total': 6, 'reused': 6, 'old_bytes_unchanged': True, 'requests': len(inputs(log)), 'expected': 'stage order, real owned/reference scopes, published page counts, no resend on empty-PATH reuse; candidate stops before downstream', 'observed': 'matched'})
+finally:
+    (evidence / 'observations.json').write_text(json.dumps(observations, ensure_ascii=False, indent=2))
+    (evidence / 'cleanup.txt').write_text('owned temporary input/workspaces/credentials removed; synchronous children reaped; evidence retained\n')
+assert len(observations) == 6
+for p in evidence.rglob('*'):
+    if p.is_file():
+        p.read_bytes()
+print(evidence, '6 isolated PDF cases matched; cleanup complete; evidence reread')
+PY
+```
+
+期待：所有分母6はreference／splitで増減せず、再利用は成功内訳。部分resumeで[7]のみ参照[6]付き送信し旧byte保持、空PATHで再利用のみは補正・準備・翻訳の送信ゼロ。coverage修復は同じ全所有requestの再回答で、通信retryとは別。候補待ちはvalidate部分終了でprepare以後へ進まない。request／hash照合とexitは`observations.json`、stdout／stderr／frameは各case、人工requestとhashはworkspace外の同caseに残します。失敗はassert／非ゼロとして扱い、成功に書き換えません。
+
+TTYの直接視認は上の共通capture／Chrome手順を再利用し、`dark/run`の80桁と`narrow-no-color/run`の36桁frameで所有／参照・現在工程・異常理由を実画像または`--mirror`で照合してください。NO_COLORのSGRなしと視認性は別の証拠です。全形式×全条件の積、実terminal fontの同一性は保証しません。
+
+保存前成功ゼロ・通知時のchunk／run実体・固定分母と翻訳split分離・transport retryとcoverage repairのrequest終端は`tests/test_run.py -k pdf_progress`、`test_pdf_correction.py::test_correct_pdf_preserves_transport_attempts_without_cumulative_usage`、`test_cli_output.py::test_pdf_progress_split_keeps_owned_denominator_and_translation_state_separate`で別途照合します。取消受付／child終了は既存inference／resumeのEvent・signal・OS replace境界とPDF補正のrecord-save／cancelを再利用し、retry待機／drainを短縮しません。正式チェックとRoot／Reviewer判断はこの入口だけで代替しません。
