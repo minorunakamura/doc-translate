@@ -60,7 +60,7 @@ def test_translation_patch_keeps_history_and_survives_resume_without_node(
     assert "用語確認" in "".join(
         p.read_text() for p in (workspace / "translations").rglob("*.json")
     )
-    main(["resume", str(workspace)])
+    main(["resume", "--json", str(workspace)])
     result = json.loads(capsys.readouterr().out)
     assert result["processing"]["status"] == "completed"
     assert "手動修正" in (workspace / result["artifacts"]["japanese"]).read_text()
@@ -133,7 +133,7 @@ def test_source_code_revision_survives_resume_without_resending_body(
         main(["render", str(workspace)])
     assert partial.value.code == 1
     assert json.loads(capsys.readouterr().out)["stale_translation"] is True
-    main(["resume", str(workspace)], process_command=command)
+    main(["resume", "--json", str(workspace)], process_command=command)
     result = json.loads(capsys.readouterr().out)
     assert result["processing"]["status"] == "completed"
     assert "new_code()" in (workspace / result["artifacts"]["japanese"]).read_text()
@@ -329,7 +329,7 @@ def test_policy_file_updates_fixed_inputs_and_qa_without_acquisition(tmp_path, c
     policy = tmp_path / "policy.json"
     policy.write_text(json.dumps({"version": "2", "text": "本文は常体。"}))
     main(
-        ["resume", str(workspace), "--policy", str(policy)],
+        ["resume", "--json", str(workspace), "--policy", str(policy)],
         process_command=helper(tmp_path),
     )
     result = json.loads(capsys.readouterr().out)
@@ -357,7 +357,7 @@ def test_changed_policy_never_renders_old_translation_as_current_after_failure(
     policy.write_text(json.dumps({"version": "2", "text": "常体へ変更"}))
     with pytest.raises(SystemExit) as failed:
         main(
-            ["resume", str(workspace), "--policy", str(policy)],
+            ["resume", "--json", str(workspace), "--policy", str(policy)],
             process_command=helper(tmp_path, fail_stage=stage),
         )
     assert failed.value.code == 1
@@ -554,7 +554,7 @@ def test_failed_chunk_partial_manual_patch_resumes_only_unfilled_units(
     partial = json.loads(capsys.readouterr().out)
     assert partial["processing"]["status"] == "partial"
     assert load_translation(workspace).translations[0].text == "手動で補完した段落。"
-    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     result = json.loads(capsys.readouterr().out)
     assert result["processing"]["status"] == "completed"
     assert (

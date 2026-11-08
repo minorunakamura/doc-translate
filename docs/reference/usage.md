@@ -26,9 +26,9 @@ Pythonのcore導入にDoclingやOCR modelは不要です。EPUBのrunはcoreだ�
 
 ## CLIの表示とJSON出力
 
-`providers`／`models`は表、`run`は処理結果の要約、通常の`status`は保存記録のみの軽量な人向け表示です。色や追加の表示用依存は不要です。`status --verify`は従来の詳細検査を人向けに表示し、出力全体の鮮度、採用原文・訳文との対応、訳文の入力対応を区別します。部分失敗・原文候補の採用待ち・古い訳文は完了扱いにしません。
+`providers`／`models`は表、`run`／`resume`は処理結果・未処理／失敗・出力先の人向け要約、通常の`status`は保存記録のみの軽量な人向け表示です。進捗の表示層は直接依存Rich（15系）を使います。`status --verify`は従来の詳細検査を人向けに表示し、出力全体の鮮度、採用原文・訳文との対応、訳文の入力対応を区別します。部分失敗・原文候補の採用待ち・古い訳文は完了扱いにしません。
 
-この4コマンドは`--json`で従来と同じ完全なJSONをstdoutへ出力します。**既存のJSON解析・pipe利用には`--json`を追加してください。** pipeやredirectでも自動でJSONに切り替わりません。JSONの成果物pathはworkspace相対、人向け表示ではworkspaceを先頭に付けたpathです。
+これら5コマンドは`--json`で従来と同じ完全なJSONをstdoutへ出力します。**既存のJSON解析・pipe利用には`--json`を追加してください。** pipeやredirectでも自動でJSONに切り替わりません。JSONの成果物pathはworkspace相対、人向け表示ではworkspaceを先頭に付けたpathです。
 
 ```sh
 doc-translate models --provider openai             # 表
@@ -38,9 +38,20 @@ doc-translate status ./work/book                  # 保存記録のみ（成果�
 doc-translate status ./work/book --verify         # 詳細検査の人向け要約
 doc-translate status ./work/book --json            # hash・QA・利用記録等を含む詳細
 # runも既存の引数に --json を追加するとsummary JSONを出力
+doc-translate resume ./work/book --json            # 従来の最終summary JSON
+doc-translate resume ./work/book --events-json     # stderrは送信前JSONのみ、stdoutは人向け
+doc-translate resume ./work/book --json --events-json # stdout／stderrをそれぞれ機械向け
 ```
 
-`resume`／`render`／`review`／`revise`／setup・認証の出力は従来どおりJSONです。終了コード・保存形式・送信前のstderr通知は変わりません。出力完了は翻訳品質の承認ではありません。
+`render`／`review`／`revise`／setup・認証の出力は従来どおりJSONです。終了コード・Python戻り値・保存形式は変えません。出力完了は翻訳品質の承認ではありません。
+
+EPUBのrun／resumeは、抽出→保存データ検証→翻訳準備（collect情報収集／organize文書全体の収集結果整理）→翻訳→Markdown出力をstderrへ表示します。resumeは重い再利用前検証を最初に表示します。翻訳成功は採用snapshot／pointerの保存後のleaf unit数、再利用は成功の内訳です。分割中は総数を更新中とし、並列のAI待ちは件数と対象を分けます。通信retry（従来3／6秒）とdomain回答訂正、取消受付とchild／保存終了は別です。送信前の通知はproviderへの到達証明ではなく、helperへのgenerate書込み完了後にのみAI応答待ちになります。spinnerは処理前進の証明ではありません。
+
+TTYでは固定位置更新・最新3件履歴（再試行／失敗／取消は確定行も出力）、非TTYでは工程／対象等が変わる行ログだけを出します。`NO_COLOR`は空値も含め存在すれば無彩色です。狭幅では折返し／明示省略、狭高さでは現在工程・対象・異常理由を優先し、全工程同時表示を保証しません。本文・raw回答・秘密値を履歴へ出しません。
+
+**stderr JSON解析にはrun／resumeへ`--events-json`を追加してください。** この指定時だけ従来用途の送信前JSONをflushし、人向け進捗を混ぜません（全工程event streamではありません）。`--json`は最終stdoutだけの指定で、stderr進捗を止めません。両flagは独立です。送信通知の`transmission`に実対象`unit_ids`／`phase`（collectはsectionも）を互換的に追加します。organizeの`unit_ids=[]`は原文unit全文の再送ではなく文書全体の収集結果を整理する意味で、対応不明の一般表現ではありません。準備／翻訳のPDFページ対応不明時に、補正済み全ページを実送信範囲として代用しません。外部parserの実利用は未確認です。
+
+今回完成した範囲はEPUB＋共通表示です。PDF補正の工程／所有ページの保存後集計とreviewの新しい進捗・人向け結果／flagsは後続Issueで、完成扱いしません。reviewは従来の最終JSON／送信前noticeを維持します。PDFを含むrun／resumeの最終flagsの移行自体は共通です。通常のparser診断／致命的エラーはstderrへ出ることがあります。
 
 ## provider／modelを調べる（任意）
 
@@ -169,6 +180,8 @@ doc-translate resume ./work/book --policy ./style-v2.json
 # PDF取得をやり直す必要があり、保存済みlocal model pathが使えない場合
 doc-translate resume ./work/book --artifacts-path /path/to/prepared-models
 ```
+
+resumeの既定stdoutはrunと共通の人向け要約です。従来のJSONを読むscript／pipeには`--json`、stderr送信前通知を読むscriptには独立して`--events-json`を追加してください。
 
 resumeは保存原本・範囲・非秘密設定を基準に、artifact hashと回答／入力対応を検査し、未処理・失敗・明示変更で無効になった部分だけを送信します。元の外部INPUTは不要です。取得済みPDFならlocal model directoryも不要で、EPUBにPDF依存は要求しません。完了済みで推論不要ならNode／認証も不要です。**resumeではambientな`PI_*`を設定変更として採用しません。** `--provider/model/thinking`と段階別指定、`--glossary`／`--policy`は明示変更として保存されます。policyは例えば`{"version":"2","text":"本文はですます調。見出しは体言止め。"}`というデータで、実行コードではありません。glossary／文体変更ではPDF取得／補正をやり直しません。補正設定の明示変更は再補正の対象になりますが、取得入力が同じならPDFを再取得しません。ページ範囲を拡大するoptionはありません。
 

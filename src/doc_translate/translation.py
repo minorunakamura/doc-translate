@@ -23,6 +23,7 @@ from doc_translate.inference import (
     generate,
 )
 from doc_translate.preparation import PreparationSnapshot, Visible, load_preparation
+from doc_translate.progress import Observer, emit, scoped_before_send, scoped_observer
 from doc_translate.snapshot import (
     Contract,
     Nonempty,
@@ -243,7 +244,12 @@ def _matches_request(actual, request):
     )
 
 
-def _call(workspace, config, request, units, command, cancel, before_send):
+def _call(workspace, config, request, units, command, cancel, before_send, observer):
+    ids = tuple(unit.unit_id for unit in units)
+    observer = scoped_observer(observer, unit_ids=ids)
+    before_send = scoped_before_send(
+        before_send, phase="translation", unit_ids=list(ids)
+    )
     for path in sorted((workspace / "attempts/translation").glob("*.json")):
         record = _read(workspace, "attempts/translation", path.stem)
         if record.get("stage") != "translation" or not _matches_request(
@@ -257,7 +263,11 @@ def _call(workspace, config, request, units, command, cancel, before_send):
             and record.get("error") in {"length", "input_limit"}
         ):
             # Replay only the bisection; child answers still cross both validators.
-            return TranslationChunk(units=units, error=record["error"]), [path.stem]
+            return (
+                TranslationChunk(units=units, error=record["error"]),
+                [path.stem],
+                set(),
+            )
         try:
             answer = _saved_answer(record, config, TranslationAnswer)
             if record["error"] is not None:
@@ -265,9 +275,13 @@ def _call(workspace, config, request, units, command, cancel, before_send):
             _validate(answer, units)
         except ValueError, KeyError, TypeError, IndexError, InferenceError:
             continue
-        return _accepted_chunk(
-            workspace, config, record["request"], units, answer, path.stem
-        ), [path.stem]
+        return (
+            _accepted_chunk(
+                workspace, config, record["request"], units, answer, path.stem
+            ),
+            [path.stem],
+            set(ids),
+        )
     runs = []
     current_request = request
     for number in range(3):
@@ -283,6 +297,7 @@ def _call(workspace, config, request, units, command, cancel, before_send):
                 process_command=command,
                 cancel=cancel,
                 before_send=before_send,
+                observer=observer,
             )
         except InferenceError as failure:
             attempts = failure.attempts
@@ -322,11 +337,16 @@ def _call(workspace, config, request, units, command, cancel, before_send):
         )
         runs.append(run)
         if answer is not None:
-            return _accepted_chunk(
-                workspace, config, current_request, units, answer, run
-            ), runs
+            return (
+                _accepted_chunk(workspace, config, current_request, units, answer, run),
+                runs,
+                set(),
+            )
         if feedback is None or number == 2:
-            return TranslationChunk(units=units, error=error), runs
+            if error not in {"length", "input_limit", "cancelled"}:
+                emit(observer, "translation", "failed", reason="translation_rejected")
+            return TranslationChunk(units=units, error=error), runs, set()
+        emit(observer, "translation", "repair", reason="translation_marker_mismatch")
         current_request = _repair_request(request, feedback)
 
 
@@ -375,9 +395,10 @@ def _split(units, operation):
 
 
 def _process(
-    workspace, config, preparation, units, limit, command, cancel, before_send
+    workspace, config, preparation, units, limit, command, cancel, before_send, observer
 ):
     runs, splits = [], []
+    reused_ids = set()
     oversized = next((u for u in units if len(u.source_text) > limit), None)
     adjustment_run = None
     if oversized is None:
@@ -402,7 +423,7 @@ def _process(
             adjustment_run = path.stem
             break
     if oversized is None:
-        chunk, calls = _call(
+        chunk, calls, reused_ids = _call(
             workspace,
             config,
             _request(units, preparation),
@@ -410,10 +431,11 @@ def _process(
             command,
             cancel,
             before_send,
+            observer,
         )
         runs.extend(calls)
         if chunk.error not in {"length", "input_limit"} or cancel.is_set():
-            return [chunk], runs, splits
+            return [chunk], runs, splits, reused_ids
         if len(units) > 1:
             middle = len(units) // 2
             groups = [units[:middle], units[middle:]]
@@ -442,7 +464,19 @@ def _process(
                     "attempts": [],
                 },
             )
-            return [TranslationChunk(units=units, error=reason)], [*runs, run], splits
+            emit(
+                observer,
+                "translation",
+                "failed",
+                reason="split_failed",
+                unit_ids=tuple(unit.unit_id for unit in units),
+            )
+            return (
+                [TranslationChunk(units=units, error=reason)],
+                [*runs, run],
+                splits,
+                reused_ids,
+            )
         splits.append(operation)
         runs.append(
             adjustment_run
@@ -462,18 +496,30 @@ def _process(
             )
         )
         groups = _chunks(parts, limit)
+    emit(
+        observer, "translation", "split", unit_ids=tuple(unit.unit_id for unit in units)
+    )
     chunks = []
     for group in groups:
         if cancel.is_set():
             chunks.append(TranslationChunk(units=group, error="cancelled"))
             continue
-        results, calls, operations = _process(
-            workspace, config, preparation, group, limit, command, cancel, before_send
+        results, calls, operations, reused = _process(
+            workspace,
+            config,
+            preparation,
+            group,
+            limit,
+            command,
+            cancel,
+            before_send,
+            observer,
         )
         chunks.extend(results)
         runs.extend(calls)
         splits.extend(operations)
-    return chunks, runs, splits
+        reused_ids.update(reused)
+    return chunks, runs, splits, reused_ids
 
 
 def _adopt(workspace, source_digest, prep_digest, config, chunks, runs, splits):
@@ -508,8 +554,10 @@ def translate_document(
     process_command: Sequence[str] | None = None,
     cancel: threading.Event | None = None,
     before_send: BeforeSend | None = None,
+    observer: Observer | None = None,
 ) -> str:
     """Adopt incremental results; return a snapshot digest even for partial failure."""
+    emit(observer, "translation", "start")
     config = GenerationConfig.model_validate(config.model_dump())
     if (
         type(max_source_chars) is not int
@@ -564,6 +612,7 @@ def translate_document(
             for path in sorted((workspace / "attempts/translation").glob("*.json"))
         ]
         chunks = []
+        reused_ids = set()
         remaining = []
         index = 0
         while index < len(units):
@@ -617,6 +666,7 @@ def translate_document(
                 )
                 remaining = []
                 chunks.append(reused)
+                reused_ids.update(unit.unit_id for unit in reused.units)
                 index += len(reused.units)
         chunks.extend(
             TranslationChunk(units=group, error="not_processed")
@@ -626,6 +676,34 @@ def translate_document(
         jobs = [[chunk] for chunk in chunks]
         pending = iter(index for index, job in enumerate(jobs) if job[0].answer is None)
         previous_handlers = {}
+
+        def adopted(chunks, job_id=""):
+            # Counts come only from the snapshot just adopted, not a second leaf model.
+            emit(
+                observer,
+                "translation",
+                "adopted",
+                job_id=job_id,
+                total=sum(len(c.units) for c in chunks),
+                succeeded=sum(len(c.units) for c in chunks if c.answer is not None),
+                reused=sum(
+                    unit.unit_id in reused_ids
+                    for c in chunks
+                    if c.answer is not None
+                    for unit in c.units
+                ),
+                failed=sum(
+                    len(c.units)
+                    for c in chunks
+                    if c.error not in {None, "not_processed", "cancelled"}
+                ),
+                not_processed=sum(
+                    len(c.units) for c in chunks if c.error == "not_processed"
+                ),
+                cancelled_count=sum(
+                    len(c.units) for c in chunks if c.error == "cancelled"
+                ),
+            )
 
         def interrupt(_signum, _frame):
             cancelled.set()
@@ -654,6 +732,7 @@ def translate_document(
                         process_command,
                         cancelled,
                         before_send,
+                        scoped_observer(observer, job_id=str(index)),
                     )
                     active[future] = index
                     return True
@@ -665,7 +744,7 @@ def translate_document(
                         finished, _ = wait(active, return_when=FIRST_COMPLETED)
                         for future in finished:
                             index = active.pop(future)
-                            jobs[index], calls, operations = future.result()
+                            jobs[index], calls, operations, reused = future.result()
                             runs.extend(calls)
                             splits.extend(operations)
                             chunks = [chunk for job in jobs for chunk in job]
@@ -678,6 +757,8 @@ def translate_document(
                                 runs,
                                 splits,
                             )
+                            reused_ids.update(reused)
+                            adopted(chunks, str(index))
                         while len(active) < concurrency and submit():
                             pass
                 except BaseException:
@@ -687,9 +768,18 @@ def translate_document(
             for chunk in chunks:
                 if chunk.error == "not_processed":
                     chunk.error = "cancelled"
-            return _adopt(
+            digest = _adopt(
                 workspace, source_digest, prep_digest, config, chunks, runs, splits
             )
+            adopted(chunks)
+            if cancelled.is_set():
+                emit(observer, "translation", "cancelled")
+            emit(
+                observer,
+                "translation",
+                "partial" if any(c.error for c in chunks) else "done",
+            )
+            return digest
         finally:
             for signum, handler in previous_handlers.items():
                 signal.signal(signum, handler)

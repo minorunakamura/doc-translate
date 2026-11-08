@@ -188,16 +188,18 @@ def test_readable_run_and_saved_only_status_keep_json_artifacts(
     workspace = tmp_path / "my book"
     args = run_args(make_epub(tmp_path), workspace)
     args.remove("--json")
+    args.remove("--events-json")
     main(args, process_command=helper(tmp_path))
     captured = capsys.readouterr()
     assert "出力まで完了" in captured.out
     assert "未承認" in captured.out
     assert "EPUB全体" in captured.out
-    # Transmission announcements remain JSON on stderr, not part of stdout.
-    assert all(
-        json.loads(line)["stage"] in {"prepare", "translation"}
-        for line in captured.err.splitlines()
-    )
+    assert "本文・構造抽出" in captured.err
+    assert "collect" in captured.err and "organize" in captured.err
+    assert "AI応答待ち" in captured.err
+    assert "PDF" not in captured.err and "ページ" not in captured.err
+    assert "Original" not in captured.err
+    assert "\x1b" not in captured.err
     saved = workspace_status(workspace)
     assert str(workspace / saved["artifacts"]["japanese"]) in captured.out
     assert (
@@ -239,3 +241,184 @@ def test_config_failure_keeps_exit_two_in_both_formats(tmp_path, capsys, json_ou
     else:
         assert "unknown_model" in output
         assert "部分出力／処理未完了" in output
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("events_json", [False, True])
+def test_run_resume_output_flags_are_independent(
+    tmp_path, capsys, monkeypatch, json_output, events_json
+):
+    workspace = tmp_path / "flags"
+    args = run_args(make_epub(tmp_path), workspace)
+    if not json_output:
+        args.remove("--json")
+    if not events_json:
+        args.remove("--events-json")
+    main(args, process_command=helper(tmp_path))
+    captured = capsys.readouterr()
+    if json_output:
+        assert json.loads(captured.out)["processing"]["status"] == "completed"
+    else:
+        assert "出力まで完了" in captured.out
+    if events_json:
+        assert len([json.loads(line) for line in captured.err.splitlines()]) == 3
+    else:
+        assert "collect" in captured.err and "organize" in captured.err
+        assert (
+            captured.err.index("本文・構造抽出")
+            < captured.err.index("保存データ検証")
+            < captured.err.index("翻訳準備")
+            < captured.err.index("Markdown出力")
+        )
+    attempts = {p: p.read_bytes() for p in (workspace / "attempts").rglob("*.json")}
+    monkeypatch.setenv("PATH", "")
+    main(
+        [
+            "resume",
+            str(workspace),
+            *(["--json"] if json_output else []),
+            *(["--events-json"] if events_json else []),
+        ]
+    )
+    captured = capsys.readouterr()
+    if json_output:
+        assert json.loads(captured.out)["processing"]["status"] == "completed"
+    else:
+        assert "出力まで完了" in captured.out and "未承認" in captured.out
+    if events_json:
+        assert captured.err == ""
+    else:
+        assert captured.err.index("保存データ検証") < captured.err.index(
+            "本文・構造抽出"
+        )
+        assert (
+            "再利用" in captured.err and "成功 1/1 unit（うち再利用 1）" in captured.err
+        )
+    assert {
+        p: p.read_bytes() for p in (workspace / "attempts").rglob("*.json")
+    } == attempts
+
+
+def test_progress_state_keeps_other_split_pending_until_its_adoption():
+    from doc_translate.progress import ProgressEvent, ProgressState
+
+    state = ProgressState()
+    state.observe(ProgressEvent("translation", "split", job_id="one"))
+    state.observe(ProgressEvent("translation", "split", job_id="two"))
+    state.observe(
+        ProgressEvent("translation", "adopted", job_id="one", total=4, succeeded=2)
+    )
+    snapshot = state.snapshot()
+    assert snapshot[3] and snapshot[1]["translation"].total_updating
+    assert snapshot[-1][-1].total_updating
+    state.observe(
+        ProgressEvent("translation", "adopted", job_id="two", total=6, succeeded=6)
+    )
+    assert not state.snapshot()[3]
+
+
+def test_rich_display_failure_falls_back_without_masking_domain_error(
+    monkeypatch, capsys
+):
+    from rich.console import Console
+    from rich.live import Live
+
+    from doc_translate.progress import ProgressEvent
+    from doc_translate.progress_display import ProgressDisplay
+
+    monkeypatch.setenv("NO_COLOR", "")
+    display = ProgressDisplay()
+    display.console = Console(stderr=True, force_terminal=True, no_color=True)
+
+    def broken_update(*_, **__):
+        raise RuntimeError("ARTIFICIAL_PRIVATE_RENDER_ERROR")
+
+    monkeypatch.setattr(Live, "update", broken_update)
+    with pytest.raises(ValueError, match="domain failure"), display as observe:
+        observe(
+            ProgressEvent(
+                "prepare",
+                "repair",
+                unit_ids=("[red]literal[/red]\x1b[2J",),
+                reason="prepare_quote_mismatch",
+            )
+        )
+        raise ValueError("domain failure")
+    output = capsys.readouterr().err
+    assert "ARTIFICIAL_PRIVATE_RENDER_ERROR" not in output
+    assert "execution_failed" in output
+    assert display.thread is not None and not display.thread.is_alive()
+
+
+def test_events_json_write_failure_does_not_send_or_claim_success(tmp_path, capsys):
+    from contextlib import redirect_stderr
+    from io import StringIO
+
+    class BrokenNotice(StringIO):
+        def write(self, _value):
+            raise OSError("ARTIFICIAL_NOTICE_FAILURE")
+
+    workspace = tmp_path / "notice-failure"
+    with redirect_stderr(BrokenNotice()), pytest.raises(SystemExit) as error:
+        main(run_args(make_epub(tmp_path), workspace), process_command=helper(tmp_path))
+    assert error.value.code == 1
+    assert not (tmp_path / "requests.jsonl").exists()
+    assert json.loads(capsys.readouterr().out)["processing"]["status"] == "partial"
+    attempt = json.loads(
+        next((workspace / "attempts/preparation").glob("*.json")).read_text()
+    )
+    assert attempt["status"] == "rejected" and attempt["attempts"][0]["final"] is None
+
+
+def test_progress_metadata_controls_are_escaped_and_markup_is_literal(capsys):
+    from doc_translate.progress import ProgressEvent
+    from doc_translate.progress_display import ProgressDisplay
+
+    with ProgressDisplay() as observe:
+        observe(
+            ProgressEvent(
+                "extract",
+                "document",
+                source_name="[red]日本語[/red]\x1b[2J\n",
+                document_sha256="a" * 64,
+                format="epub",
+            )
+        )
+        observe(
+            ProgressEvent(
+                "translation", "waiting", request_id="one", unit_ids=("unit-1\r\x07",)
+            )
+        )
+    output = capsys.readouterr().err
+    assert "[red]日本語[/red]" in output
+    assert r"\x1b[2J\n" in output and r"unit-1\r\x07" in output
+    assert "\x1b" not in output and "\r" not in output and "\x07" not in output
+
+
+def test_progress_stage_is_visible_before_main_thread_enters_heavy_work(
+    capsys, monkeypatch
+):
+    import threading
+
+    from doc_translate.progress import ProgressEvent
+    from doc_translate.progress_display import ProgressDisplay
+
+    display = ProgressDisplay()
+    refresh = display._refresh
+    render_threads = []
+
+    def track_refresh():
+        render_threads.append(threading.current_thread())
+        refresh()
+
+    monkeypatch.setattr(display, "_refresh", track_refresh)
+    with display as observe:
+        observe(ProgressEvent("validate", "start"))
+        assert "保存データ検証" in capsys.readouterr().err
+        worker = threading.Thread(
+            target=lambda: observe(ProgressEvent("translation", "start"))
+        )
+        worker.start()
+        worker.join()
+        assert worker not in render_threads
+    assert threading.main_thread() in render_threads

@@ -51,7 +51,7 @@ def test_completed_resume_uses_saved_settings_and_original_without_runtime(
     monkeypatch.setenv("PI_PROVIDER", "must-not-be-used")
     monkeypatch.setenv("PI_MODEL", "must-not-be-used")
     monkeypatch.setenv("PATH", "")
-    main(["resume", str(workspace)])
+    main(["resume", "--json", str(workspace)])
     resumed = json.loads(capsys.readouterr().out)
     assert resumed["processing"]["status"] == "completed"
     assert (
@@ -76,7 +76,7 @@ def test_api_failure_resume_retries_only_unaccepted_requests(tmp_path, capsys, s
     assert "duplicate" in failed["usage"]["note"]
     old_files = saved_files(workspace)
     count = len(requests(tmp_path))
-    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     result = json.loads(capsys.readouterr().out)
     assert result["processing"]["status"] == "completed"
     assert result["scope"]["run"]["error"] is None
@@ -113,7 +113,7 @@ def test_resume_repairs_only_failed_marker_chunk_and_reuses_accepted_output(
     accepted_bytes = accepted_path.read_bytes()
     before = len(requests(tmp_path))
     main(
-        ["resume", str(workspace)],
+        ["resume", "--json", str(workspace)],
         process_command=helper(tmp_path, marker_failure="once"),
     )
     result = json.loads(capsys.readouterr().out)
@@ -131,7 +131,7 @@ def test_resume_repairs_only_failed_marker_chunk_and_reuses_accepted_output(
     )
     assert "translation_feedback" in new_requests[1]["context"]
     before = len(requests(tmp_path))
-    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     capsys.readouterr()
     assert len(requests(tmp_path)) == before
     assert "ARTIFICIAL_PRIVATE_CODE" not in (tmp_path / "requests.jsonl").read_text()
@@ -155,7 +155,7 @@ def test_glossary_and_explicit_config_change_only_affected_requests(tmp_path, ca
         )
     )
     main(
-        ["resume", str(workspace), "--glossary", str(glossary)],
+        ["resume", "--json", str(workspace), "--glossary", str(glossary)],
         process_command=helper(tmp_path),
     )
     assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
@@ -165,6 +165,7 @@ def test_glossary_and_explicit_config_change_only_affected_requests(tmp_path, ca
     main(
         [
             "resume",
+            "--json",
             str(workspace),
             "--model",
             "not-a-model",
@@ -201,7 +202,7 @@ def test_resume_refuses_corrupt_saved_artifact_before_submission(
     }[artifact]
     path.write_bytes(b"corrupt")
     with pytest.raises(SystemExit) as stopped:
-        main(["resume", str(workspace)], process_command=helper(tmp_path))
+        main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     assert stopped.value.code == 2
     assert len(requests(tmp_path)) == 3
     assert path.read_bytes() == b"corrupt"
@@ -290,7 +291,7 @@ def test_real_cli_signal_at_atomic_boundary_reuses_accepted_stages(
     process = external_cli(
         tmp_path,
         command,
-        ["resume", str(workspace), "--glossary", str(glossary)],
+        ["resume", "--json", str(workspace), "--glossary", str(glossary)],
         boundary=boundary,
         edge=edge,
     )
@@ -307,7 +308,7 @@ def test_real_cli_signal_at_atomic_boundary_reuses_accepted_stages(
             process.kill()
             process.wait()
     assert_preserved(old_files)
-    resumed = external_cli(tmp_path, command, ["resume", str(workspace)])
+    resumed = external_cli(tmp_path, command, ["resume", "--json", str(workspace)])
     assert resumed.wait(timeout=15) == 0, (tmp_path / "process.err").read_text()
     result = json.loads((tmp_path / "process.out").read_text())
     assert result["processing"]["status"] == "completed"
@@ -334,7 +335,7 @@ def test_whole_resume_lock_excludes_other_resume_render_and_stage_interstage(
     old_files = saved_files(workspace)
     # Resume's manifest replacement happens between stages, not inside a stage lock.
     process = external_cli(
-        tmp_path, command, ["resume", str(workspace)], boundary="run.json"
+        tmp_path, command, ["resume", "--json", str(workspace)], boundary="run.json"
     )
     try:
         await_boundary(tmp_path, process)
@@ -399,7 +400,9 @@ def test_real_cli_lost_response_is_unaccepted_and_discloses_possible_duplicate_c
             process.kill()
             process.wait()
     assert len(requests(tmp_path)) == 1  # no next paid stage after cancellation
-    resumed = external_cli(tmp_path, helper(tmp_path), ["resume", str(workspace)])
+    resumed = external_cli(
+        tmp_path, helper(tmp_path), ["resume", "--json", str(workspace)]
+    )
     assert resumed.wait(timeout=15) == 0, (tmp_path / "process.err").read_text()
     summary = json.loads((tmp_path / "process.out").read_text())
     assert summary["processing"]["status"] == "completed"

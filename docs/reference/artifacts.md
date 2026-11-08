@@ -50,7 +50,19 @@ WORKSPACE/
 
 `run.json`は`schema_version: 1/document/source_name/owned_pages/reference_pages/correction/translation/policy/user_terms/corrected_pages/failed_pages/not_processed_pages/chunk_sha256s/artifacts_path/error/error_code`です。`document`は`SourceDocument`、段階設定は既存`GenerationConfig`、`policy`は既存`StylePolicy`です。EPUBの`owned_pages`／`correction`はnull、ページ集合は空です。PDF全体を指定したときの`owned_pages`は取得前null、取得後に実ページ番号を固定します。明示所有範囲は取得前から保持します。参照指定と補正済み／失敗／未処理ページ、採用chunk digestは区別し、進行に応じatomicに更新します。credential・raw環境・秘密値・raw例外は保存しません。`error_code`は観測できた既存推論分類で、分類未観測時はnull、`error`は非秘密の工程失敗案内です。resume／途中artifact復旧の検証規則は次節を参照してください。
 
-CLIの送信前表示は新しいpreflightを重ねず、既存推論の**preflight→generate境界**を使います。`generate`と各stage公開APIに任意の`before_send: BeforeSend | None = None`を追加し、`BeforeSend = Callable[[GenerationConfig, GenerationInput, Preflight], None]`です。検証済みpreflightと画像を確認した後、実際のgenerate recordを送る直前に毎回（retryを含む）呼びます。CLIはstderrへ入力名／hash、意図範囲、実requestの送信範囲・内容、段階provider／model／thinking、実`Preflight.auth.source/type`をflushします。原本fileや画像は準備／翻訳へ送らず、provider／model／認証fallbackやproductionのfake環境flagはありません。`cli.main(argv=None, *, process_command=None)`の明示process指定は既存adapterと同じ外部processテストseamだけです。productionは検証済み導入済みruntimeを使います。
+CLIの送信前表示は新しいpreflightを重ねず、既存推論の**preflight→generate境界**を使います。`generate`と各stage公開APIに任意の`before_send: BeforeSend | None = None`を追加し、`BeforeSend = Callable[[GenerationConfig, GenerationInput, Preflight], None]`です。検証済みpreflightと画像を確認した後、実際のgenerate recordを送る直前に毎回（retryを含む）呼びます。CLIのrun／resumeは`--events-json`時にstderrへ入力名／hash、意図範囲、実requestの送信範囲・内容、段階provider／model／thinking、実`Preflight.auth.source/type`をflushします（reviewは従来noticeを維持）。原本fileや画像は準備／翻訳へ送らず、provider／model／認証fallbackやproductionのfake環境flagはありません。`cli.main(argv=None, *, process_command=None)`の明示process指定は既存adapterと同じ外部processテストseamだけです。productionは検証済み導入済みruntimeを使います。
+
+### EPUB／共通観測境界（Issue #50）
+
+`run_document`／`resume_document`／`prepare_document`／`translate_document`／`generate`へ任意keyword `observer: Observer | None = None`を追加します。`doc_translate.progress.ProgressEvent`の工程／kind、phase、実unit ID、job／attemptのrequest ID、固定理由code、非秘密の設定と保存後件数だけを同期callbackへ渡します。独立Python API利用者にCLI／Rich表示を強制せず、既存戻り値・BeforeSendの3引数と送信前flush責務を維持します。observerは表示用metadataだけを扱い、本文／回答／payload／tokenや任意例外の文字列を含めません。callbackは呼出元threadで動くため、CLIはlock付きin-memory stateへ反映し、workerでRichを再構築しません。独立callerのcallback例外は処理へ伝播し得ますが、起動済みchildは既存finallyで回収しrequest終端を通知します。
+
+metadataは既存の実unit／phaseから発行元で投影し、表示目的のunit再生成・GenerationInput field・prompt／context変更はありません。CLI向け`SendNotice` wrapperだけがBeforeSendとは別のmetadataを保持します。collectは送信unit／section、translationは実chunkのunit、organizeは文書全体の収集結果整理（`unit_ids=[]`、原文unit全文の再送なし）です。PDF補正のowned／referenceは既存request contextの実範囲を使い、準備／翻訳に補正済み全ページのfallbackを作りません。
+
+requestはPopen前から一意なattempt IDで観測し、起動失敗・preflight拒否・callback失敗・timeout・取消・例外も終端します。BeforeSendはprovider到達証明ではなく、generate pipe書込み完了後だけAI応答待ちです。retryは既存3／6秒、domain訂正は各既存上限のまま別通知、signal handlerはEvent設定だけ、取消drainは従来30秒です。表示失敗だけは小さい行表示へfallbackし、BeforeSendの書込み失敗は送信せず失敗にします。
+
+翻訳件数は`_adopt`のsnapshot／pointer保存後、その採用chunkのleaf unitで成功／失敗／未処理を投影します。再利用は成功の内訳です。別並列jobのsplitが残る間は表示総数を更新中とし、新しいactive-leaf正本は持ちません。準備は検証済み収集記録の保存／再利用とorganizeを分け、最終採用前に工程全体を成功にしません。render完了も保存後に通知します。保存schema、immutable、採用pointer、再利用前の詳細検証は変更せず、進捗file／heartbeat／run.jsonのライブ更新を追加しません。
+
+今回の完成範囲はEPUB＋共通表示で、PDF補正の所有ページ集計／工程とreview新表示の完成を含みません。run／resume CLIの人向け既定と独立JSON flagsは[usage](usage.md#cliの表示とjson出力)、直接操作・証拠・cleanupは[検証Skill](../../.pi/skills/verify-project/SKILL.md)を参照してください。
 
 結果とexit：
 
@@ -64,7 +76,7 @@ CLIの送信前表示は新しいpreflightを重ねず、既存推論の**prefli
 
 ## 再開（Issue #15）
 
-公開CLIは`doc-translate resume DIR`、Python入口は`doc_translate.run.resume_document(*, workspace, translation=None, correction=None, shared=None, policy=None, artifacts_path=None, user_terms=None, process_command=None, before_send=None)`です。保存済み`RunManifest`を既定にし、CLIの明示stage設定 > 明示共通設定 > 保存値の順で解決します。resumeにPI環境の設定fallback・新たなページ許可optionはありません。明示変更は`run.json`へatomic保存し、旧不変artifactを保持します。
+公開CLIは`doc-translate resume DIR`、Python入口は`doc_translate.run.resume_document(*, workspace, translation=None, correction=None, shared=None, policy=None, artifacts_path=None, user_terms=None, process_command=None, before_send=None, observer=None)`です。保存済み`RunManifest`を既定にし、CLIの明示stage設定 > 明示共通設定 > 保存値の順で解決します。resumeにPI環境の設定fallback・新たなページ許可optionはありません。明示変更は`run.json`へatomic保存し、旧不変artifactを保持します。
 
 - `artifacts_path`はPDF再取得時だけ必要な非秘密local path（旧manifestでは省略／null可）。元INPUT名は表示・book名用で、再開はworkspace内の原本hash／pathを検査します。
 - EPUBは保存原本と現行reader／extractorの入力から原文を再構築し、採用済みsourceとの対応を検査します。PDF依存は読み込みません。
@@ -248,7 +260,7 @@ leafは`text/code/literal/identifier/formula`＋`text`、paired構造は`emphasi
 
 ## 文書context・glossary準備（Issue #11）
 
-公開APIは`doc_translate.preparation.prepare_document(*, workspace: Path, book: str, policy: StylePolicy, config: GenerationConfig, user_terms: dict[str, str] | None = None, version: str = "1", source_sha256: str | None = None, process_command: Sequence[str] | None = None, cancel: threading.Event | None = None) -> str`と`load_preparation(workspace: Path, sha256: str | None = None) -> PreparationSnapshot`です。`prepare_document`自身が保存・採用とworkspace lockを所有します。callerは外側から同じlockを取得しません。原文の保存・loadは既存APIを使い、PDF依存をimportしません。CLI・訳文生成・翻訳snapshotは追加しません。
+公開APIは`doc_translate.preparation.prepare_document(*, workspace: Path, book: str, policy: StylePolicy, config: GenerationConfig, user_terms: dict[str, str] | None = None, version: str = "1", source_sha256: str | None = None, process_command: Sequence[str] | None = None, cancel: threading.Event | None = None, before_send: BeforeSend | None = None, observer: Observer | None = None) -> str`と`load_preparation(workspace: Path, sha256: str | None = None) -> PreparationSnapshot`です。`prepare_document`自身が保存・採用とworkspace lockを所有します。callerは外側から同じlockを取得しません。原文の保存・loadは既存APIを使い、PDF依存をimportしません。CLI・訳文生成・翻訳snapshotは追加しません。
 
 ```python
 from pathlib import Path
@@ -303,7 +315,7 @@ WORKSPACE/
 
 ## 翻訳・採用snapshot（Issue #12）
 
-公開APIは`doc_translate.translation.translate_document(*, workspace: Path, config: GenerationConfig, source_sha256: str | None = None, preparation_sha256: str | None = None, max_source_chars: int = 12_000, concurrency: int = 2, process_command: Sequence[str] | None = None, cancel: threading.Event | None = None) -> str`と`load_translation(workspace: Path, sha256: str | None = None) -> TranslationSnapshot`です。保存済み原文と固定準備版を読み、workspace lockを自分で取得します。callerは外側から同じlockを取りません。digest省略時は各採用参照を使い、明示時は指定の保存版を使います。準備版の出典と翻訳する原文版は別々に保持し、再利用判定は現在unitとの対応と実際の翻訳入力で行います。取得・準備の採用参照は変更しません。
+公開APIは`doc_translate.translation.translate_document(*, workspace: Path, config: GenerationConfig, source_sha256: str | None = None, preparation_sha256: str | None = None, max_source_chars: int = 12_000, concurrency: int = 2, process_command: Sequence[str] | None = None, cancel: threading.Event | None = None, before_send: BeforeSend | None = None, observer: Observer | None = None) -> str`と`load_translation(workspace: Path, sha256: str | None = None) -> TranslationSnapshot`です。保存済み原文と固定準備版を読み、workspace lockを自分で取得します。callerは外側から同じlockを取りません。digest省略時は各採用参照を使い、明示時は指定の保存版を使います。準備版の出典と翻訳する原文版は別々に保持し、再利用判定は現在unitとの対応と実際の翻訳入力で行います。取得・準備の採用参照は変更しません。
 
 ```python
 from pathlib import Path
@@ -463,7 +475,7 @@ conversionがsuccess以外、全対象ページのraw被覆不足、必須PNG欠
 
 ## PDF補正chunk（Issue #8）
 
-公開APIは`doc_translate.pdf_correction.correct_pdf(*, workspace: Path, draft_sha256: str, owned_pages: list[int], reference_pages: list[int], policy: str, config: GenerationConfig, process_command: Sequence[str] | None = None, cancel: threading.Event | None = None) -> str`と`load_pdf_correction(workspace: Path, sha256: str) -> PDFCorrectionChunk`です。返り値は保存chunkのbyte列のSHA-256です。CLIはありません。`process_command`は既存`generate`と同じ外部process境界のテスト用指定です。
+公開APIは`doc_translate.pdf_correction.correct_pdf(*, workspace: Path, draft_sha256: str, owned_pages: list[int], reference_pages: list[int], policy: str, config: GenerationConfig, process_command: Sequence[str] | None = None, cancel: threading.Event | None = None, before_send: BeforeSend | None = None) -> str`と`load_pdf_correction(workspace: Path, sha256: str) -> PDFCorrectionChunk`です。返り値は保存chunkのbyte列のSHA-256です。CLIはありません。`process_command`は既存`generate`と同じ外部process境界のテスト用指定です。
 
 ```python
 from pathlib import Path
@@ -811,7 +823,7 @@ SIGINT／SIGTERM／stdin EOF／stdout write failureは推論をAbortSignalで取
 
 ### Python inference adapter（Issue #4）
 
-公開APIは`doc_translate.inference.generate(config, inputs, *, response_model, images=(), cancel=None, process_command=None)`です。`GenerationConfig`は完全な`provider/model/thinking`と`GenerationOptions`を持ち、`resolve_config(stage=Selection(...), shared=Selection(...), options=...)`はfieldごとに段階指定→共通指定→`PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL`を解決します。不足・未知thinking・非有限optionsは送信前に拒否し、model能力・認証・実在modelは同じprocessのpreflightで確認します。defaults／Pi CLI設定／fallbackはありません。
+公開APIは`doc_translate.inference.generate(config, inputs, *, response_model, images=(), cancel=None, process_command=None, before_send=None, observer=None)`です。`GenerationConfig`は完全な`provider/model/thinking`と`GenerationOptions`を持ち、`resolve_config(stage=Selection(...), shared=Selection(...), options=...)`はfieldごとに段階指定→共通指定→`PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL`を解決します。不足・未知thinking・非有限optionsは送信前に拒否し、model能力・認証・実在modelは同じprocessのpreflightで確認します。defaults／Pi CLI設定／fallbackはありません。
 
 `GenerationInput`は`stage: correction | prepare | translation | review`と、必須の`policy/text/context/glossary`です。不要なcontext／glossaryも明示的に`None`を指定します。`prepare/translation`で画像を指定するとprocess起動前に拒否します。`GenerationImage(data=<PNG bytes>, mimeType="image/png", width=..., height=..., coordinates=...)`はcorrection／reviewでのみ渡せます。画像を黙って省略・変換せず、配列順のSHA-256・byte量・base64 byte量・MIME・実寸・座標説明・`scale:1`をattempt内の`ImageMetadata`へ保持します。送信許可範囲・座標説明の意味検証は後続callerの責務であり、文書／ページschemaはここで定義しません。
 

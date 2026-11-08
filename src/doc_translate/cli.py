@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from contextlib import nullcontext
 from pathlib import Path
 
 from doc_translate import ai_runtime
@@ -11,6 +12,8 @@ from doc_translate.auth import authenticate
 from doc_translate.cli_output import catalog_text, saved_status_text, summary_text
 from doc_translate.inference import Selection, resolve_config
 from doc_translate.preparation import Glossary, StylePolicy
+from doc_translate.progress import SendNotice
+from doc_translate.progress_display import ProgressDisplay
 from doc_translate.render import read_saved_status, render_document, workspace_status
 from doc_translate.run import (
     CONFIG_ERROR_CODES,
@@ -19,7 +22,8 @@ from doc_translate.run import (
 )
 
 
-def _announce(workspace, config, inputs, preflight):
+def _announce(workspace, config, inputs, preflight, metadata=None):
+    metadata = metadata or {}
     if inputs.stage == "review":
         from doc_translate.snapshot import (
             SnapshotReference,
@@ -53,15 +57,13 @@ def _announce(workspace, config, inputs, preflight):
             "owned_pages": run["owned_pages"],
             "reference_pages": run["reference_pages"],
             "transmission": {
-                "owned_pages": inputs.context.get(
-                    "owned_pages",
-                    run["corrected_pages"]
-                    if run["document"]["format"] == "pdf"
-                    else None,
-                ),
+                "owned_pages": inputs.context.get("owned_pages"),
+                **metadata,
                 "reference_pages": inputs.context.get("reference_pages", []),
                 "content": "page images and scoped extraction draft"
                 if inputs.stage == "correction"
+                else "document-wide collected results organization; no full source units retransmitted"
+                if metadata.get("phase") == "organize"
                 else "saved source units/context/glossary only; no original file, images, code or formula payload",
             },
         }
@@ -100,7 +102,7 @@ def main(
     parser = argparse.ArgumentParser(
         prog="doc-translate",
         description="Traceable PDF and EPUB translation, rendering and status.",
-        epilog="Providers/models show tables; run/status show summaries. Use --json on these commands for machine-readable output; other commands output JSON. Exit codes: 0 success, 1 partial output/execution failure, 2 input/configuration error. Run/resume send explicitly scoped data to selected providers. PDF source candidate adoption is explicit via revise --source; pending resume/render exit 1, successful status exits 0. Saved render/status/revise need no Node, authentication or inference.",
+        epilog="Providers/models show tables; run/resume/status show summaries. Use --json on these commands for machine-readable output; --events-json independently selects pre-send notices on run/resume stderr. Other commands output JSON. Exit codes: 0 success, 1 partial output/execution failure, 2 input/configuration error. Run/resume send explicitly scoped data to selected providers. PDF source candidate adoption is explicit via revise --source; pending resume/render exit 1, successful status exits 0. Saved render/status/revise need no Node, authentication or inference.",
     )
     commands = parser.add_subparsers(dest="operation", required=True)
     setup = commands.add_parser(
@@ -191,7 +193,7 @@ def main(
     run = commands.add_parser(
         "run",
         help="Translate a local PDF/EPUB in a new workspace.",
-        description="First use: setup-ai once, then login if needed. providers/models are optional lookups. Regular use: run with stage or shared provider/model/thinking (or PI_* environment). Creates a new workspace; existing paths including empty directories/symlinks are refused. Announces input hash, scope and actual preflight authentication on stderr before each transmission; summary/artifact paths on stdout. Exit 0 includes needs-attention, 1 partial/failure, 2 input/configuration error.",
+        description="First use: setup-ai once, then login if needed. providers/models are optional lookups. Regular use: run with stage or shared provider/model/thinking (or PI_* environment). Creates a new workspace; existing paths including empty directories/symlinks are refused. Shows progress on stderr (--events-json selects pre-send JSON notices); summary/artifact paths on stdout. Exit 0 includes needs-attention, 1 partial/failure, 2 input/configuration error.",
     )
     run.add_argument("input", type=Path)
     run.add_argument("--workspace", type=Path, required=True)
@@ -207,6 +209,11 @@ def main(
         help="Explicit style policy JSON (version/text); validated data, never code.",
     )
     for command in (run, resume):
+        command.add_argument(
+            "--events-json",
+            action="store_true",
+            help="Emit only pre-send JSON notices on stderr, not a full event stream.",
+        )
         for prefix in ("", "correction-", "translation-"):
             for field in ("provider", "model", "thinking"):
                 command.add_argument(f"--{prefix}{field}")
@@ -226,7 +233,7 @@ def main(
         type=_page_range,
         help="Explicit PDF reference-only transmission permission A-B.",
     )
-    for command in (providers, models, run):
+    for command in (providers, models, run, resume):
         command.add_argument(
             "--json",
             action="store_true",
@@ -256,42 +263,55 @@ def main(
                 else None
             )
 
-            def announce(config, inputs, preflight):
-                _announce(args.workspace, config, inputs, preflight)
-
-            if args.operation == "resume":
-                result = resume_document(
-                    workspace=args.workspace,
-                    translation=selection("translation"),
-                    correction=selection("correction"),
-                    shared=shared,
-                    artifacts_path=args.artifacts_path,
-                    user_terms=terms,
-                    policy=StylePolicy.model_validate_json(args.policy.read_bytes())
-                    if args.policy
-                    else None,
-                    process_command=process_command,
-                    before_send=announce,
-                )
-            else:
-                result = run_document(
-                    source=args.input,
-                    workspace=args.workspace,
-                    translation=resolve_config(
-                        stage=selection("translation"), shared=shared
+            announce = (
+                SendNotice(
+                    lambda config, inputs, preflight, metadata: _announce(
+                        args.workspace, config, inputs, preflight, metadata
                     ),
-                    correction=resolve_config(
-                        stage=selection("correction"), shared=shared
-                    )
-                    if args.input.suffix.lower() == ".pdf"
-                    else None,
-                    pages=args.pages,
-                    reference_pages=args.reference_pages,
-                    artifacts_path=args.artifacts_path,
-                    user_terms=terms,
-                    process_command=process_command,
-                    before_send=announce,
+                    {},
                 )
+                if args.events_json
+                else None
+            )
+
+            with (
+                nullcontext(None) if args.events_json else ProgressDisplay() as observer
+            ):
+                if args.operation == "resume":
+                    result = resume_document(
+                        workspace=args.workspace,
+                        translation=selection("translation"),
+                        correction=selection("correction"),
+                        shared=shared,
+                        artifacts_path=args.artifacts_path,
+                        user_terms=terms,
+                        policy=StylePolicy.model_validate_json(args.policy.read_bytes())
+                        if args.policy
+                        else None,
+                        process_command=process_command,
+                        before_send=announce,
+                        observer=observer,
+                    )
+                else:
+                    result = run_document(
+                        source=args.input,
+                        workspace=args.workspace,
+                        translation=resolve_config(
+                            stage=selection("translation"), shared=shared
+                        ),
+                        correction=resolve_config(
+                            stage=selection("correction"), shared=shared
+                        )
+                        if args.input.suffix.lower() == ".pdf"
+                        else None,
+                        pages=args.pages,
+                        reference_pages=args.reference_pages,
+                        artifacts_path=args.artifacts_path,
+                        user_terms=terms,
+                        process_command=process_command,
+                        before_send=announce,
+                        observer=observer,
+                    )
         elif args.operation == "review":
             from doc_translate.review import review_document
 
@@ -356,7 +376,7 @@ def main(
         print(catalog_text(args.operation, result))
     elif args.operation == "status" and not args.json and not args.verify:
         print(saved_status_text(result, args.workspace))
-    elif args.operation in {"run", "status"} and not args.json:
+    elif args.operation in {"run", "resume", "status"} and not args.json:
         print(summary_text(args.operation, result, args.workspace))
     else:
         print(json.dumps(result, ensure_ascii=False))

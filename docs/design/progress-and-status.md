@@ -1,10 +1,10 @@
 # PDF／EPUB共通 — 進捗表示・送信通知・statusの基本設計
 
-本書はDesign Discussionで合意した基本設計であり、Approved Planではない。実装、依存追加、実Workspaceの操作、性能測定、provider通信は未実施。具体的な変更範囲・性能目標・検証方法・作業分割は、後続のPlanningで定める。
+本書はDesign Discussionで合意した基本設計であり、Approved Planではない。具体的な変更範囲・性能目標・検証方法・作業分割は[正式Plan](../plans/progress-and-status.md)に従う。以下の責務具体化はIssue #49（status）／#50（EPUB＋共通表示）の範囲であり、PDF補正／review新表示の完成や実provider検証を意味しない。
 
 ## 目的と対象
 
-PDF・EPUB両方の`run`／`resume`で、実行画面だけから次を把握できるようにする。
+目標範囲はPDF・EPUB両方の`run`／`resume`と明示選択`review`で、実行画面だけから次を把握できるようにする。
 
 - 現在の工程と、ローカル処理中かAI応答待ちか。
 - 工程ごとの完了状況、保存済み結果の再利用、今回の新規処理。
@@ -88,9 +88,17 @@ AI応答待ち… 経過 00:28
 - 通信上の再試行と、回答不備への訂正要求を区別する。送信直前の通知だけで、providerへの到達や回答成功を保証しない。
 - 機密本文・画像payload・認証token・不要な秘密情報は表示しない。
 
-進捗はstderrを基本とし、stdoutの最終結果を混ぜない。既存の`run --json`、`resume`のJSON結果などのstdout契約を維持する方向で計画する。Richを理由に他コマンドの出力方式まで変更しない。
+進捗はstderr、最終結果はstdout。正式Planの合意に従いrun／resumeは人向け既定、明示`--json`で従来の最終JSONを得る。`--events-json`は独立してstderrを従来用途の送信前JSONだけにする。reviewも同じ方向の合意だが、#50では従来JSON／noticeを維持し新表示は後続Issueとする。Richを理由に他コマンドの出力方式まで変更しない。
 
-詳細JSON通知の利用箇所、既存stderr解析、通常status／`status --json`の検証契約への影響はPlanningで調査し、必要な明示指定・移行方法を定める。`--verify`は正式Planでstatusの詳細検査指定として採用し、`--json`の詳細検査＋完全JSONを維持する。`--events-json`等の進捗通知側は別Work Itemで扱う。互換性を無視した削除や、`--json`の意味変更を本書への合意に含めない。公開契約への変更が必要なら影響を示してユーザーと確認する。
+詳細JSON通知の利用箇所、既存stderr解析、通常status／`status --json`の検証契約への影響はPlanningで調査し、必要な明示指定・移行方法を定める。`--verify`は正式Planでstatusの詳細検査指定として採用し、`--json`の詳細検査＋完全JSONを維持する。run／resumeの`--events-json`は#50で扱い、reviewは後続Issueとする。互換性を無視した削除や、`--json`の意味変更を本書への合意に含めない。公開契約への変更が必要なら影響を示してユーザーと確認する。
+
+### #50で具体化する責務
+
+共通`ProgressEvent`は任意observerへ同期通知する小さいmetadataで、永続化／IPC／汎用event busは持たない。発行元が既存unit／phaseを投影し、GenerationInput・prompt／context・保存requestへ表示用fieldを加えない。BeforeSendの3引数とflush責務はそのまま、CLIの小さいwrapperだけでunit_ids／phaseを渡す。collectは実unitとsection、organizeは文書全体の収集結果整理（unit_ids空、原文unit全文再送なし）、翻訳は実chunkのunitとする。PDFのcorrected_pages全体への誤fallbackは除く。
+
+view stateはlock＋snapshot、workerはstate-onlyとする。main threadの工程start時の同期描画と表示threadの周期描画は、render_lock下でsnapshotを描画する。`Console(stderr=True)`、Liveのredirect両方False、約4Hz更新、finally終了を明示する。NO_COLORは値ではなく存在で判定し、Textによるmarkup不活性化とcontrol文字escapeを使う。表示失敗は表示層だけの小さい行fallbackとし、送信前JSON書込み失敗を隠して送信しない。raw例外／回答／本文／秘密を履歴へ流さない。
+
+requestは一意なattempt／jobを持ち、Popen失敗・preflight拒否・callback失敗・timeout・取消・例外でも終端通知する。helperへのgenerate書込み完了でのみ待機へ移る。翻訳は既存_adoptの保存後にsnapshot leaf unitを集計し、別jobのsplitが残る限り総数を更新中とする。別のactive-leaf正本・新unit生成・取消方式／retry変更は不要。EPUBは実順序、resumeは再利用前検証を最初に示し、PDF行やページ数は出さない。PDF補正／review固有工程の完成は#50の対象外。
 
 ## 通常statusと詳細検査
 
@@ -110,7 +118,7 @@ AI応答待ち… 経過 00:28
 
 以下は計画時点のソース確認であり、実動・性能検証の結果ではない。Issue #49では通常CLI statusのみ`read_saved_status`へ分離し、下記の詳細`workspace_status`は維持する。
 
-- [`cli.py`](../../src/doc_translate/cli.py)の`_announce()`は送信直前にstderrへJSONを出す。prepare／translationのPDF送信対象には`run["corrected_pages"]`へのfallbackがあり、当該requestの対象と一致するとは限らない。
+- [`cli.py`](../../src/doc_translate/cli.py)の`_announce()`は送信直前にstderrへJSONを出す。計画時点であったprepare／translationのPDF送信対象の`run["corrected_pages"]`fallbackは#50で除き、対応不明を全ページで代用しない。
 - [`run.py`](../../src/doc_translate/run.py)の`run_document()`／`resume_document()`／`_continue_run()`が形式固有の取得と共通の準備・翻訳・renderをつなぐ。EPUBにPDF補正はない。
 - [`render.py`](../../src/doc_translate/render.py)の`workspace_status()`は`_build()`を呼ぶ。`_inputs()`によるunit生成・検証、`_Markdown`による出力再構成、`_usage()`によるattempt走査を通り、保存出力のhash検査も行う。
 - 計画時点では同じ`_build()`の失敗分類は`chunk.error`の有無でunitを集めていた。既存の[`translation.py`](../../src/doc_translate/translation.py)は未処理chunkへ`"not_processed"`を入れるため、未処理が失敗に含まれる経路があった。Issue #49は公開render／詳細statusの人工snapshot回帰で修正する。実Workspaceは操作しない。
