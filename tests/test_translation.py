@@ -106,7 +106,12 @@ def test_translation_adopts_and_reuses_fixed_inputs_without_sending_local_payloa
     sent = json.loads(json.loads(requests[0])["messages"][1]["content"][0]["text"])
     assert sent["glossary"] == load_preparation(workspace).glossary.model_dump()
     assert "tokens" not in sent["text"]
-    assert translate(tmp_path, workspace) == digest
+    events = []
+    assert translate(tmp_path, workspace, observer=events.append) == digest
+    saved = next(e for e in reversed(events) if e.kind == "adopted")
+    assert saved.succeeded == saved.reused == saved.total == 1
+    assert saved.failed == saved.not_processed == 0
+    assert not any(e.kind == "request_start" for e in events)
     assert (
         tmp_path / "translation-requests.jsonl"
     ).read_text().splitlines() == requests
@@ -365,7 +370,16 @@ def test_translation_defaults_to_twelve_thousand_source_characters_and_two_activ
     workspace = prepare_blocks(
         tmp_path, [("body", "a" * 6500), ("body", "b" * 6500), ("body", "c" * 6500)]
     )
-    digest = translate(tmp_path, workspace, {"barrier": True})
+    events = []
+    digest = translate(tmp_path, workspace, {"barrier": True}, observer=events.append)
+    waiting, peak = set(), 0
+    for event in events:
+        if event.kind == "waiting":
+            waiting.add(event.request_id)
+            peak = max(peak, len(waiting))
+        elif event.kind == "request_end":
+            waiting.discard(event.request_id)
+    assert peak == 2 and not waiting
     adopted = load_translation(workspace, digest)
     assert adopted.processing.status == "completed"
     assert len(adopted.chunks) == 3
@@ -385,7 +399,18 @@ def test_translation_reduces_length_without_summarizing_and_reuses_split_results
     tmp_path, blocks
 ):
     workspace = prepare_blocks(tmp_path, blocks)
-    digest = translate(tmp_path, workspace, {"length_above": 80})
+    events = []
+
+    def observe(event):
+        events.append(event)
+        if event.kind == "adopted":
+            saved = load_translation(workspace)
+            assert event.total == sum(len(c.units) for c in saved.chunks)
+            assert event.succeeded == len(saved.translations)
+
+    digest = translate(tmp_path, workspace, {"length_above": 80}, observer=observe)
+    assert any(e.kind == "split" for e in events)
+    assert all(e.job_id for e in events if e.kind == "request_start")
     adopted = load_translation(workspace, digest)
     assert adopted.processing.status == "completed"
     assert "".join(
@@ -732,6 +757,7 @@ def test_translation_save_failure_preserves_previous_adoption_and_attempts(
     workspace = prepared
     previous = translate(tmp_path, workspace)
     reference = (workspace / "translation-snapshot.json").read_bytes()
+    events = []
     real_replace = os.replace
 
     def fail_replace(src, dst):
@@ -745,6 +771,7 @@ def test_translation_save_failure_preserves_previous_adoption_and_attempts(
             translate(
                 tmp_path,
                 workspace,
+                observer=events.append,
                 config=CONFIG.model_copy(
                     update={"options": GenerationOptions(maxTokens=512)}
                 ),
@@ -752,6 +779,8 @@ def test_translation_save_failure_preserves_previous_adoption_and_attempts(
     assert (workspace / "translation-snapshot.json").read_bytes() == reference
     assert load_translation(workspace) == load_translation(workspace, previous)
     assert len(list((workspace / "attempts/translation").glob("*.json"))) == 2
+
+    assert not any(e.kind in {"adopted", "done"} for e in events)
 
 
 def test_translation_respects_workspace_writer_lock(tmp_path, prepared):
@@ -873,33 +902,56 @@ def test_translation_recovers_validated_calls_before_adoption_without_resending(
         [("body", "alpha " * 40), ("body", "beta " * 40)],
     ],
 )
+@pytest.mark.parametrize(
+    "target", ["snapshots/translation", "translation-snapshot.json"]
+)
 def test_translation_recovers_successful_split_subcalls_before_snapshot_save(
-    tmp_path, monkeypatch, blocks
+    tmp_path, monkeypatch, blocks, target
 ):
     workspace = prepare_blocks(tmp_path, blocks)
     replace = os.replace
+    events = []
 
     def fail_replace(src, dst):
-        if "snapshots/translation" in str(dst):
+        if target in str(dst):
             raise OSError("interrupted split adoption")
         return replace(src, dst)
 
     with monkeypatch.context() as patch:
         patch.setattr(os, "replace", fail_replace)
         with pytest.raises(OSError, match="interrupted split adoption"):
-            translate(tmp_path, workspace, {"length_above": 80})
+            translate(tmp_path, workspace, {"length_above": 80}, observer=events.append)
+    assert not any(e.kind in {"adopted", "done"} for e in events)
+    assert not (workspace / "translation-snapshot.json").exists()
     sent = requests(tmp_path)
-    children = {
+    immutable = {
         path: path.read_bytes()
-        for path in (workspace / "translations/chunks").glob("*.json")
+        for directory in (
+            "attempts/translation",
+            "translations/chunks",
+            "snapshots/translation",
+        )
+        for path in (workspace / directory).glob("*.json")
+    }
+    children = {
+        path.stem
+        for path in immutable
+        if path.parent == workspace / "translations/chunks"
     }
     assert children
-    digest = translate(tmp_path, workspace, {"length_above": 80})
+    events.clear()
+    digest = translate(
+        tmp_path, workspace, {"length_above": 80}, observer=events.append
+    )
     adopted = load_translation(workspace, digest)
-    assert all(path.read_bytes() == data for path, data in children.items())
-    assert {chunk.artifact_sha256 for chunk in adopted.chunks} == {
-        path.stem for path in children
-    }
+    assert all(path.read_bytes() == data for path, data in immutable.items())
+    assert {chunk.artifact_sha256 for chunk in adopted.chunks} == children
+    saved = next(e for e in reversed(events) if e.kind == "adopted")
+    assert saved.succeeded == saved.reused == saved.total == len(adopted.translations)
+    assert not any(e.kind == "request_start" for e in events)
+    if blocks == [("body", "word " * 40)]:
+        assert len(sent) == 7
+        assert saved.succeeded == saved.reused == saved.total == 4
     assert adopted.processing.status == "completed"
     assert len(adopted.chunks) > 1
     assert "".join(u.source_text for c in adopted.chunks for u in c.units) == "".join(

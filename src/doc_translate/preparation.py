@@ -19,6 +19,7 @@ from doc_translate.inference import (
     _saved_answer,
     generate,
 )
+from doc_translate.progress import Observer, emit, scoped_before_send, scoped_observer
 from doc_translate.snapshot import (
     Contract,
     Nonempty,
@@ -165,7 +166,15 @@ def _repair_request(request, code, feedback=None):
 
 
 def _call(
-    workspace, config, request, response_model, validate, command, cancel, before_send
+    workspace,
+    config,
+    request,
+    response_model,
+    validate,
+    command,
+    cancel,
+    before_send,
+    observer,
 ):
     reusable_requests = [
         value.model_dump(mode="json")
@@ -206,6 +215,7 @@ def _call(
             validate(answer)
         except ValueError, KeyError, TypeError, IndexError, InferenceError:
             continue
+        emit(observer, "prepare", "reused")
         return answer, path.stem
     current_request = request
 
@@ -235,22 +245,29 @@ def _call(
                 process_command=command,
                 cancel=cancel,
                 before_send=before_send,
+                observer=observer,
             )
         except InferenceError as error:
             record("rejected", error.attempts)
+            emit(observer, "prepare", "failed", reason="inference_rejected")
             raise
         try:
             validate(result.answer)
         except PreparationValidationError as error:
             record("rejected", result.attempts, error.code)
             if number == 2:
+                emit(observer, "prepare", "failed", reason=error.code)
                 raise
+            emit(observer, "prepare", "repair", reason=error.code)
             current_request = _repair_request(request, error.code, error.feedback)
         except ValueError:
             record("rejected", result.attempts)
+            emit(observer, "prepare", "failed", reason="validation_failed")
             raise
         else:
-            return result.answer, record("validated", result.attempts)
+            digest = record("validated", result.attempts)
+            emit(observer, "prepare", "saved")
+            return result.answer, digest
 
 
 def _groups(units):
@@ -366,8 +383,10 @@ def prepare_document(
     process_command: Sequence[str] | None = None,
     cancel: threading.Event | None = None,
     before_send: BeforeSend | None = None,
+    observer: Observer | None = None,
 ) -> str:
     """Collect source evidence, organize document-wide, save and atomically adopt."""
+    emit(observer, "prepare", "start")
     policy = StylePolicy.model_validate(policy.model_dump())
     config = GenerationConfig.model_validate(config.model_dump())
     # Validate caller-owned terms and metadata before any document request.
@@ -388,6 +407,7 @@ def prepare_document(
             load_preparation(workspace)
         units = generate_translation_units(snapshot, source_sha256=source_digest)
         collections = []
+        emit(observer, "prepare", "collect")
         runs = []
         for index, group in enumerate(_groups(units)):
             request = GenerationInput(
@@ -420,7 +440,17 @@ def prepare_document(
                 lambda answer, group=group: _validate_collection(answer, group),
                 process_command,
                 cancel,
-                before_send,
+                scoped_before_send(
+                    before_send,
+                    phase="collect",
+                    section=index,
+                    unit_ids=[unit.unit_id for unit in group],
+                ),
+                scoped_observer(
+                    observer,
+                    phase=f"collect section {index}",
+                    unit_ids=tuple(unit.unit_id for unit in group),
+                ),
             )
             collections.append(collection)
             runs.append(run)
@@ -450,6 +480,7 @@ def prepare_document(
                 }
             },
         )
+        emit(observer, "prepare", "organize")
         organization, run2 = _call(
             workspace,
             config,
@@ -458,7 +489,12 @@ def prepare_document(
             lambda answer: _validate_organization(answer, collections, supplied.terms),
             process_command,
             cancel,
-            before_send,
+            scoped_before_send(before_send, phase="organize", unit_ids=[]),
+            scoped_observer(
+                observer,
+                phase="organize",
+                unit_ids=(),
+            ),
         )
         evidence = PreparationEvidence(
             source_snapshot_sha256=source_digest,
@@ -476,6 +512,7 @@ def prepare_document(
             workspace / "preparation-snapshot.json",
             SnapshotReference(sha256=digest).model_dump_json().encode(),
         )
+        emit(observer, "prepare", "done")
         return digest
 
 

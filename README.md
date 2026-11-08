@@ -61,6 +61,8 @@ doc-translate run book.epub --workspace work/book \
   --provider openai --model MODEL_ID --thinking off
 ```
 
+EPUBのrun／resumeはstderrに工程・AI待ち・保存済み進捗を表示します。人向け結果、機械向け`--json`／`--events-json`と保存記録status／詳細検査の使い分けは[CLIの表示](docs/reference/usage.md#cliの表示とjson出力)を参照してください。
+
 `work/book`は翻訳データを保存する作業フォルダです。**まだ存在しないパス**を指定してください。自動で作成されます。
 
 ## PDFを翻訳する

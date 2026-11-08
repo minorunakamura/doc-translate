@@ -465,6 +465,14 @@ PY
 
 共有renderと詳細consumerの変更なので、Workerはtest_render／test_cli_outputと関連consumerのfocused回帰、Rootはcore全pytest・PDF4ファイル・Ruff全体・PDF環境ty・CLI helpを実行します。Node source／依存／lockが不変なら全Node／build／wheelを本Issueのためだけに追加しません。性能は正式PlanのPDF／EPUB人工100／3,000 unit再作成条件でbefore／afterを別途非並行計測し、任意規模・実書籍・同等完全検証の高速化とは主張しません。
 
+## EPUB進捗／共通表示の検証（Issue #50）
+
+既存`test_run.helper/run_args`の機械向けfixtureは`--json --events-json`を指定し、resume JSON consumerも`--json`へ追随します。人向け既定と4組合せは`test_cli_output`で別に検査します。Node source／protocolは変更せず、既存の実Python→実Node helper／network拒否付きfauxを利用します。observer境界はtest_inference／preparation／translation／run／resume、保存後adoption・reuse／並列待機・split／request終端／retryとdomain訂正／取消／JSON書込み拒否を既存testsで限定回帰します。共有helper consumerのtest_revise／test_pdf_candidate_acceptanceも含めます。
+
+TTYの固定更新、36×10狭幅／狭高さ、dark／light背景、空値NO_COLOR、frameと保存結果、部分resume／空PATH reuse・immutable不変は[検証Skill](.pi/skills/verify-project/SKILL.md)と[Feature Map](.pi/skills/verify-project/references/feature-map.md#epub-runresumeと共通進捗issue-50)の再実行手順を使います。標準PTY helperはstderrを接続しstdoutを分離、人工transcript／SGR色付きcell frameを証拠へ保存します。既存Chromeで単一frameを明暗背景・幅込みに表示して現在対象と異常理由を照合し、SGR検出／HTML生成だけを視認性確認と呼ばず、Rootが別invocationで直接観測します。Skillの成立／Worker成功はRoot・Reviewerの受入れを代用しません。status手順は維持し、PDF補正／review表示の完成は含めません。
+
+今回の共通Python接続・依存変更の正式範囲は上記のcore全pytest／PDF4ファイル／Ruff check＋format／PDF環境ty／CLI helpとwheel build＋check_distributionです。既存venv sync／追加installは禁止、Rich直接依存`>=15,<16`とlock／隔離core・wheel依存導入だけを許可範囲で確認します。Node source／protocolへ差分が及ぶ場合は正式Node phasesも追加します。
+
 ## 新規runの検証境界
 
 Issue #14のseamは公開`cli.main(argv, process_command=...)`→workspace／Markdown／statusです。新しいworkflowは既存の取得・補正・準備・翻訳・render APIをつなぐだけで、内部generate／workflowはmockしません。`tests/test_run.py`は実EPUB ZIPと、`tests/test_pdf.py`のDocling公開converter／page backend・人工local model fixtureを使います。`ai/tests/run-process.mjs`は実`runHelper`と公開faux providerを接続し、network transportを拒否、credential directoryは一時pathのみです。helper sourceを変えないのでbuildは不要です。
@@ -579,7 +587,7 @@ print('relocated public loads; revise exit2; all bytes/3 requests unchanged; iso
 PY
 ```
 
-最初のrunはstderrへprepare×2／translation×1の送信前通知、stdoutへsummaryを表示します。`artifacts`から日本語側の`訳:Original`とinline保持、英語原文、source map、QA／usageを確認できます。PDFのsynthetic直接確認は`.venv/bin/pytest -s tests/test_run.py -k 'owns_requested or partial_pdf or without_pages'`で同じ公開CLIを使い、置き換えるのはDocling外部APIとfaux providerだけです。fixtureの取得成功は実PDFの完全抽出や実LLM意味品質・viewer表示の保証ではありません。resume／revise／reviewの検証は各節を参照してください。remote CIの実行は必須ではありません。
+最初のrunはstderrへEPUB工程／collect・organize／AI待ち、stdoutへsummaryを表示します。送信前JSONを解析するときはrun／resumeへ`--events-json`を、resumeの最終JSONを解析するときは`--json`を明示してください。`artifacts`から日本語側の`訳:Original`とinline保持、英語原文、source map、QA／usageを確認できます。PDFのsynthetic直接確認は`.venv/bin/pytest -s tests/test_run.py -k 'owns_requested or partial_pdf or without_pages'`で同じ公開CLIを使い、置き換えるのはDocling外部APIとfaux providerだけです。fixtureの取得成功は実PDFの完全抽出や実LLM意味品質・viewer表示の保証ではありません。resume／revise／reviewの検証は各節を参照してください。remote CIの実行は必須ではありません。
 
 ## 明示範囲reviewの検証境界
 
@@ -809,7 +817,7 @@ with (work / 'stop.out').open('w') as out, (work / 'stop.err').open('w') as err:
         if child.poll() is None:
             child.kill()
             child.wait()
-resumed = subprocess.run([*entry, '--', 'resume', str(workspace)], capture_output=True, text=True, check=True)
+resumed = subprocess.run([*entry, '--', 'resume', str(workspace), '--json'], capture_output=True, text=True, check=True)
 summary = json.loads(resumed.stdout)
 assert summary['processing']['status'] == 'completed'
 assert len((work / 'requests.jsonl').read_text().splitlines()) == 5

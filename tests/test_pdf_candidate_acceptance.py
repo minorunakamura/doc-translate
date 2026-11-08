@@ -137,7 +137,7 @@ def test_pdf_evidence_workspace_is_relocatable_and_isolated(
 def pending_resume(tmp_path, workspace, capsys, blocks, *options):
     with pytest.raises(SystemExit) as waiting:
         main(
-            ["resume", str(workspace), *options],
+            ["resume", "--json", str(workspace), *options],
             process_command=helper(tmp_path, correction_blocks=blocks),
         )
     assert waiting.value.code == 1
@@ -182,7 +182,9 @@ def test_explicit_correction_settings_reach_actual_request_without_reacquisition
         ],
     )
     with pytest.raises(SystemExit) as waiting:
-        main(["resume", str(workspace), option, value], process_command=command)
+        main(
+            ["resume", "--json", str(workspace), option, value], process_command=command
+        )
     assert waiting.value.code == 1
     summary = json.loads(capsys.readouterr().out)
     raw = [
@@ -203,7 +205,7 @@ def test_explicit_correction_settings_reach_actual_request_without_reacquisition
     assert pointer(workspace, "source") == head
     assert summary["source_adoption"]["status"] == "pending"
     with pytest.raises(SystemExit):
-        main(["resume", str(workspace)], process_command=command)
+        main(["resume", "--json", str(workspace)], process_command=command)
     capsys.readouterr()
     assert len(requests(tmp_path)) == count + 1
     assert_preserved(before)
@@ -310,7 +312,7 @@ def test_structural_candidate_never_transfers_human_edits_by_reused_ids(
     assert (
         adopted.blocks[0].block_id == "pdf-1"
     )  # same ID, deliberately different content
-    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     result = json.loads(capsys.readouterr().out)
     english = unescape((workspace / result["artifacts"]["english"]).read_text())
     assert "Human correction." not in english
@@ -351,7 +353,7 @@ def test_front_page_recovery_shifts_block_and_unit_ids_without_transferring_manu
     before = saved_files(workspace)
     pointers = downstream_pointers(workspace)
     with pytest.raises(SystemExit) as waiting:
-        main(["resume", str(workspace)], process_command=helper(tmp_path))
+        main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     assert waiting.value.code == 1
     candidate = json.loads(capsys.readouterr().out)["source_adoption"]
     assert downstream_pointers(workspace) == pointers
@@ -369,7 +371,7 @@ def test_front_page_recovery_shifts_block_and_unit_ids_without_transferring_manu
         ("pdf-5", "Page 6 source."),
         ("pdf-6", "Page 7 source."),
     ]
-    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     result = json.loads(capsys.readouterr().out)
     assert [
         (unit.unit_id, unit.block_id, unit.locations[0].model_dump()["page"])
@@ -517,7 +519,7 @@ def test_candidate_adoption_uses_new_table_list_caption_and_figure_relationships
     assert duplicate.value.code == 2
     assert "Duplicate source cell ID" in capsys.readouterr().err
     assert pointer(workspace, "source") == head
-    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     result = json.loads(capsys.readouterr().out)
     assert result["processing"]["status"] == "completed"
     assert (
@@ -573,7 +575,7 @@ def test_adopted_candidate_reuses_manual_translation_only_for_exact_actual_reque
         ]
     )
     capsys.readouterr()
-    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     capsys.readouterr()
     item = load_translation(workspace).translations[1].model_dump(mode="json")
     item["text"] = "手動確認済み本文"
@@ -629,7 +631,7 @@ def test_adopted_candidate_reuses_manual_translation_only_for_exact_actual_reque
         main(["render", str(workspace)])
     assert stale.value.code == 1
     assert json.loads(capsys.readouterr().out)["render_current"] is True
-    resume = ["resume", str(workspace)]
+    resume = ["resume", "--json", str(workspace)]
     if change == "policy":
         policy = tmp_path / "policy.json"
         policy.write_text(json.dumps({"version": "2", "text": "本文は常体。"}))
@@ -713,7 +715,7 @@ def test_interrupted_candidate_publication_preserves_head_and_republishes_withou
     process = external_cli(
         tmp_path,
         command,
-        ["resume", str(workspace), "--correction-model", "vision-alt"],
+        ["resume", "--json", str(workspace), "--correction-model", "vision-alt"],
         boundary=boundary,
         edge=edge,
     )
@@ -736,7 +738,7 @@ def test_interrupted_candidate_publication_preserves_head_and_republishes_withou
     assert downstream_pointers(workspace) == pointers
     assert len(requests(tmp_path)) == count + 1
     assert_preserved(before)
-    resumed = external_cli(tmp_path, command, ["resume", str(workspace)])
+    resumed = external_cli(tmp_path, command, ["resume", "--json", str(workspace)])
     assert resumed.wait(timeout=15) == 1, (tmp_path / "process.err").read_text()
     result = json.loads((tmp_path / "process.out").read_text())
     candidate = result["source_adoption"]
@@ -745,7 +747,7 @@ def test_interrupted_candidate_publication_preserves_head_and_republishes_withou
     assert len(requests(tmp_path)) == count + 1
     # Re-publication must retain a usable, verified envelope and not wait twice after adoption.
     adopt_candidate(workspace, candidate, capsys)
-    main(["resume", str(workspace)], process_command=command)
+    main(["resume", "--json", str(workspace)], process_command=command)
     result = json.loads(capsys.readouterr().out)
     assert result["processing"]["status"] == "completed"
     assert "source_adoption" not in result
@@ -839,7 +841,7 @@ def test_legacy_joined_machine_baseline_is_proved_without_rewriting_its_bytes(
     )
     capsys.readouterr()
     count = len(requests(tmp_path))
-    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     result = json.loads(capsys.readouterr().out)
     assert result["processing"]["status"] == "completed"
     assert "source_adoption" not in result

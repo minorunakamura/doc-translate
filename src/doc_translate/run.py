@@ -26,6 +26,7 @@ from doc_translate.preparation import (
     StylePolicy,
     prepare_document,
 )
+from doc_translate.progress import Observer, emit
 from doc_translate.snapshot import (
     Contract,
     MachineCheck,
@@ -90,6 +91,7 @@ def run_document(
     user_terms: dict[str, str] | None = None,
     process_command: Sequence[str] | None = None,
     before_send: BeforeSend | None = None,
+    observer: Observer | None = None,
 ) -> dict:
     format = source.suffix.lower().lstrip(".")
     if format not in {"pdf", "epub"}:
@@ -100,6 +102,7 @@ def run_document(
         raise ValueError("PDF requires --artifacts-path and correction model settings")
     if workspace.exists() or workspace.is_symlink():
         raise ValueError(f"Workspace already exists: {workspace}")
+    emit(observer, "extract", "start")
     if process_command is None:
         ai_runtime.installed_runtime()
     with source.open("rb") as original:
@@ -111,6 +114,14 @@ def run_document(
     if format == "epub" and len(data) > MAX_ARCHIVE_BYTES:
         raise EPUBError("ZIP archive byte limit exceeded")
     digest = hashlib.sha256(data).hexdigest()
+    emit(
+        observer,
+        "extract",
+        "document",
+        source_name=source.name,
+        document_sha256=digest,
+        format=format,
+    )
     document = SourceDocument(
         format=format, sha256=digest, artifact=f"originals/{digest}.{format}"
     )
@@ -142,7 +153,7 @@ def run_document(
         _atomic_write(workspace / document.artifact, data)
         _save_run(workspace, manifest)
         return _continue_run(
-            workspace, manifest, process_command, before_send, cancelled
+            workspace, manifest, process_command, before_send, cancelled, observer
         )
 
 
@@ -175,6 +186,7 @@ def resume_document(
     user_terms: dict[str, str] | None = None,
     process_command: Sequence[str] | None = None,
     before_send: BeforeSend | None = None,
+    observer: Observer | None = None,
 ) -> dict:
     """Verify saved state before changes; retain immutable versions and fixed scope."""
     from doc_translate.preparation import load_preparation
@@ -183,9 +195,19 @@ def resume_document(
 
     if not (workspace / "run.json").is_file():
         raise ValueError("Resume requires a workspace with run.json")
+    emit(observer, "validate", "start")
     with _workflow_lock(workspace), _cancellation() as cancelled:
         manifest = RunManifest.model_validate_json(
             (workspace / "run.json").read_bytes()
+        )
+        emit(
+            observer,
+            "validate",
+            "document",
+            phase="resume",
+            source_name=manifest.source_name,
+            document_sha256=manifest.document.sha256,
+            format=manifest.document.format,
         )
         _original(workspace, manifest)
         # Validate old adopted references before any possible paid request or replacement.
@@ -199,6 +221,8 @@ def resume_document(
             load_preparation(workspace)
         if (workspace / "translation-snapshot.json").exists():
             load_translation(workspace)
+
+        emit(observer, "validate", "done")
 
         def selected(saved, stage):
             if isinstance(stage, GenerationConfig):
@@ -228,7 +252,7 @@ def resume_document(
         manifest.error_code = None
         _save_run(workspace, manifest)
         return _continue_run(
-            workspace, manifest, process_command, before_send, cancelled
+            workspace, manifest, process_command, before_send, cancelled, observer
         )
 
 
@@ -556,10 +580,13 @@ def source_adoption_status(workspace, manifest):
     }
 
 
-def _continue_run(workspace, manifest, process_command, before_send, cancelled) -> dict:
+def _continue_run(
+    workspace, manifest, process_command, before_send, cancelled, observer=None
+) -> dict:
     from doc_translate.render import render_document
     from doc_translate.translation import load_translation, translate_document
 
+    emit(observer, "extract", "start")
     revision = _saved_source_revision(workspace, manifest)
     if manifest.document.format == "pdf":
         try:
@@ -590,6 +617,8 @@ def _continue_run(workspace, manifest, process_command, before_send, cancelled) 
             document=manifest.document,
             snapshot_id="source-1",
         )
+    emit(observer, "extract", "done")
+    emit(observer, "validate", "start")
     if (workspace / "source-snapshot.json").exists():
         previous = load_source_snapshot(workspace)
         if previous.document != manifest.document:
@@ -615,6 +644,7 @@ def _continue_run(workspace, manifest, process_command, before_send, cancelled) 
         (workspace / "source-candidate.json").unlink(missing_ok=True)
     else:
         save_source_snapshot(workspace, source_snapshot)
+    emit(observer, "validate", "done")
     stage = "prepare"
     try:
         if cancelled.is_set():
@@ -628,6 +658,7 @@ def _continue_run(workspace, manifest, process_command, before_send, cancelled) 
             process_command=process_command,
             before_send=before_send,
             cancel=cancelled,
+            observer=observer,
         )
         if cancelled.is_set():
             raise InferenceError("cancelled", [])
@@ -638,6 +669,7 @@ def _continue_run(workspace, manifest, process_command, before_send, cancelled) 
             process_command=process_command,
             before_send=before_send,
             cancel=cancelled,
+            observer=observer,
         )
         failures = [
             chunk.error
@@ -655,6 +687,9 @@ def _continue_run(workspace, manifest, process_command, before_send, cancelled) 
             manifest.error = manifest.error_code = None
         _save_run(workspace, manifest)
     except (OSError, ValueError, RuntimeError) as error:
+        if cancelled.is_set():
+            emit(observer, stage, "cancelled")
+        emit(observer, stage, "failed", reason="stage_failed")
         manifest.error_code = (
             error.code
             if isinstance(error, (InferenceError, PreparationValidationError))
@@ -662,7 +697,21 @@ def _continue_run(workspace, manifest, process_command, before_send, cancelled) 
         )
         manifest.error = f"{stage} failed; inspect saved source and attempts"
         _atomic_write(workspace / "run.json", manifest.model_dump_json().encode())
-    return render_document(workspace)
+    if cancelled.is_set():
+        emit(observer, "render", "cancelled")
+    emit(observer, "render", "start")
+    try:
+        result = render_document(workspace)
+    except BaseException:
+        emit(observer, "render", "failed", reason="render_failed")
+        raise
+    emit(
+        observer,
+        "render",
+        "partial" if result["processing"]["status"] == "partial" else "done",
+    )
+    emit(observer, "render", "finished")
+    return result
 
 
 def _pdf_source(

@@ -163,6 +163,7 @@ def test_preparation_repairs_evidence_with_feedback_and_reuses_success(tmp_path,
         invalid[phase]["terms"] = {"ungrounded": "偽"}
         code = "prepare_ungrounded_term"
     notices = []
+    events = []
 
     def before_send(_config, request, _preflight):
         notices.append(request)
@@ -176,7 +177,11 @@ def test_preparation_repairs_evidence_with_feedback_and_reuses_success(tmp_path,
         candidates,
         answers_override=invalid,
         before_send=before_send,
+        observer=events.append,
     )
+    assert [e.reason for e in events if e.kind == "repair"] == [code]
+    assert not any(e.kind == "retry" for e in events)
+    assert events[-1].kind == "done"
     adopted = load_preparation(workspace, digest)
     assert adopted.glossary.terms == {"transaction log": "ログ"}
     assert len(notices) == 3

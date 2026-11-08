@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from doc_translate import ai_runtime
 from doc_translate.jsonl import JSONLRecord, encode_record, read_records
+from doc_translate.progress import Observer, emit
 
 Thinking = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 Positive = Annotated[int, Field(gt=0, le=9007199254740991)]
@@ -435,7 +436,7 @@ def _image_payload(
     return payload
 
 
-def _attempt(
+def _execute_attempt(
     config: GenerationConfig,
     inputs: GenerationInput,
     images: Sequence[GenerationImage],
@@ -443,8 +444,9 @@ def _attempt(
     cwd: str,
     cancelled: threading.Event,
     before_send: BeforeSend | None,
+    observer: Observer | None,
+    attempt: Attempt,
 ) -> Attempt:
-    attempt = Attempt(request_id=uuid4().hex)
     started = time.monotonic()
     try:
         child = subprocess.Popen(
@@ -463,6 +465,7 @@ def _attempt(
     pending = b""
     outgoing = b""
     finished = False
+    sending_generate = False
     stopping: str | None = None
     deadline = time.monotonic() + config.options.timeoutMs / 1000
 
@@ -506,6 +509,13 @@ def _attempt(
                     and (cancelled.is_set() or now >= deadline)
                 ):
                     stopping = "cancelled" if cancelled.is_set() else "timeout"
+                    if stopping == "cancelled":
+                        emit(
+                            observer,
+                            inputs.stage,
+                            "cancelled",
+                            request_id=attempt.request_id,
+                        )
                     child.terminate()
                     if outgoing:
                         selector.unregister(child.stdin)
@@ -519,6 +529,22 @@ def _attempt(
                         outgoing = outgoing[written:]
                         if not outgoing:
                             selector.unregister(child.stdin)
+                            if sending_generate:
+                                emit(
+                                    observer,
+                                    inputs.stage,
+                                    "waiting",
+                                    request_id=attempt.request_id,
+                                    provider=config.provider,
+                                    model=config.model,
+                                    thinking=config.thinking,
+                                    auth_source=attempt.preflight.auth.source or ""
+                                    if attempt.preflight
+                                    else "",
+                                    auth_type=attempt.preflight.auth.type
+                                    if attempt.preflight
+                                    else "",
+                                )
                         continue
                     chunk = os.read(child.stdout.fileno(), 65536)
                     if not chunk:
@@ -568,8 +594,20 @@ def _attempt(
                                 image_payload = _image_payload(
                                     images, preflight, attempt
                                 )
+                                emit(
+                                    observer,
+                                    inputs.stage,
+                                    "before_send",
+                                    request_id=attempt.request_id,
+                                    provider=config.provider,
+                                    model=config.model,
+                                    thinking=config.thinking,
+                                    auth_source=preflight.auth.source or "",
+                                    auth_type=preflight.auth.type,
+                                )
                                 if before_send is not None:
                                     before_send(config, inputs, attempt.preflight)
+                                sending_generate = True
                                 send(
                                     "generate",
                                     {
@@ -587,6 +625,13 @@ def _attempt(
                             attempt.code = attempt.final.code
                             finished = True
                         if finished:
+                            emit(
+                                observer,
+                                inputs.stage,
+                                "draining",
+                                request_id=attempt.request_id,
+                                reason=stopping or attempt.code or "",
+                            )
                             close_input()
                             deadline = time.monotonic() + 30
         attempt.exit_code = child.wait(
@@ -632,6 +677,34 @@ def _attempt(
         child.stdout.close()
         attempt.elapsed_seconds = time.monotonic() - started
     return attempt
+
+
+def _attempt(config, inputs, images, command, cwd, cancelled, before_send, observer):
+    attempt = Attempt(request_id=uuid4().hex)
+    completed = False
+    try:
+        emit(observer, inputs.stage, "request_start", request_id=attempt.request_id)
+        result = _execute_attempt(
+            config,
+            inputs,
+            images,
+            command,
+            cwd,
+            cancelled,
+            before_send,
+            observer,
+            attempt,
+        )
+        completed = True
+        return result
+    finally:
+        emit(
+            observer,
+            inputs.stage,
+            "request_end",
+            request_id=attempt.request_id,
+            reason=(attempt.code or "") if completed else "exception",
+        )
 
 
 def _invalid_constant(_value: str) -> float:
@@ -693,6 +766,7 @@ def generate[T: BaseModel](
     process_command: Sequence[str] | None = None,
     cancel: threading.Event | None = None,
     before_send: BeforeSend | None = None,
+    observer: Observer | None = None,
 ) -> GenerationResult[T]:
     """Validate one JSON answer; retry only known library-heuristic transient errors.
 
@@ -724,9 +798,10 @@ def generate[T: BaseModel](
                 previous_handlers[signum] = signal.signal(signum, interrupt)
         for number in range(3):
             if cancelled.is_set():
+                emit(observer, inputs.stage, "cancelled")
                 raise InferenceError("cancelled", attempts)
             attempt = _attempt(
-                config, inputs, images, command, cwd, cancelled, before_send
+                config, inputs, images, command, cwd, cancelled, before_send, observer
             )
             attempts.append(attempt)
             if cancelled.is_set() and attempt.code not in {
@@ -761,7 +836,15 @@ def generate[T: BaseModel](
             ):
                 raise InferenceError(attempt.code or "protocol_error", attempts)
             attempt.wait_seconds = 3 * (number + 1)
+            emit(
+                observer,
+                inputs.stage,
+                "retry",
+                reason="generation_failed",
+                wait_seconds=attempt.wait_seconds,
+            )
             if cancelled.wait(attempt.wait_seconds):
+                emit(observer, inputs.stage, "cancelled")
                 raise InferenceError("cancelled", attempts)
         raise AssertionError("unreachable")
     finally:

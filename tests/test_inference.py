@@ -378,6 +378,7 @@ def test_failed_usage_is_unknown_or_retains_observed_partial(tmp_path, mode, exp
 def test_only_known_transient_errors_get_three_fresh_attempts_with_real_3_6_waits(
     tmp_path,
 ):
+    events = []
     started = time.monotonic()
     with pytest.raises(InferenceError) as error:
         generate(
@@ -387,6 +388,7 @@ def test_only_known_transient_errors_get_three_fresh_attempts_with_real_3_6_wait
             ),
             response_model=EchoAnswer,
             process_command=helper(tmp_path, "http-retry"),
+            observer=events.append,
         )
     attempts = error.value.attempts
     assert time.monotonic() - started >= 9
@@ -401,6 +403,10 @@ def test_only_known_transient_errors_get_three_fresh_attempts_with_real_3_6_wait
         a.final is not None and a.final.retry.internal_retries == "unknown"
         for a in attempts
     )
+
+    assert [e.wait_seconds for e in events if e.kind == "retry"] == [3, 6]
+    assert len([e for e in events if e.kind == "request_end"]) == 3
+    assert not any(e.kind == "repair" for e in events)
 
 
 class EvidenceAnswer(BaseModel):
@@ -585,6 +591,7 @@ def test_parent_timeout_cancels_and_reaps_without_retry(tmp_path, mode):
 
 @pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
 def test_signals_cancel_generation_and_restore_handlers_after_reaping(tmp_path, signum):
+    events = []
     before = signal.getsignal(signum)
     thread = interrupt_when_ready(tmp_path, lambda: os.kill(os.getpid(), signum))
     try:
@@ -596,7 +603,10 @@ def test_signals_cancel_generation_and_restore_handlers_after_reaping(tmp_path, 
                 ),
                 response_model=EvidenceAnswer,
                 process_command=controlled_helper(tmp_path, "cancel"),
+                observer=events.append,
             )
+        assert events[-1].kind == "request_end" and events[-1].reason == "cancelled"
+        assert any(e.kind == "cancelled" for e in events[:-1])
         assert error.value.code == "cancelled"
         assert len(error.value.attempts) == 1
         final = error.value.attempts[0].final
@@ -803,3 +813,55 @@ def test_capability_is_checked_before_image_send(tmp_path):
 def test_options_reject_unsafe_unbounded_or_unrecognized_fields(options):
     with pytest.raises(ValueError):
         GenerationOptions.model_validate(options)
+
+
+@pytest.mark.parametrize(
+    "mode", ["success", "launch", "preflight", "callback", "timeout"]
+)
+def test_request_observer_always_terminates_and_only_waits_after_pipe_write(
+    tmp_path, mode
+):
+    events = []
+    config = GenerationConfig(
+        provider="unknown" if mode == "preflight" else "faux",
+        model="vision",
+        thinking="off",
+        options=GenerationOptions(timeoutMs=100 if mode == "timeout" else 10000),
+    )
+    command = (
+        ["/no-such-doc-translate-test-helper"]
+        if mode == "launch"
+        else proxy(tmp_path, "stall-input")
+        if mode == "timeout"
+        else helper(tmp_path)
+    )
+
+    def before_send(*_):
+        assert events[-1].kind == "before_send"
+        assert not any(e.kind == "waiting" for e in events)
+        if mode == "callback":
+            raise RuntimeError("ARTIFICIAL_PRIVATE_EXCEPTION")
+
+    try:
+        result = generate(
+            config,
+            GenerationInput(
+                stage="translation",
+                policy="PRIVATE_POLICY",
+                text="x" * 1000000 if mode == "timeout" else "PRIVATE_BODY",
+                context=None,
+                glossary=None,
+            ),
+            response_model=EchoAnswer,
+            process_command=command,
+            before_send=before_send,
+            observer=events.append,
+        )
+    except InferenceError, RuntimeError:
+        assert mode != "success"
+    else:
+        assert mode == "success" and result.answer.calls == 1
+    assert events[0].kind == "request_start" and events[-1].kind == "request_end"
+    assert len({e.request_id for e in events if e.request_id}) == 1
+    assert bool([e for e in events if e.kind == "waiting"]) == (mode == "success")
+    assert "PRIVATE" not in repr(events)

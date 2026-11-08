@@ -36,6 +36,7 @@ def run_args(source, workspace):
     return [
         "run",
         "--json",
+        "--events-json",
         str(source),
         "--workspace",
         str(workspace),
@@ -89,6 +90,24 @@ def test_run_announces_actual_auth_and_scope_before_provider_receives_data(
     assert (
         events[0]["document_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
     )
+    assert [e["transmission"]["phase"] for e in events] == [
+        "collect",
+        "organize",
+        "translation",
+    ]
+    sent = [
+        json.loads(json.loads(line)["messages"][1]["content"][0]["text"])
+        for line in (tmp_path / "requests.jsonl").read_text().splitlines()
+    ]
+    assert events[1]["transmission"]["unit_ids"] == []
+    assert "no full source units" in events[1]["transmission"]["content"]
+    assert events[0]["transmission"]["unit_ids"] == [
+        u["unit_id"] for u in json.loads(sent[0]["text"])
+    ]
+    assert events[2]["transmission"]["unit_ids"] == [
+        u["unit_id"] for u in json.loads(sent[2]["text"])
+    ]
+    assert all(e["transmission"]["owned_pages"] is None for e in events)
     assert events[0]["owned_pages"] is None
     assert events[0]["reference_pages"] == []
     assert events[0]["provider"] == "faux"
@@ -169,7 +188,19 @@ def test_run_pdf_owns_requested_pages_and_sends_only_authorized_adjacent_context
     if reference:
         args += ["--reference-pages", reference]
     main(args, process_command=helper(tmp_path))
-    summary = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out)
+    notices = [json.loads(line) for line in captured.err.splitlines()]
+    assert all(
+        notice["transmission"]["owned_pages"] is None
+        for notice in notices
+        if notice["stage"] in {"prepare", "translation"}
+    )
+    assert all(
+        notice["transmission"]["unit_ids"]
+        for notice in notices
+        if notice["stage"] == "translation"
+    )
     assert summary["processing"]["status"] == "completed"
     assert summary["scope"]["run"]["owned_pages"] == [2, 3, 4, 5, 6, 7]
     assert summary["scope"]["run"]["corrected_pages"] == [2, 3, 4, 5, 6, 7]
@@ -543,7 +574,7 @@ def test_resume_pdf_fills_failed_ownership_without_acquisition_or_resending_acce
     count = len(requests(tmp_path))
     pdf_input.unlink()
     shutil.rmtree(local_models)
-    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     result = json.loads(capsys.readouterr().out)
     assert result["processing"]["status"] == "completed"
     assert result["scope"]["run"]["corrected_pages"] == [2, 3, 4, 5, 6, 7]
@@ -557,7 +588,7 @@ def test_resume_pdf_fills_failed_ownership_without_acquisition_or_resending_acce
     assert_preserved(old_files)
     count = len(requests(tmp_path))
     monkeypatch.setenv("PATH", "")
-    main(["resume", str(workspace)])
+    main(["resume", "--json", str(workspace)])
     assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
     assert len(requests(tmp_path)) == count
 
@@ -641,7 +672,7 @@ def test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages(
         assert sent[-1]["context"]["correction_feedback"]["missing_pages"] == [4]
     shutil.rmtree(local_models)
     main(
-        ["resume", str(workspace)],
+        ["resume", "--json", str(workspace)],
         process_command=helper(tmp_path, correction_length_above=3),
     )
     result = json.loads(capsys.readouterr().out)
@@ -690,7 +721,7 @@ def test_resume_pdf_glossary_never_reacquires_or_recorrrects(
         )
     )
     main(
-        ["resume", str(workspace), "--glossary", str(glossary)],
+        ["resume", "--json", str(workspace), "--glossary", str(glossary)],
         process_command=helper(tmp_path),
     )
     assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
@@ -733,7 +764,7 @@ def test_resume_pdf_recovers_chunk_before_progress_replace_after_force_kill(
     process = external_cli(
         tmp_path,
         helper(tmp_path),
-        ["resume", str(workspace)],
+        ["resume", "--json", str(workspace)],
         boundary="run.json",
         occurrence=3,
     )
@@ -746,7 +777,7 @@ def test_resume_pdf_recovers_chunk_before_progress_replace_after_force_kill(
             process.kill()
             process.wait()
     assert len(requests(tmp_path)) == count + 1
-    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     result = json.loads(capsys.readouterr().out)
     assert result["processing"]["status"] == "completed"
     new_corrections = [
@@ -789,7 +820,7 @@ def test_resume_pdf_validates_whole_draft_images_once_per_pass_not_per_chunk(
         return image_open(fp, *args, **kwargs)
 
     monkeypatch.setattr(Image, "open", count_open)
-    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
     assert requests(tmp_path) == sent
     # Eight draft PNGs: initial verification, reconciliation and source assembly.
@@ -827,13 +858,13 @@ def test_resume_incomplete_pdf_draft_reacquires_and_old_manifest_can_supply_mode
     del run["artifacts_path"]  # before resume supported saving acquisition paths
     (workspace / "run.json").write_text(json.dumps(run))
     with pytest.raises(SystemExit) as stopped:
-        main(["resume", str(workspace)], process_command=helper(tmp_path))
+        main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     assert stopped.value.code == 2
     assert "--artifacts-path" in capsys.readouterr().err
     assert not requests(tmp_path)
     conversion.status.value = "success"
     main(
-        ["resume", str(workspace), "--artifacts-path", str(local_models)],
+        ["resume", "--json", str(workspace), "--artifacts-path", str(local_models)],
         process_command=helper(tmp_path),
     )
     assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
@@ -906,6 +937,7 @@ def test_revised_pdf_source_and_policy_resume_keep_acquisition_and_correction(
     main(
         [
             "resume",
+            "--json",
             str(workspace),
             "--policy",
             str(policy),
@@ -1046,7 +1078,7 @@ def test_revised_partial_pdf_saves_candidate_without_downstream_or_pointer_chang
         lambda *a, **kw: pytest.fail("reacquired saved PDF"),
     )
     with pytest.raises(SystemExit) as waiting:
-        main(["resume", str(workspace)], process_command=helper(tmp_path))
+        main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     assert waiting.value.code == 1
     summary = json.loads(capsys.readouterr().out)
     sent = requests(tmp_path)[count:]
@@ -1077,7 +1109,7 @@ def test_revised_partial_pdf_saves_candidate_without_downstream_or_pointer_chang
         "Human correction" in (workspace / output["artifacts"]["english"]).read_text()
     )
     with pytest.raises(SystemExit):
-        main(["resume", str(workspace)], process_command=command)
+        main(["resume", "--json", str(workspace)], process_command=command)
     capsys.readouterr()
     assert len(requests(tmp_path)) == count + 1
 
@@ -1108,7 +1140,7 @@ def test_pdf_candidate_offline_adoption_advances_machine_base_across_revisions(
     revise_pdf_paragraph(tmp_path, workspace, capsys)
     head = revise_pdf_paragraph(tmp_path, workspace, capsys, "Second human correction.")
     with pytest.raises(SystemExit):
-        main(["resume", str(workspace)], process_command=helper(tmp_path))
+        main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     candidate = json.loads(capsys.readouterr().out)["source_adoption"]
     before = saved_files(workspace)
     count = len(requests(tmp_path))
@@ -1159,7 +1191,7 @@ def test_pdf_candidate_offline_adoption_advances_machine_base_across_revisions(
     latest = revise_pdf_paragraph(
         tmp_path, workspace, capsys, "Post adoption correction."
     )
-    main(["resume", str(workspace)], process_command=command)
+    main(["resume", "--json", str(workspace)], process_command=command)
     summary = json.loads(capsys.readouterr().out)
     assert summary["processing"]["status"] == "completed"
     assert "source_adoption" not in summary
@@ -1204,7 +1236,7 @@ def test_revised_pdf_same_machine_content_under_explicit_correction_change_conti
         lambda *a, **kw: pytest.fail("reacquired saved PDF"),
     )
     main(
-        ["resume", str(workspace), "--correction-thinking", "minimal"],
+        ["resume", "--json", str(workspace), "--correction-thinking", "minimal"],
         process_command=helper(tmp_path),
     )
     summary = json.loads(capsys.readouterr().out)
@@ -1256,7 +1288,7 @@ def test_legacy_pdf_revision_preserves_original_byte_hash_through_resume(
     )
     main(["status", "--json", str(workspace)])
     assert json.loads(capsys.readouterr().out)["source_snapshot_sha256"] == head
-    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     summary = json.loads(capsys.readouterr().out)
     assert summary["processing"]["status"] == "completed"
     assert pointer(workspace, "source") == head
@@ -1289,7 +1321,7 @@ def pending_pdf_candidate(tmp_path, pdf_input, local_models, capsys):
     capsys.readouterr()
     revise_pdf_paragraph(tmp_path, workspace, capsys)
     with pytest.raises(SystemExit):
-        main(["resume", str(workspace)], process_command=helper(tmp_path))
+        main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     return workspace, json.loads(capsys.readouterr().out)["source_adoption"]
 
 
@@ -1321,7 +1353,7 @@ def test_normal_pdf_revision_rebinds_candidate_without_hidden_stale_render_summa
     assert old_render["source_adoption"]["stale"] is True
     count = len(requests(tmp_path))
     with pytest.raises(SystemExit):
-        main(["resume", str(workspace)], process_command=helper(tmp_path))
+        main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     rebound = json.loads(capsys.readouterr().out)
     candidate = rebound["source_adoption"]
     assert candidate["candidate_sha256"] != first["candidate_sha256"]
@@ -1343,7 +1375,7 @@ def test_normal_pdf_revision_rebinds_candidate_without_hidden_stale_render_summa
         ]
     )
     capsys.readouterr()
-    main(["resume", str(workspace)], process_command=helper(tmp_path))
+    main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
 
 
@@ -1400,7 +1432,7 @@ def test_obsolete_candidate_does_not_wait_when_current_machine_content_returns_t
     ]
     with pytest.raises(SystemExit):
         main(
-            ["resume", str(workspace), "--correction-model", "vision-alt"],
+            ["resume", "--json", str(workspace), "--correction-model", "vision-alt"],
             process_command=helper(tmp_path, correction_blocks=changed),
         )
     candidate = json.loads(capsys.readouterr().out)["source_adoption"]
@@ -1408,7 +1440,7 @@ def test_obsolete_candidate_does_not_wait_when_current_machine_content_returns_t
     data = record.read_bytes()
     count = len(requests(tmp_path))
     main(
-        ["resume", str(workspace), "--correction-model", "vision"],
+        ["resume", "--json", str(workspace), "--correction-model", "vision"],
         process_command=helper(tmp_path),
     )
     summary = json.loads(capsys.readouterr().out)
@@ -1456,7 +1488,7 @@ def test_revised_pdf_all_corrections_fail_retains_adopted_source_and_outputs(
     count = len(requests(tmp_path))
     with pytest.raises(SystemExit) as failed:
         main(
-            ["resume", str(workspace), "--correction-model", "vision-alt"],
+            ["resume", "--json", str(workspace), "--correction-model", "vision-alt"],
             process_command=helper(tmp_path, correction_fail_page=2),
         )
     assert failed.value.code == 1
@@ -1506,7 +1538,13 @@ def test_candidate_adoption_rejects_invalid_input_before_source_switch(
     else:
         with pytest.raises(SystemExit) as invalid_config:
             main(
-                ["resume", str(workspace), "--correction-model", "unknown-model"],
+                [
+                    "resume",
+                    "--json",
+                    str(workspace),
+                    "--correction-model",
+                    "unknown-model",
+                ],
                 process_command=helper(tmp_path),
             )
         assert invalid_config.value.code == 2
@@ -1628,7 +1666,7 @@ def test_pending_pdf_corruption_is_rejected_before_settings_mutation_or_submissi
     count = len(requests(tmp_path))
     with pytest.raises(SystemExit) as rejected:
         main(
-            ["resume", str(workspace), "--correction-model", "vision-alt"],
+            ["resume", "--json", str(workspace), "--correction-model", "vision-alt"],
             process_command=helper(tmp_path),
         )
     assert rejected.value.code == 2
@@ -1685,7 +1723,7 @@ def test_pdf_adoption_source_pointer_is_only_commit_despite_remaining_candidate_
     if edge == "before":
         assert status["source_adoption"]["status"] == "pending"
         with pytest.raises(SystemExit) as pending:
-            main(["resume", str(workspace)], process_command=command)
+            main(["resume", "--json", str(workspace)], process_command=command)
         assert pending.value.code == 1
         capsys.readouterr()
         assert len(requests(tmp_path)) == count
@@ -1693,7 +1731,7 @@ def test_pdf_adoption_source_pointer_is_only_commit_despite_remaining_candidate_
         capsys.readouterr()
     else:
         assert "source_adoption" not in status
-    main(["resume", str(workspace)], process_command=command)
+    main(["resume", "--json", str(workspace)], process_command=command)
     result = json.loads(capsys.readouterr().out)
     assert result["processing"]["status"] == "completed"
     assert "source_adoption" not in result
@@ -1758,7 +1796,7 @@ def test_legacy_pdf_baseline_proves_chunks_with_only_exclusions_from_ownership_r
         json.dumps({"schema_version": 1, "sha256": head})
     )
     count = len(requests(tmp_path))
-    main(["resume", str(workspace)], process_command=command)
+    main(["resume", "--json", str(workspace)], process_command=command)
     summary = json.loads(capsys.readouterr().out)
     assert summary["source_snapshot_sha256"] == head
     assert summary["processing"]["status"] == "completed"
@@ -1814,7 +1852,7 @@ def test_resume_pdf_repairs_coverage_only_for_failed_ownership_and_retains_all_u
     pdf_input.unlink()
     shutil.rmtree(local_models)
     main(
-        ["resume", str(workspace)],
+        ["resume", "--json", str(workspace)],
         process_command=helper(tmp_path, correction_omit_pages=[7]),
     )
     resumed = json.loads(capsys.readouterr().out)
@@ -1850,7 +1888,7 @@ def test_resume_pdf_repairs_coverage_only_for_failed_ownership_and_retains_all_u
     assert_preserved(old_files)
     count = len(requests(tmp_path))
     monkeypatch.setenv("PATH", "")
-    main(["resume", str(workspace)])
+    main(["resume", "--json", str(workspace)])
     assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
     main(["status", "--json", str(workspace)])
     final = json.loads(capsys.readouterr().out)

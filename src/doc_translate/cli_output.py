@@ -6,18 +6,16 @@ from datetime import UTC
 from pathlib import Path
 
 
+def _safe(value: str) -> str:
+    return "".join(
+        c if not unicodedata.category(c).startswith("C") else ascii(c)[1:-1]
+        for c in value
+    )
+
+
 def _table(rows: list[list[str]]) -> str:
     # Escape control characters from filenames/catalogs instead of running terminal codes.
-    rows = [
-        [
-            "".join(
-                c if not unicodedata.category(c).startswith("C") else ascii(c)[1:-1]
-                for c in cell
-            )
-            for cell in row
-        ]
-        for row in rows
-    ]
+    rows = [[_safe(cell) for cell in row] for row in rows]
 
     def width(value):
         return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in value)
