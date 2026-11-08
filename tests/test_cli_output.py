@@ -484,3 +484,48 @@ def test_pdf_progress_split_keeps_owned_denominator_and_translation_state_separa
     assert "成功 2/3 ページ（うち再利用 1）" in output
     assert "総数更新中" not in output
     assert "候補の明示採用待ち（後段は未実行）" in output
+
+
+def test_review_display_uses_explicit_pages_and_only_review_stages(capsys):
+    from rich.console import Console
+
+    from doc_translate.progress import ProgressEvent
+    from doc_translate.progress_display import ProgressDisplay
+
+    display = ProgressDisplay()
+    display.console = Console(
+        stderr=True, force_terminal=True, width=120, height=32, no_color=True
+    )
+    with display as observe:
+        observe(ProgressEvent("review_validate", "start"))
+        observe(
+            ProgressEvent(
+                "review_validate",
+                "document",
+                phase="review",
+                format="pdf",
+                source_name="own.pdf",
+                document_sha256="a" * 64,
+                unit_ids=("unit-2",),
+                block_ids=("[red]block[/red]\x07",),
+                pages=(3,),
+            )
+        )
+        observe(ProgressEvent("review", "failed", reason="review_rejected"))
+    output = capsys.readouterr().err
+    assert all(
+        label in output
+        for label in (
+            "保存データ・選択範囲の検証",
+            "AIによる内容確認",
+            "確認結果の保存",
+            "終了時の保存データ検査",
+        )
+    )
+    assert "明示選択" in output and "画像 3ページ" in output
+    assert "[red]block[/red]\\x07" in output
+    assert (
+        "所有" not in output and "参照専用" not in output and "翻訳準備" not in output
+    )
+    assert "review_rejected" in output and "\x07" not in output
+    assert display.thread is not None and not display.thread.is_alive()

@@ -216,6 +216,53 @@ def summary_text(operation: str, result: dict, workspace: Path) -> str:
     return "\n\n".join(sections)
 
 
+def review_text(
+    result: dict,
+    workspace: Path,
+    *,
+    unit_ids: list[str] | None = None,
+    pages: tuple[int, int] | None = None,
+) -> str:
+    review = result["review"]
+    accepted = review["status"] == "validated"
+    rows = [
+        ["Workspace", str(workspace)],
+        [
+            "確認記録",
+            "保存済み（終了時の詳細検査済み）"
+            if accepted
+            else "確認失敗（確認記録は未保存）",
+        ],
+    ]
+    if accepted:
+        record = next(
+            record
+            for record in result["content_review"]["review_history"]
+            if record["sha256"] == review["sha256"]
+            and record["artifact"] == review["artifact"]
+        )
+        rows += [
+            ["対象unit", ", ".join(record["unit_ids"]) or "なし"],
+            ["対象block", ", ".join(record["block_ids"]) or "なし"],
+            ["対象画像ページ", _pages(record["pages"])],
+            ["今回の指摘", f"{len(record['findings'])}件"],
+            ["記録先", str(workspace / review["artifact"])],
+        ]
+    else:
+        rows += [
+            [
+                "明示選択",
+                f"{pages[0]}–{pages[1]}ページ" if pages else ", ".join(unit_ids or []),
+            ],
+            ["今回の指摘", "未確定（処理失敗は指摘の有無とは別です）"],
+        ]
+    rows += [
+        ["試行記録", str(workspace / f"attempts/review/{review['run']}.json")],
+        ["内容品質", "未承認（指摘0件でも品質承認ではありません）"],
+    ]
+    return _table(rows)
+
+
 def saved_status_text(result: dict, workspace: Path) -> str:
     """Describe saved versions without claiming output validity or process liveness."""
     from datetime import datetime

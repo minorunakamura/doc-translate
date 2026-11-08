@@ -61,7 +61,7 @@ doc-translate run book.epub --workspace work/book \
   --provider openai --model MODEL_ID --thinking off
 ```
 
-EPUBのrun／resumeはstderrに工程・AI待ち・保存済み進捗を表示します。人向け結果、機械向け`--json`／`--events-json`と保存記録status／詳細検査の使い分けは[CLIの表示](docs/reference/usage.md#cliの表示とjson出力)を参照してください。
+run／resumeと明示範囲reviewはstderrに工程・AI待ち・保存済み進捗を表示します。reviewの通常結果は対象・今回の指摘件数・記録先と品質未承認を示します。人向け結果、機械向け`--json`／`--events-json`と保存記録status／詳細検査の使い分けは[CLIの表示](docs/reference/usage.md#cliの表示とjson出力)を参照してください。
 
 `work/book`は翻訳データを保存する作業フォルダです。**まだ存在しないパス**を指定してください。自動で作成されます。
 
@@ -157,7 +157,7 @@ PDFの例で作った作業フォルダは`work/pdf-book`なので、上のパ�
 | 翻訳結果をAIに確認させる | [`review`の使い方](docs/reference/usage.md#翻訳結果をaiに確認させる)。選んだ箇所の原文・訳文をAIへ送り、指摘を記録します。自動修正はしません。 |
 | 原文や訳文を修正する | [`revise`の使い方](docs/reference/usage.md#原文訳文を修正する推論なし)（上級者向け） |
 
-`providers`／`models`／`run`／`status`の出力をプログラムで読む場合は、`--json`を付けてください。
+`providers`／`models`／`run`／`resume`／`review`／`status`の出力をプログラムで読む場合は、`--json`を付けてください。
 
 ## 利用前の注意
 

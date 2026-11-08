@@ -120,7 +120,7 @@ def test_review_units_saves_scoped_findings_without_changing_snapshots(
     count = len(requests(tmp_path))
     monkeypatch.setenv("PI_PROVIDER", "must-not-use-ambient")
     main(
-        ["review", str(workspace), "--units", "unit-2"],
+        ["review", "--json", "--events-json", str(workspace), "--units", "unit-2"],
         process_command=helper(
             tmp_path,
             review_findings=[
@@ -200,7 +200,7 @@ def test_review_pdf_pages_sends_only_selected_image_and_block_with_verified_posi
     )
     capsys.readouterr()
     main(
-        ["review", str(workspace), "--pages", "3-3"],
+        ["review", "--json", "--events-json", str(workspace), "--pages", "3-3"],
         process_command=helper(
             tmp_path,
             review_findings=[
@@ -273,7 +273,10 @@ def test_review_invalid_scope_never_sends(
     count = len(requests(tmp_path))
     initial_requests = (tmp_path / "requests.jsonl").read_bytes()
     with pytest.raises(SystemExit) as stopped:
-        main(["review", str(workspace), *arguments], process_command=helper(tmp_path))
+        main(
+            ["review", "--json", "--events-json", str(workspace), *arguments],
+            process_command=helper(tmp_path),
+        )
     assert stopped.value.code == 2
     assert expected in capsys.readouterr().err
     assert len(requests(tmp_path)) == count
@@ -304,7 +307,7 @@ def test_review_empty_and_rejected_answers_keep_usage_without_quality_approval(
     workspace = review_scope_workspace
     capsys.readouterr()
     count = len(requests(tmp_path))
-    args = ["review", str(workspace), "--units", "unit-2"]
+    args = ["review", "--json", "--events-json", str(workspace), "--units", "unit-2"]
     command = helper(tmp_path, review_findings=findings, fail_stage=fail_stage)
     if error:
         with pytest.raises(SystemExit) as stopped:
@@ -346,7 +349,7 @@ def test_review_after_translation_revision_keeps_history_but_does_not_count_old_
 
     workspace = epub_workspace(tmp_path, capsys)
     main(
-        ["review", str(workspace), "--units", "unit-2"],
+        ["review", "--json", "--events-json", str(workspace), "--units", "unit-2"],
         process_command=helper(tmp_path),
     )
     old = json.loads(capsys.readouterr().out)
@@ -399,7 +402,7 @@ def test_review_stale_or_missing_target_translation_never_sends(tmp_path, capsys
     (workspace / "run.json").write_text(json.dumps(manifest))
     with pytest.raises(SystemExit) as stopped:
         main(
-            ["review", str(workspace), "--units", "unit-2"],
+            ["review", "--json", "--events-json", str(workspace), "--units", "unit-2"],
             process_command=helper(tmp_path),
         )
     assert stopped.value.code == 2
@@ -418,6 +421,8 @@ def test_review_unit_selection_uses_explicit_override_without_changing_saved_set
     main(
         [
             "review",
+            "--json",
+            "--events-json",
             str(workspace),
             "--units",
             "unit-3,unit-2",
@@ -493,6 +498,8 @@ def test_review_nontranslation_pdf_blocks_and_ordered_images_need_no_other_pages
     main(
         [
             "review",
+            "--json",
+            "--events-json",
             str(workspace),
             "--pages",
             "2-2",
@@ -530,6 +537,8 @@ def test_review_nontranslation_pdf_blocks_and_ordered_images_need_no_other_pages
     main(
         [
             "review",
+            "--json",
+            "--events-json",
             str(workspace),
             "--pages",
             "1-2",
@@ -574,7 +583,7 @@ def test_review_split_table_and_attribute_units_keep_exact_ids_and_locations(
     attribute = next(u for u in units if u.attribute == "title")
     ids = [split.unit_id, cell.unit_id, attribute.unit_id]
     main(
-        ["review", str(workspace), "--units", ",".join(ids)],
+        ["review", "--json", "--events-json", str(workspace), "--units", ",".join(ids)],
         process_command=helper(
             tmp_path,
             review_findings=[
@@ -629,6 +638,8 @@ def test_review_cross_page_block_or_unavailable_page_never_sends(
         main(
             [
                 "review",
+                "--json",
+                "--events-json",
                 str(workspace),
                 "--pages",
                 range_,
@@ -657,7 +668,7 @@ def test_review_requires_target_translation_and_does_not_translate_it(tmp_path, 
     count = len(requests(tmp_path))
     with pytest.raises(SystemExit) as stopped:
         main(
-            ["review", str(workspace), "--units", "unit-1"],
+            ["review", "--json", "--events-json", str(workspace), "--units", "unit-1"],
             process_command=helper(tmp_path),
         )
     assert stopped.value.code == 2
@@ -672,7 +683,7 @@ def test_review_writer_lock_prevents_sending(tmp_path, capsys):
     count = len(requests(tmp_path))
     with workspace_lock(workspace), pytest.raises(SystemExit) as stopped:
         main(
-            ["review", str(workspace), "--units", "unit-2"],
+            ["review", "--json", "--events-json", str(workspace), "--units", "unit-2"],
             process_command=helper(tmp_path),
         )
     assert stopped.value.code == 1
@@ -688,7 +699,7 @@ def test_review_atomic_save_failure_keeps_old_review_snapshots_and_observed_usag
 
     workspace = epub_workspace(tmp_path, capsys)
     main(
-        ["review", str(workspace), "--units", "unit-2"],
+        ["review", "--json", "--events-json", str(workspace), "--units", "unit-2"],
         process_command=helper(tmp_path),
     )
     result = json.loads(capsys.readouterr().out)
@@ -709,7 +720,11 @@ def test_review_atomic_save_failure_keeps_old_review_snapshots_and_observed_usag
             process_command=helper(tmp_path),
         )
     assert stopped.value.code == 1
-    assert "artifact save failure" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "artifact save failure" in captured.err
+    assert "確認結果の保存: 失敗" in captured.err
+    assert "確認結果の保存: 保存・処理完了" not in captured.err
+    assert captured.out == ""
     assert old.read_bytes() == old_bytes
     assert all(p.read_bytes() == data for p, data in pointers.items())
     assert list((workspace / "reviews").iterdir()) == [old]
@@ -725,7 +740,7 @@ def test_review_atomic_save_failure_keeps_old_review_snapshots_and_observed_usag
 def test_review_saved_hash_mismatch_is_not_treated_as_current_review(tmp_path, capsys):
     workspace = epub_workspace(tmp_path, capsys)
     main(
-        ["review", str(workspace), "--units", "unit-2"],
+        ["review", "--json", "--events-json", str(workspace), "--units", "unit-2"],
         process_command=helper(tmp_path),
     )
     result = json.loads(capsys.readouterr().out)
@@ -738,7 +753,7 @@ def test_review_saved_hash_mismatch_is_not_treated_as_current_review(tmp_path, c
     count = len(requests(tmp_path))
     with pytest.raises(SystemExit) as stopped:
         main(
-            ["review", str(workspace), "--units", "unit-3"],
+            ["review", "--json", "--events-json", str(workspace), "--units", "unit-3"],
             process_command=helper(tmp_path),
         )
     assert stopped.value.code == 2
@@ -752,7 +767,16 @@ def test_review_preflight_config_failure_preserves_unknown_usage_without_sending
     count = len(requests(tmp_path))
     with pytest.raises(SystemExit) as stopped:
         main(
-            ["review", str(workspace), "--units", "unit-2", "--model", "unknown"],
+            [
+                "review",
+                "--json",
+                "--events-json",
+                str(workspace),
+                "--units",
+                "unit-2",
+                "--model",
+                "unknown",
+            ],
             process_command=helper(tmp_path),
         )
     assert stopped.value.code == 2
@@ -781,7 +805,7 @@ def test_review_selected_inline_literals_are_visible_but_other_units_and_attribu
     main(run_args(source, workspace), process_command=helper(tmp_path))
     capsys.readouterr()
     main(
-        ["review", str(workspace), "--units", "unit-1"],
+        ["review", "--json", "--events-json", str(workspace), "--units", "unit-1"],
         process_command=helper(tmp_path),
     )
     capsys.readouterr()
@@ -850,6 +874,8 @@ def test_review_table_with_cells_outside_block_location_refuses_instead_of_leaki
         main(
             [
                 "review",
+                "--json",
+                "--events-json",
                 str(workspace),
                 "--pages",
                 "1-1",
@@ -887,7 +913,7 @@ def test_review_table_with_cells_outside_block_location_refuses_instead_of_leaki
         ]
     )
     main(
-        ["review", str(workspace), *scope],
+        ["review", "--json", "--events-json", str(workspace), *scope],
         process_command=helper(
             tmp_path,
             review_findings=[
@@ -963,7 +989,7 @@ def test_review_pending_candidate_reviews_adopted_hash_without_adopting_candidat
     )
     before = {p: p.read_bytes() for p in workspace.glob("*-snapshot.json")}
     main(
-        ["review", str(workspace), "--units", "unit-1"],
+        ["review", "--json", "--events-json", str(workspace), "--units", "unit-1"],
         process_command=helper(tmp_path),
     )
     result = json.loads(capsys.readouterr().out)
@@ -1048,6 +1074,8 @@ def test_review_exclusion_only_chunk_uses_adopted_images_and_revalidates_offline
     main(
         [
             "review",
+            "--json",
+            "--events-json",
             str(workspace),
             "--pages",
             "1-1",
@@ -1089,7 +1117,7 @@ def test_review_exclusion_only_chunk_uses_adopted_images_and_revalidates_offline
     count = len(requests(tmp_path))
     with pytest.raises(SystemExit) as stopped:
         main(
-            ["review", str(workspace), "--pages", "3-3"],
+            ["review", "--json", "--events-json", str(workspace), "--pages", "3-3"],
             process_command=helper(tmp_path),
         )
     assert stopped.value.code == 2
@@ -1115,3 +1143,137 @@ def test_review_exclusion_only_chunk_uses_adopted_images_and_revalidates_offline
         main(["status", "--json", str(workspace)])
     assert stopped.value.code == 2
     assert "SHA-256 mismatch" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("events_json", [False, True])
+def test_review_output_flags_keep_findings_private_and_count_only_this_record(
+    tmp_path, capsys, review_scope_workspace, json_output, events_json
+):
+    workspace = review_scope_workspace
+    flags = [
+        *(["--json"] if json_output else []),
+        *(["--events-json"] if events_json else []),
+    ]
+    command = helper(
+        tmp_path,
+        review_findings=[
+            {"target_kind": "unit", "target_id": "unit-2", "reason": "PRIVATE FINDING"}
+        ],
+    )
+    main(
+        ["review", str(workspace), "--units", "unit-2", *flags], process_command=command
+    )
+    captured = capsys.readouterr()
+    if json_output:
+        result = json.loads(captured.out)
+        assert result["review"]["status"] == "validated"
+        assert not result["content_review"]["meaning_quality_approved"]
+    else:
+        assert "保存済み" in captured.out and "1件" in captured.out
+        assert (
+            "unit-2" in captured.out
+            and "reviews/" in captured.out
+            and "未承認" in captured.out
+        )
+        assert "PRIVATE FINDING" not in captured.out
+    assert "PRIVATE FINDING" not in captured.err and "SELECTED TEXT" not in captured.err
+    if events_json:
+        notice = json.loads(captured.err)
+        assert notice["transmission"]["unit_ids"] == ["unit-2"]
+        assert notice["transmission"]["pages"] == []
+    else:
+        assert (
+            captured.err.index("保存データ・選択範囲の検証")
+            < captured.err.index("AIによる内容確認")
+            < captured.err.index("確認結果の保存")
+            < captured.err.index("終了時の保存データ検査")
+        )
+        assert (
+            "送信先 faux / text" in captured.err
+            and "認証 source不明 / api_key" in captured.err
+        )
+        assert "明示選択" in captured.err and "EPUB 全体" not in captured.err
+    # An earlier record must not inflate the count of the next, empty review.
+    main(
+        ["review", str(workspace), "--units", "unit-2"],
+        process_command=helper(tmp_path),
+    )
+    captured = capsys.readouterr()
+    assert "0件" in captured.out and "未承認" in captured.out
+    assert "PRIVATE FINDING" not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_review_observes_validation_save_inspection_and_request_terminal(
+    tmp_path, review_scope_workspace, monkeypatch, failure
+):
+    from doc_translate import render
+    from doc_translate.progress import ProgressState
+    from doc_translate.review import review_document
+
+    workspace = review_scope_workspace
+    events = []
+    state = ProgressState()
+    inputs, status = render._inputs, render.workspace_status
+
+    def checked_inputs(*args):
+        assert events[-1].stage in {"review_validate", "review_verify"}
+        assert events[-1].kind == "start"
+        return inputs(*args)
+
+    def checked_status(*args):
+        assert events[-1].stage == "review_verify" and events[-1].kind == "start"
+        assert not state.snapshot()[2]
+        return status(*args)
+
+    monkeypatch.setattr(render, "_inputs", checked_inputs)
+    monkeypatch.setattr(render, "workspace_status", checked_status)
+
+    def observe(event):
+        events.append(event)
+        state.observe(event)
+        if event.stage == "review_save":
+            assert bool(list((workspace / "reviews").glob("*.json"))) == (
+                event.kind == "done" and not failure
+            )
+
+    result = review_document(
+        workspace=workspace,
+        unit_ids=["unit-2"],
+        observer=observe,
+        process_command=helper(tmp_path, fail_stage="review" if failure else None),
+    )
+    assert result["review"]["status"] == ("rejected" if failure else "validated")
+    lifecycle = [e for e in events if e.request_id]
+    assert lifecycle[0].kind == "request_start" and lifecycle[-1].kind == "request_end"
+    assert all(
+        e.unit_ids == ("unit-2",) and e.block_ids == () and e.pages == ()
+        for e in lifecycle
+    )
+    assert not state.snapshot()[2]
+    assert state.snapshot()[1]["review"].kind == ("failed" if failure else "done")
+    assert events[-1].kind == "finished"
+    assert not result["content_review"]["meaning_quality_approved"]
+
+
+@pytest.mark.parametrize("model,exit_code", [("text", 1), ("unknown", 2)])
+def test_review_human_failure_does_not_claim_a_saved_review(
+    tmp_path, capsys, review_scope_workspace, model, exit_code
+):
+    workspace = review_scope_workspace
+    with pytest.raises(SystemExit) as stopped:
+        main(
+            ["review", str(workspace), "--units", "unit-2", "--model", model],
+            process_command=helper(tmp_path, fail_stage="review"),
+        )
+    assert stopped.value.code == exit_code
+    captured = capsys.readouterr()
+    assert "確認失敗（確認記録は未保存）" in captured.out
+    assert (
+        "未確定" in captured.out
+        and "未承認" in captured.out
+        and "unit-2" in captured.out
+    )
+    assert "review_rejected" in captured.err
+    assert not (workspace / "reviews").exists()

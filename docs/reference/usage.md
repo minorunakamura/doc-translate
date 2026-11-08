@@ -26,9 +26,9 @@ Pythonのcore導入にDoclingやOCR modelは不要です。EPUBのrunはcoreだ�
 
 ## CLIの表示とJSON出力
 
-`providers`／`models`は表、`run`／`resume`は処理結果・未処理／失敗・出力先の人向け要約、通常の`status`は保存記録のみの軽量な人向け表示です。進捗の表示層は直接依存Rich（15系）を使います。`status --verify`は従来の詳細検査を人向けに表示し、出力全体の鮮度、採用原文・訳文との対応、訳文の入力対応を区別します。部分失敗・原文候補の採用待ち・古い訳文は完了扱いにしません。
+`providers`／`models`は表、`run`／`resume`は処理結果・未処理／失敗・出力先の人向け要約、`review`は今回の確認記録・対象・指摘件数・記録先と品質未承認を示し、通常の`status`は保存記録のみの軽量な人向け表示です。進捗の表示層は直接依存Rich（15系）を使います。`status --verify`は従来の詳細検査を人向けに表示し、出力全体の鮮度、採用原文・訳文との対応、訳文の入力対応を区別します。部分失敗・原文候補の採用待ち・古い訳文は完了扱いにしません。
 
-これら5コマンドは`--json`で従来と同じ完全なJSONをstdoutへ出力します。**既存のJSON解析・pipe利用には`--json`を追加してください。** pipeやredirectでも自動でJSONに切り替わりません。JSONの成果物pathはworkspace相対、人向け表示ではworkspaceを先頭に付けたpathです。
+これら6コマンドは`--json`で従来と同じ完全なJSONをstdoutへ出力します。**既存のJSON解析・pipe利用には`--json`を追加してください。** pipeやredirectでも自動でJSONに切り替わりません。JSONの成果物pathはworkspace相対、人向け表示ではworkspaceを先頭に付けたpathです。
 
 ```sh
 doc-translate models --provider openai             # 表
@@ -41,19 +41,20 @@ doc-translate status ./work/book --json            # hash・QA・利用記録等
 doc-translate resume ./work/book --json            # 従来の最終summary JSON
 doc-translate resume ./work/book --events-json     # stderrは送信前JSONのみ、stdoutは人向け
 doc-translate resume ./work/book --json --events-json # stdout／stderrをそれぞれ機械向け
+doc-translate review ./work/book --units unit-1 --json --events-json # 従来の最終JSON／送信前JSON
 ```
 
-`render`／`review`／`revise`／setup・認証の出力は従来どおりJSONです。終了コード・Python戻り値・保存形式は変えません。出力完了は翻訳品質の承認ではありません。
+`render`／`revise`／setup・認証の出力は従来どおりJSONです。終了コード・Python戻り値・保存形式は変えません。出力完了は翻訳品質の承認ではありません。
 
 EPUBのrun／resumeは、抽出→保存データ検証→翻訳準備（collect情報収集／organize文書全体の収集結果整理）→翻訳→Markdown出力をstderrへ表示します。resumeは重い再利用前検証を最初に表示します。翻訳成功は採用snapshot／pointerの保存後のleaf unit数、再利用は成功の内訳です。分割中は総数を更新中とし、並列のAI待ちは件数と対象を分けます。通信retry（従来3／6秒）とdomain回答訂正、取消受付とchild／保存終了は別です。送信前の通知はproviderへの到達証明ではなく、helperへのgenerate書込み完了後にのみAI応答待ちになります。spinnerは処理前進の証明ではありません。
 
 TTYでは固定位置更新・最新3件履歴（再試行／失敗／取消は確定行も出力）、非TTYでは工程／対象等が変わる行ログだけを出します。`NO_COLOR`は空値も含め存在すれば無彩色です。狭幅では折返し／明示省略、狭高さでは現在工程・対象・異常理由を優先し、全工程同時表示を保証しません。本文・raw回答・秘密値を履歴へ出しません。
 
-**stderr JSON解析にはrun／resumeへ`--events-json`を追加してください。** この指定時だけ従来用途の送信前JSONをflushし、人向け進捗を混ぜません（全工程event streamではありません）。`--json`は最終stdoutだけの指定で、stderr進捗を止めません。両flagは独立です。送信通知の`transmission`に実対象`unit_ids`／`phase`（collectはsectionも）を互換的に追加します。organizeの`unit_ids=[]`は原文unit全文の再送ではなく文書全体の収集結果を整理する意味で、対応不明の一般表現ではありません。準備／翻訳のPDFページ対応不明時に、補正済み全ページを実送信範囲として代用しません。外部parserの実利用は未確認です。
+**stderr JSON解析にはrun／resume／reviewへ`--events-json`を追加してください。** この指定時だけ従来用途の送信前JSONをflushし、人向け進捗を混ぜません（全工程event streamではありません）。`--json`は最終stdoutだけの指定で、stderr進捗を止めません。両flagは独立です。送信通知の`transmission`に実対象`unit_ids`／`phase`（collectはsectionも）を互換的に追加します。organizeの`unit_ids=[]`は原文unit全文の再送ではなく文書全体の収集結果を整理する意味で、対応不明の一般表現ではありません。準備／翻訳のPDFページ対応不明時に、補正済み全ページを実送信範囲として代用しません。外部parserの実利用は未確認です。
 
 PDFのrun／resumeも重い検証の前から、draft検証／再利用→必要時の本文・レイアウト抽出→PDF補正→source組立→採用前検証・保存→翻訳準備／翻訳／Markdown出力を表示します。冒頭の所有意図・追加参照許可と、実requestの所有／参照専用ページは別です。参照は成功数に含めず、所有chunkの検証・保存とrun manifest更新後だけページ成功数を反映します。再利用は成功の内訳で、分母は所有ページ数のままです。length／入力上限の補正分割は翻訳leaf unitの総数更新とは別です。coverage限定の回答訂正は通信retryと分け、成功保存前は検証／保存中、取消受付は終了待ちとして表示します。保存済み補正だけのresumeも検証・再利用を示し、再送しません。全ページ指定の正確なページ数は抽出検証後に確定します。
 
-補正不能の早期終了では後段を完了とせず、候補が変わった場合は明示採用待ちで停止します。補正全ページ成功は候補の採用／翻訳完了を意味しません。reviewの新しい進捗・人向け結果／flagsは後続Issueで、従来の最終JSON／送信前noticeを維持します。通常のparser診断／致命的エラーはstderrへ出ることがあります。
+補正不能の早期終了では後段を完了とせず、候補が変わった場合は明示採用待ちで停止します。補正全ページ成功は候補の採用／翻訳完了を意味しません。reviewは保存データ・選択範囲の検証→AIによる内容確認→確認結果の保存→終了時の保存データ詳細検査を表示します。選択unit／block／画像ページは実requestから表示し、PDF補正の所有／参照とは混同しません。推論前のローカル検証を含め、取消表示のために既存signal境界を変更せず、即停止やSIGKILL時の画面復元は保証しません。通常のparser診断／致命的エラーはstderrへ出ることがあります。
 
 ## provider／modelを調べる（任意）
 
@@ -218,8 +219,8 @@ doc-translate render ./work/book
 - `--units`と`--pages`はどちらか1つが必須です。unit一覧は入力順でなく文書順に送ります。unitモードは選択した原文・対応訳・選択unit内のinline保護内容、表の行列情報、固定policy／glossaryだけを送り、他unit本文を含む祖先contextや文書全体context、ページ画像は送りません。
 - PDFページモードは保存済み送信許可範囲・ページ画像内だけです。指定外の画像・抽出下書きは送りません。code／formula／図など訳文unitのないblockやページ画像だけにも位置付き指摘を残せます。block・table cell・unitが選択外に跨る場合は、全体本文／訳文を漏らしたり黙ってskip／範囲拡大したりせず、必要なページ範囲を示してexit 2で止まります。
 - 現在の採用原文・準備・設定に対応する保存済み訳文が必要です。未知ID・未訳／staleの場合も送信せず、条件を表示します。必要な翻訳は利用者が別途`resume`してください。候補採用待ちだけを理由に拒否せず、有効な採用版のhashに結び付けます。
-- 設定はこの操作の明示`--provider/--model/--thinking` > 保存済みの該当段階設定（unitsはtranslation、pagesはcorrection）。`PI_*`で保存設定は変わりません。該当設定がない場合は不足fieldを明示指定してください。別provider／modelへ自動fallbackしません。送信直前に原資料・source／translation hash、対象ID／ページ／画像、送信先と実認証source／typeをstderrへ表示します。
-- stdoutのJSONに`review.status`・不変artifactのpath／hashと保存-only statusを返します。exit 0は範囲の照合記録が保存できたこと、1は推論／保存等の失敗、2は入力・範囲・設定エラーです。指摘があっても記録成功なら0です。元原文／訳文・採用参照は変更せず、修正は次の`revise`で明示します。
+- 設定はこの操作の明示`--provider/--model/--thinking` > 保存済みの該当段階設定（unitsはtranslation、pagesはcorrection）。`PI_*`で保存設定は変わりません。該当設定がない場合は不足fieldを明示指定してください。別provider／modelへ自動fallbackしません。既定のstderr進捗は原本名・文書hashを冒頭に、実選択unit／block／画像ページ・provider／model／thinking・実preflightの非秘密認証source／typeを送信前に表示します。source／translation snapshot両hashを含む完全な従来の送信前通知は、`--events-json`指定時だけstderrへJSONで出力します。
+- stdoutは既定で今回の保存結果・実対象・指摘件数・記録先と品質未承認を表示し、本文／指摘全文／raw回答は表示しません。`--json`は従来の`review.status`・不変artifactのpath／hashと終了時の詳細statusを返します。stderrは共通進捗、独立した`--events-json`は従来の送信前JSONのみです（全工程streamではありません）。既存stdout／stderr解析にはそれぞれのflagを追加してください。exit 0は範囲の照合記録が保存できたこと、1は推論／保存等の失敗、2は入力・範囲・設定エラーです。指摘があっても記録成功なら0です。元原文／訳文・採用参照は変更せず、修正は次の`revise`で明示します。
 - findings・確認者（provider/model）・独立LLMという方法・範囲・usageを保持します。QA／statusの`content_review.translation_records`は現行source／translation hashに対応する記録だけ、`review_history`には旧版も残します。原文block／unitと訳文unitの未確認範囲を別記し、機械検査と内容確認は別です。空findingsやmodelの自己申告で`meaning_quality_approved`をtrueにしません。修正後の旧reviewは現行確認済みには数えません。
 - `review`はQAの自動再出力をせず、`render_current: false`なら保存-onlyの`render`で反映できます。失敗・未採用の回答／usageも保存し、未観測usageを0としません。繰返すreviewは新しい独立呼出しです。応答／保存を失った後の再送による重複課金は保証できません。
 

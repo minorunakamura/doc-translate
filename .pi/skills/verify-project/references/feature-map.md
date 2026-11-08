@@ -1,6 +1,6 @@
 # Feature Map: 保存記録status／PDF・EPUB共通進捗
 
-対象：公開CLIの軽量status／明示詳細検査／完全JSON、必要記録破損拒否、保存不変。EPUB／共通表示は末尾節が対象。PDF補正の工程・所有ページ進捗は末尾PDF節が対象。対象外：review新表示の完成、実LLM品質、実PDF変換／OCR、他OS、remote CI、任意規模の性能保証。性能の別確認は[正式Plan](../../../../docs/plans/progress-and-status.md)の再作成条件・非並行before／after手順を使い、巨大benchmark基盤を追加しない。
+対象：公開CLIの軽量status／明示詳細検査／完全JSON、必要記録破損拒否、保存不変。EPUB／共通表示は末尾節が対象。PDF補正の工程・所有ページ進捗は末尾PDF節が対象。明示範囲reviewの表示は末尾review節が対象。対象外：実LLM品質、実PDF変換／OCR、他OS、remote CI、任意規模の性能保証。性能の別確認は[正式Plan](../../../../docs/plans/progress-and-status.md)の再作成条件・非並行before／after手順を使い、巨大benchmark基盤を追加しない。
 
 ## 保存記録と詳細検査
 
@@ -109,7 +109,7 @@ PY
 
 ## EPUB run／resumeと共通進捗（Issue #50）
 
-入口は公開`run INPUT --workspace DIR`／`resume DIR`。EPUB新表示・共通request観測・出力flagsが対象です。PDF補正の工程／所有ページ集計とreview新表示は後続Issueであり、この手順の成功で完成扱いしません。既存status手順は上記のまま維持します。
+入口は公開`run INPUT --workspace DIR`／`resume DIR`。EPUB新表示・共通request観測・出力flagsが対象です。PDF補正の工程／所有ページ集計とreview表示はそれぞれ後続節で扱い、この手順の成功で完成扱いしません。既存status手順は上記のまま維持します。
 
 前提：既存`.venv`、Node、`ai/dist`と既存依存が使用可能なこと（`CONTRIBUTING.md`の正式チェック参照）。追加install／setup／実認証／model／実書籍は不要です。実Python CLI→実Node `run-process.mjs`→network拒否付き公開fauxを使います。fixtureの`process_command`は既存の外部process seamであり、内部workflowのmockではありません。
 
@@ -237,7 +237,7 @@ Rootは**別invocation**で実行し、以下を直接観測・記録します�
 - 並列待機／split：`tests/test_translation.py`の`prepare_blocks`＋`translate`は実helperの再利用入口。`{'barrier':True}`と3×6500文字、`{'length_above':80}`と人工`'word '*40`でobserverを記録し、複数waitingの識別／request終端、splitから採用まで総数更新中、各`adopted`時点の公開`load_translation`のleaf件数を照合する。別jobのsplitが残る状態は`test_progress_state_keeps_other_split_pending_until_its_adoption`の小さいstate境界も参照する。新たなleaf正本は作らない。
 - retry／domain repair／取消／例外：既存`test_inference`の実3/6秒`http-retry`、`test_preparation`のevidence repair、`test_translation`のmarker repair／parallel cancel、`test_resume`のOS replace境界を再利用する。まず既存fixtureの引数をreadし、Rootが別workspaceで選んだ代表を操作する。`retry`と`repair`、Event観測時の取消受付とchild drain・保存終了を別に照合し、送信前をprovider到達と記録しない。signal handlerのI/Oやretry／30秒drain変更で試験を短縮しない。全TTY条件×全signalの恒久E2E化はしない。
 
-期待／観測／commandとexit、未確認、revision／dirty、必要人工logと保存hashを各runの証拠へ記録し、所有する一時workspace／credential／childだけfinallyでcleanup後、証拠の全参照を再読します。外部parserの実利用、実provider、実LLM品質、実Docling／OCR／review新表示完成、他OS、SIGKILLの画面復元は保証しません。正式pytest／品質／配布検査やRootの受入判断を代替しません。
+期待／観測／commandとexit、未確認、revision／dirty、必要人工logと保存hashを各runの証拠へ記録し、所有する一時workspace／credential／childだけfinallyでcleanup後、証拠の全参照を再読します。外部parserの実利用、実provider、実LLM品質、実Docling／OCR、他OS、SIGKILLの画面復元は保証しません。正式pytest／品質／配布検査やRootの受入判断を代替しません。
 
 ## PDF run／resumeの工程・所有ページ進捗（Issue #51）
 
@@ -392,3 +392,145 @@ PY
 TTYの直接視認は上の共通capture／Chrome手順を再利用し、`dark/run`の80桁と`narrow-no-color/run`の36桁frameで所有／参照・現在工程・異常理由を実画像または`--mirror`で照合してください。NO_COLORのSGRなしと視認性は別の証拠です。全形式×全条件の積、実terminal fontの同一性は保証しません。
 
 保存前成功ゼロ・通知時のchunk／run実体・固定分母と翻訳split分離・transport retryとcoverage repairのrequest終端は`tests/test_run.py -k pdf_progress`、`test_pdf_correction.py::test_correct_pdf_preserves_transport_attempts_without_cumulative_usage`、`test_cli_output.py::test_pdf_progress_split_keeps_owned_denominator_and_translation_state_separate`で別途照合します。取消受付／child終了は既存inference／resumeのEvent・signal・OS replace境界とPDF補正のrecord-save／cancelを再利用し、retry待機／drainを短縮しません。正式チェックとRoot／Reviewer判断はこの入口だけで代替しません。
+
+
+## 明示範囲reviewの共通表示（Issue #52）
+
+入口は公開`review DIR --units unit-2`／PDF `--pages 3-3`。既存の`resume_process.py`は任意CLI引数を受け付け、`pdf_progress_fixture.py`はrun時だけ人工Docling境界を設定しreviewはそのままmainへ渡すため、追加helperは不要です。実Python→実Node helper→network拒否付きfauxと自作入力のみを使います。既存`.venv`（PDF extra付き）とNode／build済みhelperが必要で、無断install／sync／実provider／実認証／model取得はしません。
+
+以下は新規の所有TemporaryDirectoryに人工EPUB（選択外sentinel付き）とPDFを作り、runで必要な保存訳だけ準備してからreviewを操作します。新しいpipeline基盤や後続のrevise／renderは不要です。4つのstdout／stderr flag組合せ、TTYの指摘あり、空指摘、狭幅NO_COLORの失敗、無効選択、終了時詳細検査と保存hash／旧byteを照合します。指摘全文は通常画面へ出さず、空でも品質未承認です。
+
+```sh
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+EVIDENCE=$(mktemp -d "$PWD/work/test-verification-issue52-review-XXXXXX")
+export EVIDENCE
+PYTHONPATH=tests .venv/bin/python - <<'PY'
+import hashlib, json, os, re, shutil, signal, subprocess, sys, tempfile
+from pathlib import Path
+from test_epub import make_epub
+signal.signal(signal.SIGINT, signal.default_int_handler)
+root, evidence = Path.cwd(), Path(os.environ['EVIDENCE'])
+python = str(Path(sys.executable).absolute())
+node = shutil.which('node')
+assert node, 'existing Node required; no install'
+capture = root / '.pi/skills/verify-project/scripts/capture_progress.py'
+for name, command in [('revision.txt', ['git', 'rev-parse', 'HEAD']), ('dirty.txt', ['git', 'status', '--short']), ('scope.diff', ['git', 'diff'])]:
+    (evidence / name).write_bytes(subprocess.check_output(command))
+observations = []
+try:
+    with tempfile.TemporaryDirectory(prefix='review-progress-owned-') as owned:
+        temporary = Path(owned)
+        for format in ('epub', 'pdf'):
+            case = temporary / format
+            case.mkdir()
+            directory = evidence / format
+            directory.mkdir()
+            fixture, workspace, settings, log = [case / name for name in ('fixture', 'workspace', 'settings.json', 'requests.jsonl')]
+            settings.write_text('{}')
+            helper = [node, str(root / 'ai/tests/run-process.mjs'), str(case / 'credentials'), str(settings), str(log)]
+            entry = ([python, str(root / '.pi/skills/verify-project/scripts/pdf_progress_fixture.py'), '--fixture-dir', str(fixture)] if format == 'pdf' else [python, str(root / 'tests/fixtures/resume_process.py')]) + ['--helper', json.dumps(helper), '--']
+            source = fixture / 'own.pdf' if format == 'pdf' else make_epub(case, extra={'OPS/text/ch.xhtml': b'<html xmlns="http://www.w3.org/1999/xhtml"><body><p>UNSELECTED SECRET</p><p>SELECTED TEXT</p><p>OTHER SECRET</p></body></html>'})
+            env = {**os.environ, 'TERM': 'xterm-256color'}
+            env.pop('NO_COLOR', None)
+            operations = []
+
+            def invoke(name, arguments, expected=0, tty=False, narrow=False):
+                command = [*entry, *arguments]
+                actual_env = {**env, **({'NO_COLOR': ''} if narrow else {})}
+                if tty:
+                    command = [python, str(capture), '--evidence', str(directory / name), '--columns', '36' if narrow else '100', '--rows', '10' if narrow else '32', '--', *command]
+                    result = subprocess.run(command, env=actual_env, check=False)
+                    out = (directory / name / 'stdout.txt').read_text()
+                    err = (directory / name / 'stderr.ansi').read_text()
+                else:
+                    result = subprocess.run(command, env=actual_env, capture_output=True, text=True, check=False)
+                    out, err = result.stdout, result.stderr
+                    (directory / (name + '.stdout')).write_text(out)
+                    (directory / (name + '.stderr')).write_text(err)
+                operations.append({'name': name, 'command': command, 'exit': result.returncode, 'expected_exit': expected})
+                (directory / 'operations.json').write_text(json.dumps(operations, indent=2))
+                assert result.returncode == expected, (format, name, result.returncode, err)
+                return out, err
+
+            invoke('run', ['run', str(source), '--workspace', str(workspace), '--provider', 'faux', '--model', 'text', '--thinking', 'off', '--json', '--events-json', *(['--pages', '2-4', '--correction-model', 'vision', '--artifacts-path', str(fixture / 'models')] if format == 'pdf' else [])])
+            old = {p: p.read_bytes() for p in workspace.rglob('*') if p.is_file()}
+            scope = ['--pages', '3-3'] if format == 'pdf' else ['--units', 'unit-2']
+            for name, flags, findings, failure, tty, narrow in [
+                ('tty-findings', [], [{'target_kind': 'unit', 'target_id': 'unit-2', 'reason': 'PRIVATE FINDING'}], False, True, False),
+                ('empty-json', ['--json'], [], False, False, False),
+                ('events-human', ['--events-json'], [], False, False, False),
+                ('both-json', ['--json', '--events-json'], [], False, False, False),
+                ('failure-narrow', [], [], True, True, True),
+            ]:
+                settings.write_text(json.dumps({'delay_phase': 'review', 'delay_ms': 800, 'review_findings': findings, **({'fail_stage': 'review'} if failure else {})}))
+                before_requests = len(log.read_text().splitlines())
+                out, err = invoke(name, ['review', str(workspace), *scope, *flags], 1 if failure else 0, tty, narrow)
+                assert len(log.read_text().splitlines()) == before_requests + 1
+                sent = json.loads(log.read_text().splitlines()[-1])
+                inputs = json.loads(sent['messages'][1]['content'][0]['text'])
+                assert inputs['context']['unit_ids'] == ['unit-2']
+                assert inputs['context']['pages'] == ([3] if format == 'pdf' else [])
+                assert inputs['context']['block_ids'] == (['pdf-2'] if format == 'pdf' else [])
+                assert all(word not in json.dumps(sent) for word in ('UNSELECTED SECRET', 'OTHER SECRET', 'Page 2 source.', 'Page 4 source.'))
+                assert 'PRIVATE FINDING' not in err and 'SELECTED TEXT' not in err and 'Page 3 source.' not in err
+                if '--json' in flags:
+                    saved = json.loads(out)
+                    assert saved['review']['status'] == 'validated'
+                    assert saved['content_review']['meaning_quality_approved'] is False
+                    record_path = workspace / saved['review']['artifact']
+                    record = json.loads(record_path.read_bytes())
+                    assert hashlib.sha256(record_path.read_bytes()).hexdigest() == saved['review']['sha256']
+                    assert record['unit_ids'] == inputs['context']['unit_ids'] and record['pages'] == inputs['context']['pages']
+                    (directory / (name + '.record.json')).write_bytes(record_path.read_bytes())
+                elif failure:
+                    assert '確認失敗（確認記録は未保存）' in out and '未確定' in out
+                else:
+                    assert f'{len(findings)}件' in out and '未承認' in out and 'reviews/' in out and 'PRIVATE FINDING' not in out
+                if '--events-json' in flags:
+                    notice = json.loads(err)
+                    assert notice['transmission']['unit_ids'] == ['unit-2'] and notice['transmission']['pages'] == inputs['context']['pages']
+                else:
+                    assert all(word in err for word in ('保存データ・選択範囲の検証', 'AIによる内容確認', '確認結果の保存', '終了時の保存データ検査', '送信先 faux', 'api_key'))
+                    assert '所有意図' not in err and '参照専用' not in err
+                if tty:
+                    frames = json.loads((directory / name / 'frames.json').read_text())
+                    assert any('AI応答待ち 1件' in f['text'] and 'unit-2' in f['text'] for f in frames)
+                    assert 'AI応答待ち 0件' in frames[-1]['text']
+                    if failure:
+                        assert 'review_rejected' in err and '失敗' in err
+                    if narrow:
+                        assert not re.search(r'\x1b\[[0-9;]*m', err)
+                assert all(p.read_bytes() == data for p, data in old.items())
+                observations.append({'format': format, 'case': name, 'exit': 1 if failure else 0, 'expected': 'explicit scope only; current-record findings count; quality not approved; independent flags; no pending wait at exit; old bytes unchanged', 'observed': 'matched'})
+            before = log.read_bytes()
+            invoke('invalid-scope', ['review', str(workspace), *(['--pages', '1-1'] if format == 'pdf' else ['--units', 'missing'])], 2)
+            assert log.read_bytes() == before
+            settings.write_text('{}')
+            inspected, _ = invoke('inspection', ['status', str(workspace), '--json'])
+            status = json.loads(inspected)
+            assert status['content_review']['meaning_quality_approved'] is False
+            history = status['content_review']['review_history']
+            assert sorted(len(r['findings']) for r in history) == [0, 0, 0, 1]
+            for record in history:
+                data = (workspace / record['artifact']).read_bytes()
+                assert hashlib.sha256(data).hexdigest() == record['sha256']
+                (directory / Path(record['artifact']).name).write_bytes(data)
+            (directory / 'requests.jsonl').write_bytes(log.read_bytes())
+            (directory / 'old-hashes.json').write_text(json.dumps({str(p.relative_to(workspace)): hashlib.sha256(data).hexdigest() for p, data in old.items()}, indent=2))
+            observations.append({'format': format, 'case': 'invalid-scope-and-inspection', 'expected': 'invalid scope exit2 without send; four accepted records including empty findings, each hash verified; quality false; saved outputs not silently rerendered', 'observed': 'matched'})
+finally:
+    (evidence / 'observations.json').write_text(json.dumps(observations, ensure_ascii=False, indent=2))
+    (evidence / 'cleanup.txt').write_text('owned temporary input/workspaces/credentials removed; synchronous children reaped; evidence retained\n')
+assert len(observations) == 12
+for p in evidence.rglob('*'):
+    if p.is_file():
+        p.read_bytes()
+print(evidence, '12 review cases matched; cleanup complete; evidence reread')
+PY
+```
+
+期待：各形式のreviewは4件受理・1件推論失敗・1件無効選択、選択unitはunit-2、PDF画像／blockは3ページ／pdf-2だけ。reviewは出力を再生成せず、今回の指摘は1件または0件、失敗は件数未確定、品質は常にfalse。重い検証前→AI内容確認→保存→終了検査の順がstderrへ現れ、終了frameの待ちは0件。eventsは従来送信前noticeだけで最終stdoutとは独立です。invalidはexit2でrequest増加なし、失敗はexit1で受理記録増加なし。旧file全byteは保持します。
+
+証拠はrevision／dirty／scope.diff、各形式operations.json（command＋exit）、stdout／stderr、TTY frame／HTML、人工request、受理record／hashとold-hashes、observations／cleanupです。workspace外へ退避済みで、末尾でcleanup後全参照を再読します。`tty-findings`の待機frameと`failure-narrow`の異常frameを上記Chrome手順で実表示／画像readし、unit／block／画像ページ・送信先・異常理由の文字が読めることを記録してください。HTML生成／SGR検出だけを視認性合格としません。Rootは別invocationで公開CLIを操作・照合します。
+
+保存拒否／旧byte維持は`test_review_atomic_save_failure_keeps_old_review_snapshots_and_observed_usage`、preflight拒否／request終端・保存前後・詳細検査接続は`tests/test_review.py`、共通表示の安全escape／stage順とrun／resume回帰は`tests/test_cli_output.py`を使います。retry／timeout／取消の共通generate境界は既存`test_inference`／`test_resume`を再利用し、reviewの推論前ローカル検証のsignal境界を変更して即停止を保証しません。実LLM品質・全signal×全工程・SIGKILL・全terminalは未確認です。

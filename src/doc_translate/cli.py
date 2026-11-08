@@ -9,7 +9,12 @@ from pathlib import Path
 
 from doc_translate import ai_runtime
 from doc_translate.auth import authenticate
-from doc_translate.cli_output import catalog_text, saved_status_text, summary_text
+from doc_translate.cli_output import (
+    catalog_text,
+    review_text,
+    saved_status_text,
+    summary_text,
+)
 from doc_translate.inference import Selection, resolve_config
 from doc_translate.preparation import Glossary, StylePolicy
 from doc_translate.progress import SendNotice
@@ -102,7 +107,7 @@ def main(
     parser = argparse.ArgumentParser(
         prog="doc-translate",
         description="Traceable PDF and EPUB translation, rendering and status.",
-        epilog="Providers/models show tables; run/resume/status show summaries. Use --json on these commands for machine-readable output; --events-json independently selects pre-send notices on run/resume stderr. Other commands output JSON. Exit codes: 0 success, 1 partial output/execution failure, 2 input/configuration error. Run/resume send explicitly scoped data to selected providers. PDF source candidate adoption is explicit via revise --source; pending resume/render exit 1, successful status exits 0. Saved render/status/revise need no Node, authentication or inference.",
+        epilog="Providers/models show tables; run/resume/review/status show summaries. Use --json on these commands for machine-readable output; --events-json independently selects pre-send notices on run/resume/review stderr. Other commands output JSON. Exit codes: 0 success, 1 partial output/execution failure, 2 input/configuration error. Run/resume/review send explicitly scoped data to selected providers. PDF source candidate adoption is explicit via revise --source; pending resume/render exit 1, successful status exits 0. Saved render/status/revise need no Node, authentication or inference.",
     )
     commands = parser.add_subparsers(dest="operation", required=True)
     setup = commands.add_parser(
@@ -175,7 +180,7 @@ def main(
     review = commands.add_parser(
         "review",
         help="Independently review explicit saved units or PDF pages; never rewrite text.",
-        description="Send only comma-separated explicit unit IDs (--units unit-1,unit-2), or PDF pages A-B with selected page images. Requires current saved translations. Records findings, reviewer, scope and usage; empty findings never approve quality. Uses explicit provider/model/thinking over saved translation (units) or correction (pages) settings, never ambient PI_*. Does not modify saved stage settings or snapshots. Exit 0 accepted review, 1 inference/save failure, 2 invalid scope/inputs.",
+        description="Send only comma-separated explicit unit IDs (--units unit-1,unit-2), or PDF pages A-B with selected page images. Requires current saved translations. Records findings, reviewer, scope and usage; empty findings never approve quality. Uses explicit provider/model/thinking over saved translation (units) or correction (pages) settings, never ambient PI_*. Does not modify saved stage settings or snapshots. Progress on stderr; readable saved result on stdout (--json for full result, --events-json for pre-send notices only). Exit 0 accepted review, 1 inference/save failure, 2 invalid scope/inputs.",
     )
     review.add_argument("workspace", type=Path)
     scope = review.add_mutually_exclusive_group(required=True)
@@ -233,7 +238,12 @@ def main(
         type=_page_range,
         help="Explicit PDF reference-only transmission permission A-B.",
     )
-    for command in (providers, models, run, resume):
+    review.add_argument(
+        "--events-json",
+        action="store_true",
+        help="Use pre-send JSON notices only on stderr instead of progress.",
+    )
+    for command in (providers, models, run, resume, review):
         command.add_argument(
             "--json",
             action="store_true",
@@ -315,23 +325,31 @@ def main(
         elif args.operation == "review":
             from doc_translate.review import review_document
 
-            result = review_document(
-                workspace=args.workspace,
-                unit_ids=[i.strip() for i in args.units.split(",")]
-                if args.units is not None
-                else None,
-                pages=args.pages,
-                selection=Selection(
-                    **{
-                        field: getattr(args, field)
-                        for field in ("provider", "model", "thinking")
-                    }
-                ),
-                process_command=process_command,
-                before_send=lambda config, inputs, preflight: _announce(
-                    args.workspace, config, inputs, preflight
-                ),
-            )
+            with (
+                nullcontext(None) if args.events_json else ProgressDisplay() as observer
+            ):
+                result = review_document(
+                    workspace=args.workspace,
+                    unit_ids=[i.strip() for i in args.units.split(",")]
+                    if args.units is not None
+                    else None,
+                    pages=args.pages,
+                    selection=Selection(
+                        **{
+                            field: getattr(args, field)
+                            for field in ("provider", "model", "thinking")
+                        }
+                    ),
+                    process_command=process_command,
+                    before_send=(
+                        lambda config, inputs, preflight: _announce(
+                            args.workspace, config, inputs, preflight
+                        )
+                    )
+                    if args.events_json
+                    else None,
+                    observer=observer,
+                )
         elif args.operation == "revise":
             from doc_translate.revise import revise_document
 
@@ -376,6 +394,15 @@ def main(
         print(catalog_text(args.operation, result))
     elif args.operation == "status" and not args.json and not args.verify:
         print(saved_status_text(result, args.workspace))
+    elif args.operation == "review" and not args.json:
+        print(
+            review_text(
+                result,
+                args.workspace,
+                unit_ids=args.units.split(",") if args.units is not None else None,
+                pages=args.pages,
+            )
+        )
     elif args.operation in {"run", "resume", "status"} and not args.json:
         print(summary_text(args.operation, result, args.workspace))
     else:
