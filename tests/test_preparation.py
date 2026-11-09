@@ -621,6 +621,127 @@ def test_preparation_reuses_fixed_version_without_resending(tmp_path):
     )
 
 
+@pytest.mark.parametrize("repair", [False, True])
+def test_preparation_catalog_registers_new_records_and_revalidates_each_operation(
+    tmp_path, repair
+):
+    from test_performance_verification import operation
+
+    from doc_translate import preparation
+
+    workspace, candidates = source(tmp_path)
+    correct = {
+        "collect": {"context": "Records and naming.", "candidates": candidates},
+        "organize": {
+            "context": "変更記録を扱う人工文書です。",
+            "terms": {"transaction log": "取引ログ", "Nimbus": "Nimbus"},
+        },
+    }
+    answers = json.loads(json.dumps(correct))
+    if repair:
+        answers["collect"]["candidates"][0]["term"] = "Transaction log"
+
+    def before_send(_config, request, _preflight):
+        if "validation_feedback" in request.context:
+            (tmp_path / "answers.json").write_text(json.dumps(correct))
+
+    with operation.preparation_measurement(workspace, diagnostic=True) as fresh:
+        digest = run(
+            tmp_path,
+            workspace,
+            candidates,
+            answers_override=answers,
+            before_send=before_send,
+        )
+    # Subsequent groups must use newly saved raw records without reading them back.
+    assert fresh["attempt_read_hash_counts"] == {}
+    paths = list((workspace / "attempts/preparation").glob("*.json"))
+    assert len(paths) == (3 if repair else 2)
+    sent = (tmp_path / "requests.jsonl").read_bytes()
+    with operation.preparation_measurement(workspace, diagnostic=True) as loaded:
+        adopted = preparation.load_preparation(workspace)
+        assert adopted.glossary.terms["Nimbus"] == "Nimbus"
+    expected = {
+        f"public_load/{kind}/{run_id}": 1
+        for kind in ("read", "hash")
+        for run_id in adopted.runs
+    }
+    assert {
+        k: v
+        for k, v in loaded["attempt_read_hash_counts"].items()
+        if "/logical_bytes" not in k
+    } == expected
+    (workspace / "preparation-snapshot.json").unlink()
+    with operation.preparation_measurement(workspace, diagnostic=True) as reused:
+        assert run(tmp_path, workspace, candidates) == digest
+    counts = reused["attempt_read_hash_counts"]
+    assert reused["public_load_calls"] == 0
+    reads = {
+        k.rsplit("/", 1)[-1]: v
+        for k, v in counts.items()
+        if k.startswith("search_call/read/")
+    }
+    hashes = {
+        k.rsplit("/", 1)[-1]: v
+        for k, v in counts.items()
+        if k.startswith("search_call/hash/")
+    }
+    assert reads == hashes and set(reads.values()) == {1}
+    assert set(adopted.runs) <= set(reads) <= {path.stem for path in paths}
+    assert (tmp_path / "requests.jsonl").read_bytes() == sent
+    # Neither public load nor another prepare may inherit an earlier operation's memo.
+    damaged = workspace / "attempts/preparation" / f"{adopted.runs[0]}.json"
+    damaged.write_bytes(damaged.read_bytes() + b" ")
+    with pytest.raises(ValueError, match="SHA-256"):
+        load_preparation(workspace, digest)
+    (workspace / "preparation-snapshot.json").unlink()
+    with pytest.raises(ValueError, match="SHA-256"):
+        run(tmp_path, workspace, candidates)
+    assert (tmp_path / "requests.jsonl").read_bytes() == sent
+
+
+def test_preparation_catalog_keeps_lexical_first_match_and_lazy_damage_boundary(
+    tmp_path,
+):
+    from test_performance_verification import operation
+
+    workspace, candidates = source(tmp_path)
+    original = run(tmp_path, workspace, candidates)
+    adopted = load_preparation(workspace)
+    directory = workspace / "attempts/preparation"
+    record = json.loads((directory / f"{adopted.runs[0]}.json").read_bytes())
+    record["elapsed_seconds"] += 1
+    duplicate = rewrite_artifact(workspace, "attempts/preparation", record)
+    assert duplicate != adopted.runs[0]
+    later = directory / f"{'f' * 64}.json"
+    later.write_bytes(b"unreached damage")
+    sent = (tmp_path / "requests.jsonl").read_bytes()
+    with operation.preparation_measurement(workspace, diagnostic=True) as metrics:
+        result = run(tmp_path, workspace, candidates)
+    assert load_preparation(workspace, result).runs[0] == min(
+        duplicate, adopted.runs[0]
+    )
+    assert not any("f" * 64 in key for key in metrics["attempt_read_hash_counts"])
+    assert (tmp_path / "requests.jsonl").read_bytes() == sent
+    assert load_preparation(workspace, original) == adopted
+    pointer = (workspace / "preparation-snapshot.json").read_bytes()
+    earlier = directory / f"{'0' * 64}.json"
+    earlier.write_bytes(b"reached damage")
+    with (
+        operation.preparation_measurement(workspace, diagnostic=True) as rejected,
+        pytest.raises(ValueError, match="SHA-256"),
+    ):
+        run(tmp_path, workspace, candidates)
+    assert rejected["attempt_read_hash_counts"][f"search_call/read/{'0' * 64}"] == 1
+    assert rejected["attempt_read_hash_counts"][f"search_call/hash/{'0' * 64}"] == 1
+    assert (workspace / "preparation-snapshot.json").read_bytes() == pointer
+    assert (
+        earlier.read_bytes() == b"reached damage"
+        and later.read_bytes() == b"unreached damage"
+    )
+    assert (tmp_path / "requests.jsonl").read_bytes() == sent
+
+
 def test_method_change_does_not_change_fixed_translation_inputs(tmp_path):
     workspace, candidates = source(tmp_path)
     digest = run(tmp_path, workspace, candidates)

@@ -192,6 +192,8 @@ PDFのDocling refやbboxによる追跡は、そこから導いた原文の正�
 
 翻訳側は準備方式ではなく保存した採用版に依存させ、品質・時間・費用に問題があれば準備部分だけを差し替えられるようにする。初期実装は一方式に絞り、未使用の代替方式や汎用plugin基盤は作らない。黙って別方式へ切り替えない。方式だけが変わり採用glossary・context等の翻訳入力が同じなら、それを理由に再翻訳しない。
 
+準備のsaved attemptは、同じoperationのcollect／organize間で到達済みimmutable raw recordだけを共有する。辞書順・一致時停止を維持し、初めて到達したときにread／hashし、今回新規保存したrecordはatomic保存成功後に登録する。方式・実request／config・規定repair・raw回答と現在の根拠は各照合で再検証する。後方の未到達破損までeager loadせず、到達破損は拒否するため、候補indexや全履歴snapshotの常駐は不要である。共有範囲は一つの`prepare_document`だけで、公開loadと別prepareの破損検知・全run検証を迂回しない。
+
 ### 文体と変更
 
 本文・説明文は**ですます調**で統一する。見出し・短いlabelは自然な体言止めを認める。chunkの境界で文体を変えない。図内文字・数式の英語label・program identifier等の保護対象には、訳語の置換を適用しない。採用glossaryの`style`と文体policyは、同じ文体指定から生成して独立した二重管理を避ける。
@@ -288,7 +290,7 @@ PDF原文修正後の新補正候補が採用待ちの場合も全体は`partial
 
 コードの内容だけが変わり、本文の翻訳unit・context等の実requestが同じなら、本文を再送しない。影響するrendering・QAは更新する。旧訳・手修正訳とも実request全体の一致だけを再利用根拠とし、ID一致だけの転用はしない。glossary／文体policy変更では固定準備入力と影響する訳を更新し、PDF取得・補正を無効化しない。`resume --policy FILE`は`version/text`の検証可能なStylePolicyデータであり、自由な実行コードではない。
 
-未完了attempt、保存途中、確定済み結果を区別して再開する。同じworkspaceへ重複実行して状態を壊さない。変更後の再利用根拠が不明な結果は無条件で有効とせず、旧成果物を保持したまま再検証する。
+未完了attempt、保存途中、確定済み結果を区別して再開する。同じworkspaceへ重複実行して状態を壊さない。変更後の再利用根拠が不明な結果は無条件で有効とせず、旧成果物を保持したまま再検証する。準備の操作内raw record memo（§9）は、この再利用の受理条件やorphan成功回収・失敗時の旧採用保持を変えず、重複した元file read／hashだけを減らす。
 
 ### 基点付き修正
 
