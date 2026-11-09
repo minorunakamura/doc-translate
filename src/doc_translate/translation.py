@@ -244,14 +244,72 @@ def _matches_request(actual, request):
     )
 
 
-def _call(workspace, config, request, units, command, cancel, before_send, observer):
+class _AttemptCatalog:
+    """One operation's verified JSON; indexes only narrow fully revalidated candidates."""
+
+    def __init__(self, workspace):
+        self.workspace = workspace
+        self._lock = threading.Lock()
+        self._records = {}
+        self._requests = {}
+        self._starts = {}
+        # Translation has always rejected even unrelated hash/JSON damage up front.
+        for path in sorted((workspace / "attempts/translation").glob("*.json")):
+            self._register(
+                path.stem, _read(workspace, "attempts/translation", path.stem)
+            )
+
+    def _register(self, digest, record):
+        with self._lock:
+            if digest in self._records:
+                return
+            self._records[digest] = record
+            try:
+                if record["stage"] != "translation":
+                    return
+                text = record["request"]["text"]
+                if not isinstance(text, str):
+                    return
+                self._requests.setdefault(text, []).append(digest)
+                projection = json.loads(text)
+                if not isinstance(projection, list) or not projection:
+                    return
+                first = projection[0]["unit_id"]
+                if isinstance(first, str):
+                    self._starts.setdefault(first, []).append((digest, len(projection)))
+            except ValueError, KeyError, TypeError, IndexError:
+                return
+
+    def store(self, value):
+        digest = _store(self.workspace, "attempts/translation", value)
+        # Publish only after atomic persistence; keep the same JSON value as _read.
+        self._register(digest, json.loads(_bytes(value)))
+        return digest
+
+    def candidates(self, request):
+        with self._lock:
+            return tuple(
+                (digest, self._records[digest])
+                for digest in sorted(self._requests.get(request.text, ()))
+            )
+
+    def starting_at(self, unit_id):
+        with self._lock:
+            return tuple(
+                (digest, self._records[digest], size)
+                for digest, size in sorted(self._starts.get(unit_id, ()))
+            )
+
+
+def _call(
+    workspace, config, request, units, command, cancel, before_send, observer, catalog
+):
     ids = tuple(unit.unit_id for unit in units)
     observer = scoped_observer(observer, unit_ids=ids)
     before_send = scoped_before_send(
         before_send, phase="translation", unit_ids=list(ids)
     )
-    for path in sorted((workspace / "attempts/translation").glob("*.json")):
-        record = _read(workspace, "attempts/translation", path.stem)
+    for run, record in catalog.candidates(request):
         if record.get("stage") != "translation" or not _matches_request(
             record.get("request"), request
         ):
@@ -265,7 +323,7 @@ def _call(workspace, config, request, units, command, cancel, before_send, obser
             # Replay only the bisection; child answers still cross both validators.
             return (
                 TranslationChunk(units=units, error=record["error"]),
-                [path.stem],
+                [run],
                 set(),
             )
         try:
@@ -276,10 +334,8 @@ def _call(workspace, config, request, units, command, cancel, before_send, obser
         except ValueError, KeyError, TypeError, IndexError, InferenceError:
             continue
         return (
-            _accepted_chunk(
-                workspace, config, record["request"], units, answer, path.stem
-            ),
-            [path.stem],
+            _accepted_chunk(workspace, config, record["request"], units, answer, run),
+            [run],
             set(ids),
         )
     runs = []
@@ -321,9 +377,7 @@ def _call(workspace, config, request, units, command, cancel, before_send, obser
                 error = str(failure)
             else:
                 answer = result.answer
-        run = _store(
-            workspace,
-            "attempts/translation",
+        run = catalog.store(
             {
                 "stage": "translation",
                 "status": "rejected" if error else "validated",
@@ -395,20 +449,28 @@ def _split(units, operation):
 
 
 def _process(
-    workspace, config, preparation, units, limit, command, cancel, before_send, observer
+    workspace,
+    config,
+    preparation,
+    units,
+    limit,
+    command,
+    cancel,
+    before_send,
+    observer,
+    catalog,
 ):
     runs, splits = [], []
     reused_ids = set()
     oversized = next((u for u in units if len(u.source_text) > limit), None)
     adjustment_run = None
     if oversized is None:
-        request = _request(units, preparation).model_dump(mode="json")
-        for path in sorted((workspace / "attempts/translation").glob("*.json")):
-            record = _read(workspace, "attempts/translation", path.stem)
+        request = _request(units, preparation)
+        for run, record in catalog.candidates(request):
             if (
                 record.get("status") != "adjusted"
                 or record.get("stage") != "translation"
-                or record.get("request") != request
+                or record.get("request") != request.model_dump(mode="json")
                 or record.get("config") != config.model_dump(mode="json")
             ):
                 continue
@@ -420,18 +482,19 @@ def _process(
             # Only replay the deterministic split; every resulting answer is revalidated.
             oversized = next(u for u in units if u.unit_id == operation.unit_id)
             limit = operation.max_source_chars
-            adjustment_run = path.stem
+            adjustment_run = run
             break
     if oversized is None:
         chunk, calls, reused_ids = _call(
             workspace,
             config,
-            _request(units, preparation),
+            request,
             units,
             command,
             cancel,
             before_send,
             observer,
+            catalog,
         )
         runs.extend(calls)
         if chunk.error not in {"length", "input_limit"} or cancel.is_set():
@@ -451,9 +514,7 @@ def _process(
             parts = _split(units, operation)
         except ValueError as error:
             reason = str(error)
-            run = _store(
-                workspace,
-                "attempts/translation",
+            run = catalog.store(
                 {
                     "stage": "translation",
                     "status": "rejected",
@@ -480,9 +541,7 @@ def _process(
         splits.append(operation)
         runs.append(
             adjustment_run
-            or _store(
-                workspace,
-                "attempts/translation",
+            or catalog.store(
                 {
                     "stage": "translation",
                     "status": "adjusted",
@@ -514,6 +573,7 @@ def _process(
             cancel,
             before_send,
             observer,
+            catalog,
         )
         chunks.extend(results)
         runs.extend(calls)
@@ -607,10 +667,7 @@ def translate_document(
                     units = _split(units, operation)
                     splits.append(operation)
                 old_units = _split(old_units, operation)
-        saved_runs = [
-            (path.stem, _read(workspace, "attempts/translation", path.stem))
-            for path in sorted((workspace / "attempts/translation").glob("*.json"))
-        ]
+        catalog = _AttemptCatalog(workspace)
         chunks = []
         reused_ids = set()
         remaining = []
@@ -633,13 +690,13 @@ def translate_document(
                             reused = old.model_copy(update={"units": current})
                             break
             if reused is None:
-                for run, record in saved_runs:
+                requests = {}
+                for run, record, size in catalog.starting_at(units[index].unit_id):
                     try:
-                        projection = json.loads(record["request"]["text"])
-                        if not isinstance(projection, list) or not projection:
-                            continue
-                        current = units[index : index + len(projection)]
-                        request = _request(current, preparation)
+                        current = units[index : index + size]
+                        if size not in requests:
+                            requests[size] = _request(current, preparation)
+                        request = requests[size]
                         if (
                             record.get("stage") != "translation"
                             or not _matches_request(record["request"], request)
@@ -733,6 +790,7 @@ def translate_document(
                         cancelled,
                         before_send,
                         scoped_observer(observer, job_id=str(index)),
+                        catalog,
                     )
                     active[future] = index
                     return True
