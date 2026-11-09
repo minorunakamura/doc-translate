@@ -139,3 +139,22 @@ def test_performance_baseline_interruption_bounds_drain_and_reaps_owned_group(
         "synthetic private exception detail" not in path.read_text()
         for path in tmp_path.iterdir()
     )
+
+
+def test_performance_baseline_saves_both_documents_and_exact_local_assets(tmp_path):
+    workspace, output = tmp_path / "workspace", tmp_path / "evidence"
+    output.mkdir()
+    rendered = workspace / "renders/own"
+    (rendered / "assets").mkdir(parents=True)
+    artifacts = {}
+    for key in ("qa", "source_map", "summary", "japanese", "english"):
+        suffix = ".md" if key in ("japanese", "english") else ".json"
+        path = rendered / f"{key}{suffix}"
+        path.write_bytes(f"self-authored {key}".encode())
+        artifacts[key] = str(path.relative_to(workspace))
+    (rendered / "assets/own.png").write_bytes(b"self-authored asset")
+    baseline.save_render_artifacts(workspace, {"artifacts": artifacts}, output)
+    for key, relative in artifacts.items():
+        path = workspace / relative
+        assert (output / f"saved-{key}{path.suffix}").read_bytes() == path.read_bytes()
+    assert (output / "saved-assets/own.png").read_bytes() == b"self-authored asset"
