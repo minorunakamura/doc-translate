@@ -126,7 +126,9 @@ def test_resume_repairs_only_failed_marker_chunk_and_reuses_accepted_output(
     assert len(new_requests) == 2
     assert all(
         [u["unit_id"] for u in json.loads(r["text"])]
-        == [u.unit_id for u in failed.units]
+        == [f"request-unit-{i}" for i in range(1, len(failed.units) + 1)]
+        and [u["source_text"] for u in json.loads(r["text"])]
+        == [u.source_text for u in failed.units]
         for r in new_requests
     )
     assert "translation_feedback" in new_requests[1]["context"]

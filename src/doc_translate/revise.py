@@ -219,7 +219,7 @@ def revise_document(
                         workspace,
                         "translations/chunks",
                         {
-                            "request": _request(chunk.units, preparation),
+                            "request": _request(chunk.units, preparation, 1),
                             "config": previous.config,
                             "answer": chunk.answer,
                             "manual_revision": {

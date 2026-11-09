@@ -1,5 +1,6 @@
 import "./no-network.mjs";
 import { appendFile, readFile } from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { createModels, createProvider } from "@earendil-works/pi-ai";
 import {
@@ -9,6 +10,8 @@ import {
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import { FileCredentialStore } from "../dist/credentials.js";
 import { runHelper } from "../dist/main.js";
+
+const withoutId = ({ unit_id: _id, ...unit }) => unit;
 
 const [directory, answerPath, recordingPath] = process.argv.slice(2);
 const store = new FileCredentialStore(directory);
@@ -55,13 +58,40 @@ faux.setResponses([
       .split("\n").length;
     const retry =
       response.retry === "always" || (response.retry && calls === 1);
-    const answer = JSON.parse(await readFile(answerPath, "utf8")).answer ?? {
+    const answers = JSON.parse(await readFile(answerPath, "utf8"));
+    const answer = answers.answer ?? {
       translations: units.map((unit) => ({
         unit_id: unit.unit_id,
         text: `訳:${unit.source_text}`,
         uncertainties: [],
       })),
     };
+    if (
+      answers.answer &&
+      !answers.wire_answer &&
+      input.context.wire_version === 2
+    ) {
+      const binding = JSON.parse(
+        await readFile(
+          answerPath.replace(/\.json$/u, ".bindings.json"),
+          "utf8",
+        ),
+      );
+      const start = binding.units.findIndex((_unit, index) =>
+        isDeepStrictEqual(
+          binding.units.slice(index, index + units.length).map(withoutId),
+          units.map(withoutId),
+        ),
+      );
+      if (start >= 0 && Array.isArray(answer.translations)) {
+        for (const item of answer.translations) {
+          const index = binding.unit_ids
+            .slice(start, start + units.length)
+            .indexOf(item?.unit_id);
+          if (index >= 0) item.unit_id = `request-unit-${index + 1}`;
+        }
+      }
+    }
     const message = fauxAssistantMessage(
       JSON.stringify(answer),
       retry

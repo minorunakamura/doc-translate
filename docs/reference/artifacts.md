@@ -359,10 +359,10 @@ print([item.model_dump() for item in translated.uncertainties])
 
 見出しとEPUB resource境界を越えず、unitを読み順に約12,000原文文字で束ねます。大きすぎるunitは既存`split_translation_units`でmarkerを壊さず分割します。翻訳にはunitの`unit_id/kind/source_text/context`、固定文書context、採用glossary、文体policy、回答schemaと明示翻訳指示だけを渡します。`tokens.value`、code本体、数式、原資料／画像／XHTML全文は送りません。
 
-回答schemaは`TranslationAnswer.model_json_schema()`で取得できます。必須fieldと例は次の通りです（未知fieldは禁止）。
+回答schemaは`TranslationAnswer.model_json_schema()`で取得できます。必須fieldとv2 raw回答の例は次の通りです（未知fieldは禁止）。公開snapshotのanswerは現在の追跡IDへbindingした値です。
 
 ```json
-{"translations":[{"unit_id":"unit-1","text":"訳文です。","uncertainties":[{"reason":"原文の意味が曖昧です。","origin":"undetermined"}]}]}
+{"translations":[{"unit_id":"request-unit-1","text":"訳文です。","uncertainties":[{"reason":"原文の意味が曖昧です。","origin":"undetermined"}]}]}
 ```
 
 - `translations`の全IDが入力順に1回ずつ必要です。欠落・重複・未知・順序違い、空白だけの訳文、不正schema、marker inventory／釣合い／包含構造の変更を拒否します。完全なspanの日本語語順への並替えは既存unit validatorが許容します。
@@ -370,6 +370,16 @@ print([item.model_dump() for item in translated.uncertainties])
 - `processing.status: completed`は全unitの機械的受理であり、内容品質承認ではありません。`translations`は受理済みunitだけを入力順に返すproperty、`uncertainties`は元位置付きのproperty、`content_reviews`は常に空のpropertyです。要確認があっても機械検証を満たせば受理します。
 - marker inventory／釣合い／包含構造の違反だけは、同じchunkの全違反unitを集め、unit ID・理由・原文側のmarker列・回答側のmarker列・不足／余分なmarker（重複数を含む）・不正な訳文を`context.translation_feedback`へ入れ、初回込み最大3回答まで訂正生成します。model由来の訳文は未信頼dataとしてJSONで渡し、system指示へ埋め込みません。markerをunit間で移さず、完全なspanの同じ親内での並替えは引き続き許容します。本文投影・glossary・元のpolicy／schema・configは維持し、訂正用の固定指示だけを追加します。ID不一致・schema不正・認証・保存・timeout・取消等にはこの訂正生成を適用しません。独立推論の通信retry（初回込み3試行、3／6秒）は別に維持するため、分割しない1chunkの新規helper試行は最大9回です。`length/input_limit`だけは要約を要求せず、複数unitならchunkを分け、単一unitなら文字上限を半減して再分割します。対象は必ず小さくし、不可分inline spanや1文字まで縮めても不成立なら理由を残して失敗とします。
 - 並列処理は既定2。main-threadのSIGINT／SIGTERMを共有cancelへ伝え、新規送信を止め、実adapterのchild取消／最大30秒のgraceとcredential drainを待ってから戻ります。
+
+### 翻訳wire v1／v2と追跡binding（Issue #59）
+
+新規自動requestは`context.wire_version: 2`、保存attemptとchunk artifactは`wire_version: 2`を明示します。wireの`unit_id`はrequest内だけの`request-unit-N`（1始まり）。unit contextの`heading_path`は順序・level・保護済みtextと他fieldを保持し、`block_id/node_path`だけを送りません。list／table／caption等を含む他のcontextを再帰的に削除・正規化しません。文書context／glossary／policy／回答schema／config全体も維持します。公開unit／locations／source_hash／block・node／split追跡座標は変更しません。
+
+v2 chunk artifactは従来の`request/config/answer/run`に`wire_version/bindings`を加えます。`bindings`は現在chunkの全追跡unit IDを順序どおり列挙し、alias N→bindings[N-1]の全単射です。attemptのraw回答はaliasのまま、artifactとsnapshotのanswerは追跡IDです。loadは参照sourceから全unitとsplitを再生成してbindingsを独立照合し、raw schema・全alias順序（欠落／余分／重複／順序違反なし）・現在markerを検証してbound answerと比較します。保存mappingの自己申告だけでは受理せず、未知版／実requestとの版不一致も拒否します。
+
+splitを含むv2 requestだけは`context.split_inputs`をunit順に追加します。非split要素はnull、split要素は`parent_source_hash/source_range`です。親hashは全親本文と保護tokenから生成され、load時のsplit再生成で親全文／hash・元座標・part順を検証します。親全文やtoken.valueを追加送信しません。同じ断片本文でも親hash／元範囲が異なればmissです。adjusted recordには現在追跡IDの`bindings`も保存し、追跡対応が不明なら分割操作を転用しません。
+
+版欠落の旧v1は従来の追跡ID request・raw回答のまま厳密load／完全一致reuseします。方式追加だけの再送・旧byte変換／再hash／上書きはしません。snapshot schemaは1のままで、chunk／runごとにv1／v2を検証します。`manual_revision`は新規でも追跡IDのv1 requestを保存し、v2自動結果を基点にする履歴も原文・全実入力・基点を再検証します。manualをaliasや似た本文・位置だけで別unitへ移さず、現在採用済みmanual／acceptedは広いorphan chunkよりも優先します。
 
 ### 保存・部分失敗と再利用
 
@@ -387,9 +397,11 @@ WORKSPACE/
 
 attempt→検証済みchunk artifact→snapshot→採用参照の順でfsync／atomic replaceします。各並列jobが完了するごとに部分snapshotを採用し、別chunkの失敗で正常採用を破棄しません。`translate_document`は部分失敗でもsnapshot digestを返すので、callerは`processing.status`と各chunk.errorを確認してください。保存失敗は例外になり、直前の採用参照と保存済みattemptを保持します。参照されない保存途中artifactを自動採用するengineはありません。応答喪失・採用参照確定前のcrashによる再送／exactly-once課金は保証しません。
 
-再利用はloadで検証できた採用済みchunk（manual含む）を優先し、次に辞書順の保存attemptから正常回答を回収します。現在の連続unit・分割対応と、実request（ID／種別／marker原文／unit context・固定context／glossary／policy・schema等）およびconfig（provider/model/thinking/options）を完全一致で照合します。訂正requestは、現在の入力に処方済みの固定指示と`context.translation_feedback`だけを加えた形と完全一致する場合に限り認め、回答のID／marker・正常terminal等を再検証します。artifactとrunには同じ実requestを保存し、訂正済み結果も採用後のresumeや採用途中で中断した後に無送信で再利用できます。source snapshot hashや保護payload込みsource_hashだけでは無効化せず、codeだけの変更は現在のunit／token／位置へ結び直します。準備方式・根拠・usage metadataだけの変更でも本文入力が同じなら再送しません。本文・context・固定入力・schema・実設定が変わったchunkは旧版を残して更新します。曖昧な旧訳を分割・接合して使いません。
+再利用はloadで検証できた採用済みchunk（manual含む）を優先し、次に辞書順の保存attemptから正常回答を回収します。現在の連続unit・分割対応と、版付き実wire request（aliasまたは旧ID／種別／marker原文／unit context・固定context／glossary／policy・schema等）およびconfig（provider/model/thinking/options）を完全一致で照合します。訂正requestは、現在の入力に処方済みの固定指示と`context.translation_feedback`だけを加えた形と完全一致する場合に限り認め、回答のID／marker・正常terminal等を再検証します。artifactとrunには同じ実requestを保存し、訂正済み結果も採用後のresumeや採用途中で中断した後に無送信で再利用できます。非splitではsource snapshot hashや保護payload込みsource_hashだけでは無効化せず、codeだけの変更は現在のunit／token／位置へ結び直します。splitでは上記の親source_hash／元範囲も実入力として照合します。準備方式・根拠・usage metadataだけの変更でも本文入力が同じなら再送しません。本文・context・固定入力・schema・実設定が変わったchunkは旧版を残して更新します。曖昧な旧訳を分割・接合して使いません。
 
-翻訳attempt探索のcatalogは単一操作内だけです。開始時の全元recordのread／hash／JSON検証（無関係な破損も拒否）は維持し、候補索引はrequest text／先頭unit IDをそれぞれキーにし、取得後の全config照合を必須とします。configをJSON byte列のキーにして等値な数値（`-0.0`／`0.0`等）の再利用を狭めず、索引一致だけでは受理しません。全実request／config・規定repair・raw／schema／現在unit検証を各利用箇所で行い、adjustment／length replay・split成功回収の順序も維持します。新規の成功／失敗／repair／adjusted記録はatomic保存後だけ登録し、thread lockで登録と辞書順tuple snapshot取得を直列化します。後から登録したrecordは次の取得から見え、既取得snapshotは変えません。別操作は元fileを再検証し、公開loadの検証を共有cacheで省きません。既存の全raw記録に索引を加えるだけで、全履歴snapshot／画像の一括保持や永続状態は追加しません。
+翻訳attempt探索のcatalogは単一操作内だけです。開始時の全元recordのread／hash／JSON検証（無関係な破損も拒否）は維持し、候補索引はrequest text／先頭unit（v1追跡ID、v2 wire投影）をそれぞれキーにし、取得後の全config照合を必須とします。configをJSON byte列のキーにして等値な数値（`-0.0`／`0.0`等）の再利用を狭めず、索引一致だけでは受理しません。全実request／config・規定repair・raw／schema／現在unit検証を各利用箇所で行い、adjustment／length replay・split成功回収の順序も維持します。新規の成功／失敗／repair／adjusted記録はatomic保存後だけ登録し、thread lockで登録と辞書順tuple snapshot取得を直列化します。後から登録したrecordは次の取得から見え、既取得snapshotは変えません。別操作は元fileを再検証し、公開loadの検証を共有cacheで省きません。既存の全raw記録に索引を加えるだけで、全履歴snapshot／画像の一括保持や永続状態は追加しません。
+
+同一operationの同じv2実request＋configの同時missは、catalog内のthread-safeなFutureでraw成功／失敗を共有します。configはJSON byte keyでなく全体等値で照合し、各利用箇所は現在unitsへ独立binding／marker検証します。実attemptのrun digestをsnapshotのrunsへ重複登録しないためusageは一度だけ計上します。保存例外・取消時もFutureを完結させ、失敗で待機者を取り残しません。既存の有限repair／retry、取消drain、atomic保存・親の部分snapshot更新を維持します。
 
 `load_translation`はNode・認証なしで各byte hashとschema、保存原文／準備、分割履歴と全unit対応、受理済みartifactの実入力・raw回答・ID／marker、runの正常terminal／送信先／submitted設定／process終了を再検証します。壊れたartifactを黙って捨てて再送したり、未検証回答を受理したりしません。これは構造・入力対応の検査であり、意味の欠落や誤訳がないことの証明ではありません。
 

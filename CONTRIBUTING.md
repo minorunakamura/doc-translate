@@ -402,6 +402,15 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 - marker入力が同じcode変更・準備metadataだけの変更の無送信再利用、原文／context／glossary／policy／実設定改版、artifact破損・再hashした不正attempt、artifact先／採用参照最後のreplace故障と旧版保持、writer排他を検査します。
 - main-thread SIGINT／SIGTERMを実processへ送り、2つのchildが取消・usage保持・drain／回収を終えるまで戻らず、未開始chunkを新規送信しないことを検査します。
 
+Issue #59は新規自動翻訳のwire v2を対象にし、[Feature Mapの翻訳ID節](.pi/skills/verify-project/references/feature-map.md#翻訳request内idと追跡bindingissue-59)の公開prepare→translate→load／revise手順を新しい隔離workspaceで実行します。PDF合成sourceと実EPUB archive reader／extractorのprefix追加、raw alias→現在ID、実context／本文変更miss、manual優先／非転写、旧immutableとbyte-original v1を照合します。splitは親全文を送らず親source_hash＋元範囲をwire入力に残し、全split再生成で親・座標・part順を検証します。
+
+```sh
+PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  .venv/bin/pytest tests/test_translation.py tests/test_revise.py tests/test_resume.py tests/test_review.py tests/test_pdf_candidate_acceptance.py tests/test_performance_verification.py
+```
+
+v1 fixtureは変更前`eb2f9a9`の公開translate/load＋実Node/fauxで生成した自作原byteで、再生成・migrationしません。mixed v1/v2/manual履歴、未知版／再hash binding・raw／split改ざん、同一v2 requestの並列成功／失敗共有・usage一度・保存例外・取消drainも回帰で確認します。外部faux fixtureはtracking-ID指定の既存回答をsidecarの現在unit対応でwireへ変換するだけで、raw alias不正検査は変換なしに行います。正式core全件／PDF4／Node checksとRoot独立操作／Reviewをこのfocused実行だけで代用しません。
+
 CLI・renderer・汎用復旧管理・依存は追加しません。実credential・実provider通信・実LLM／意味品質・既存書籍は未検証です。Node fixtureも通常のBiome／type-aware oxlint／Vitest対象で、helper source変更がないためこの変更にbuildは不要です。
 
 ## Markdown／対応表／QA・render/statusの検証境界
