@@ -426,7 +426,7 @@ def test_translation_reduces_length_without_summarizing_and_reuses_split_results
 
 
 def test_translation_splits_oversized_units_before_sending_and_retains_indivisible_span(
-    tmp_path, emphasized_source
+    tmp_path, emphasized_source, catalog_publications
 ):
     workspace, unit = emphasized_source
     prepare(
@@ -446,6 +446,9 @@ def test_translation_splits_oversized_units_before_sending_and_retains_indivisib
     assert adopted.chunks[0].units[0] == unit
     assert not (tmp_path / "translation-requests.jsonl").exists()
     assert len(adopted.runs) == 1
+    assert len(catalog_publications) == 1
+    assert catalog_publications[0]["status"] == "rejected"
+    assert catalog_publications[0]["attempts"] == []
 
 
 def test_translation_maps_uncertainty_to_source_without_content_approval(
@@ -549,6 +552,40 @@ def test_translation_reuses_same_marker_input_after_code_and_preparation_metadat
     assert (
         rebound.chunks[0].units[0].source_hash != adopted.chunks[0].units[0].source_hash
     )
+
+
+@pytest.mark.parametrize("temperature", [-0.0, 0.0], ids=["negative", "positive"])
+def test_translation_recovers_orphan_with_equal_signed_zero_config(
+    tmp_path, prepared, temperature
+):
+    saved_config = CONFIG.model_copy(
+        update={"options": GenerationOptions(temperature=temperature)}
+    )
+    current_config = CONFIG.model_copy(
+        update={"options": GenerationOptions(temperature=-temperature)}
+    )
+    assert saved_config == current_config
+    first = translate(tmp_path, prepared, config=saved_config)
+    initial = load_translation(prepared, first)
+    assert initial.processing.status == "completed"
+    immutable = {
+        path: path.read_bytes()
+        for path in prepared.rglob("*")
+        if path.is_file() and path.name != "translation-snapshot.json"
+    }
+    log = tmp_path / "translation-requests.jsonl"
+    sent = log.read_bytes()
+    (prepared / "translation-snapshot.json").unlink()
+    digest = translate(tmp_path, prepared, config=current_config)
+    adopted = load_translation(prepared, digest)
+    assert adopted == load_translation(prepared)
+    assert adopted.processing.status == "completed"
+    assert adopted.config.model_dump_json() == current_config.model_dump_json()
+    assert adopted.runs == initial.runs
+    assert adopted.translations == initial.translations
+    assert log.read_bytes() == sent
+    assert all(path.read_bytes() == data for path, data in immutable.items())
+    assert load_translation(prepared, first) == initial
 
 
 @pytest.mark.parametrize(
@@ -1082,3 +1119,137 @@ def test_manual_history_load_verifies_each_snapshot_once_per_call(
     historical.write_bytes(historical.read_bytes() + b" ")
     with pytest.raises(ValueError, match="SHA-256 mismatch"):
         load_translation(workspace)
+
+
+@pytest.fixture
+def catalog_publications(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from doc_translate import translation
+    from doc_translate.inference import GenerationInput
+
+    stored = translation._AttemptCatalog.store
+    records = []
+
+    def observe(catalog, value):
+        digest = stored(catalog, value)
+        path = catalog.workspace / "attempts/translation" / f"{digest}.json"
+        record = json.loads(path.read_bytes())
+        request = GenerationInput.model_validate(record["request"])
+        # Another thread sees a persisted, complete, digest-ordered snapshot.
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            snapshot = executor.submit(catalog.candidates, request).result(timeout=5)
+        assert isinstance(snapshot, tuple)
+        assert [run for run, _ in snapshot] == sorted(run for run, _ in snapshot)
+        assert (digest, record) in snapshot
+        records.append(record)
+        return digest
+
+    monkeypatch.setattr(translation._AttemptCatalog, "store", observe)
+    return records
+
+
+@pytest.mark.parametrize("mode", ["normal", "repair", "failed", "split"])
+def test_translation_catalog_publishes_every_saved_attempt(
+    tmp_path, catalog_publications, mode
+):
+    workspace = prepare_blocks(
+        tmp_path,
+        [("heading", "Section"), ("body", "word " * (40 if mode == "split" else 2))],
+    )
+    response = {}
+    if mode in {"repair", "failed"}:
+        units = generate_translation_units(load_source_snapshot(workspace))
+        response = {
+            "answer": {
+                "translations": [
+                    {"unit_id": u.unit_id, "text": "bad ⟦=99⟧", "uncertainties": []}
+                    for u in units
+                ]
+            }
+        }
+    elif mode == "split":
+        response = {"length_above": 80}
+
+    def before_send(_config, request, _preflight):
+        if mode == "repair" and "translation_feedback" in request.context:
+            (tmp_path / "translation-answers.json").write_text("{}")
+
+    digest = translate(tmp_path, workspace, response, before_send=before_send)
+    adopted = load_translation(workspace, digest)
+    records = catalog_publications
+    assert len(records) == len(adopted.runs)
+    assert {r["status"] for r in records} == {
+        "normal": {"validated"},
+        "repair": {"rejected", "validated"},
+        "failed": {"rejected"},
+        "split": {"rejected", "adjusted", "validated"},
+    }[mode]
+    if mode == "repair":
+        assert len(records) == 2
+    if mode == "failed":
+        assert len(records) == 3
+
+
+def test_translation_catalog_indexes_orphans_in_digest_order_once_per_operation(
+    tmp_path, monkeypatch
+):
+    from collections import Counter
+
+    from doc_translate import translation
+
+    workspace = prepare_blocks(
+        tmp_path,
+        [
+            (kind, text)
+            for i in range(4)
+            for kind, text in [("heading", f"Section {i}"), ("body", f"Record {i}.")]
+        ],
+    )
+    translate(tmp_path, workspace)
+    initial = load_translation(workspace)
+    # Two genuine successes for the same input: digest order, not insertion order.
+    for run in initial.runs:
+        record = json.loads(
+            (workspace / "attempts/translation" / f"{run}.json").read_bytes()
+        )
+        record["elapsed_seconds"] += 1
+        rewrite_artifact(workspace, "attempts/translation", record)
+    paths = sorted((workspace / "attempts/translation").glob("*.json"))
+    expected = {}
+    for path in paths:
+        record = json.loads(path.read_bytes())
+        expected.setdefault(record["request"]["text"], path.stem)
+    (workspace / "translation-snapshot.json").unlink()
+    reads = Counter()
+    request_count = 0
+    read, request = translation._read, translation._request
+
+    def observe_read(workspace, directory, digest):
+        if directory == "attempts/translation":
+            reads[digest] += 1
+        return read(workspace, directory, digest)
+
+    def observe_request(*args):
+        nonlocal request_count
+        request_count += 1
+        return request(*args)
+
+    sent = requests(tmp_path)
+    with monkeypatch.context() as patch:
+        patch.setattr(translation, "_read", observe_read)
+        patch.setattr(translation, "_request", observe_request)
+        digest = translate(tmp_path, workspace)
+    assert reads == Counter({p.stem: 1 for p in paths})
+    assert request_count == 4
+    adopted = load_translation(workspace, digest)
+    for chunk in adopted.chunks:
+        artifact = read(workspace, "translations/chunks", chunk.artifact_sha256)
+        assert artifact["run"] == expected[artifact["request"]["text"]]
+    assert requests(tmp_path) == sent
+    # An unrelated corrupt record must still fail before even adopted reuse.
+    corrupt = workspace / "attempts/translation" / f"{'0' * 64}.json"
+    corrupt.write_text("{}")
+    with pytest.raises(ValueError, match="SHA-256"):
+        translate(tmp_path, workspace)
+    assert requests(tmp_path) == sent

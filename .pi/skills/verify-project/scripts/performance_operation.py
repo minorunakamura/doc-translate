@@ -293,7 +293,15 @@ def main():
     parser.add_argument("--size", type=int, required=True)
     parser.add_argument(
         "--operation",
-        choices=("run", "resume", "render", "prepare", "load-preparation"),
+        choices=(
+            "run",
+            "resume",
+            "render",
+            "prepare",
+            "load-preparation",
+            "translate",
+            "load-translation",
+        ),
         required=True,
     )
     parser.add_argument("--workspace", type=Path, required=True)
@@ -303,7 +311,12 @@ def main():
     parser.add_argument("--metrics", type=Path, required=True)
     parser.add_argument("--observe", type=Path)
     args = parser.parse_args()
-    if args.operation in ("prepare", "load-preparation"):
+    if args.operation in (
+        "prepare",
+        "load-preparation",
+        "translate",
+        "load-translation",
+    ):
         assert args.size in (2, 100)
     elif args.operation == "render":
         assert args.size in (50, 200, 500)
@@ -320,7 +333,13 @@ def main():
         from doc_translate.render import render_document
         from doc_translate.snapshot import save_source_snapshot
 
-        if args.operation in ("prepare", "load-preparation"):
+        if args.operation in ("translate", "load-translation"):
+            fixture = import_module("test_translation")
+            translation_recipe = import_module("translation_baseline")
+            from doc_translate import translation
+
+            arguments = []
+        elif args.operation in ("prepare", "load-preparation"):
             fixture = import_module("test_preparation")
             import_module("unittest.mock")
             arguments = []
@@ -359,12 +378,43 @@ def main():
 
         exit_code = 0
         preparation_metrics = {}
+        translation_metrics = {}
         wall, cpu = time.perf_counter(), time.process_time()
         try:
             with (
-                observe(args.workspace, args.observe) if args.observe else nullcontext()
+                observe(args.workspace, args.observe)
+                if args.observe
+                and args.operation not in ("translate", "load-translation")
+                else nullcontext()
             ):
-                if args.operation in ("prepare", "load-preparation"):
+                if args.operation in ("translate", "load-translation"):
+                    with translation_recipe.translation_measurement(
+                        args.workspace, bool(args.observe)
+                    ) as translation_metrics:
+                        if args.operation == "translate":
+                            events = []
+                            digest = translation.translate_document(
+                                workspace=args.workspace,
+                                config=fixture.CONFIG,
+                                process_command=json.loads(args.helper),
+                                observer=events.append,
+                            )
+                            completed = any(e.kind == "done" for e in events)
+                            assert completed
+                            print(
+                                json.dumps({"sha256": digest, "completed": completed})
+                            )
+                        else:
+                            print(
+                                translation.load_translation(
+                                    args.workspace
+                                ).model_dump_json()
+                            )
+                    if args.observe:
+                        args.observe.write_text(
+                            json.dumps(translation_metrics, indent=2)
+                        )
+                elif args.operation in ("prepare", "load-preparation"):
                     from doc_translate import preparation
 
                     with preparation_measurement(
@@ -403,6 +453,7 @@ def main():
                     {
                         "exit": exit_code,
                         **preparation_metrics,
+                        **translation_metrics,
                         "setup_import_fixture_save_wall_seconds": setup_wall,
                         "operation_wall_seconds": time.perf_counter() - wall,
                         "operation_python_cpu_seconds": time.process_time() - cpu,

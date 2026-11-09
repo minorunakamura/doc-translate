@@ -223,3 +223,63 @@ def test_performance_baseline_saves_both_documents_and_exact_local_assets(tmp_pa
         path = workspace / relative
         assert (output / f"saved-{key}{path.suffix}").read_bytes() == path.read_bytes()
     assert (output / "saved-assets/own.png").read_bytes() == b"self-authored asset"
+
+
+@pytest.mark.parametrize("adopted", [False, True])
+def test_translation_baseline_pre_job_boundary_and_public_load_are_separate(
+    tmp_path, monkeypatch, adopted
+):
+    from doc_translate import translation
+
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    recipe = load("translation_baseline")
+    owned, seed = tmp_path / "owned", tmp_path / "seed"
+    owned.mkdir()
+    recipe.create_seed(owned, seed, 2)
+    previous = recipe.immutable(seed)
+    sent = (owned / "translation-requests.jsonl").read_bytes()
+    assert len(sent.splitlines()) == 2
+    fixture = recipe.import_module("test_translation")
+    if not adopted:
+        (seed / "translation-snapshot.json").unlink()
+    with recipe.translation_measurement(seed, diagnostic=True) as metrics:
+        translation.translate_document(
+            workspace=seed,
+            config=fixture.CONFIG,
+            process_command=["must-not-launch-on-reuse"],
+        )
+    assert all(recipe.digest(seed / p) == h for p, h in previous.items())
+    assert (owned / "translation-requests.jsonl").read_bytes() == sent
+    assert metrics["search_intervals"] == 1
+    assert metrics["worker_submissions"] == 0
+    assert metrics["public_load_calls"] == int(adopted)
+    counts = metrics["attempt_diagnostic_counts"]
+    for scope, expected in (
+        ("operation_search", 2),
+        ("public_load", 4 if adopted else 0),
+    ):
+        actual = {
+            kind: {
+                k.rsplit("/", 1)[-1]: v
+                for k, v in counts.items()
+                if k.startswith(f"{scope}/{kind}/")
+            }
+            for kind in ("read", "hash", "parse")
+        }
+        assert actual["read"] == actual["hash"] == actual["parse"]
+        assert sum(actual["read"].values()) == expected
+    assert counts["operation_search/request"] >= 2
+    assert counts["operation_search/matches_request"] >= 2
+    assert not any(k.startswith("store/read/") for k in counts)
+    with recipe.translation_measurement(seed, diagnostic=True) as loaded:
+        recipe.check_translation(translation.load_translation(seed), 2)
+    assert loaded["search_intervals"] == loaded["worker_submissions"] == 0
+    assert loaded["public_load_calls"] == 1
+    assert (
+        sum(
+            v
+            for k, v in loaded["attempt_diagnostic_counts"].items()
+            if k.startswith("public_load/read/")
+        )
+        == 4
+    )

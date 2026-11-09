@@ -292,6 +292,10 @@ PDF原文修正後の新補正候補が採用待ちの場合も全体は`partial
 
 未完了attempt、保存途中、確定済み結果を区別して再開する。同じworkspaceへ重複実行して状態を壊さない。変更後の再利用根拠が不明な結果は無条件で有効とせず、旧成果物を保持したまま再検証する。準備の操作内raw record memo（§9）は、この再利用の受理条件やorphan成功回収・失敗時の旧採用保持を変えず、重複した元file read／hashだけを減らす。
 
+翻訳は単一`translate_document`内だけのattempt catalogで、開始時に全元recordをread／hash／JSON検証し、無関係recordの破損も従来どおり事前拒否する。実request textと先頭unit IDをそれぞれキーにした索引は候補を絞るだけで、configは取得後に全体を照合する。JSON byte列では等値な数値（`-0.0`／`0.0`等）を別候補に分けない。採用済みchunk（manual含む）優先→辞書順orphan成功→worker処理の順を維持する。同じ長さの現在入力requestは候補間で再構築せず、実request全体・規定repair差分・config・raw回答／schema／現在unitのdomain検証は省かない。adjustment／length replayも従来の順序と再検証で扱う。理由は、多数のattemptで元read以上に反復request構築・候補照合が支配したためであり、受理判定をcacheするためではない。
+
+catalogはhash／JSON検証済み値だけを保持し、新規の通常／repair／失敗／分割記録はatomic保存成功後に登録する。登録とdigest辞書順tuple snapshot取得を同じthread lockで保護し、取得済みsnapshotは後続登録で変わらず、次の取得には完了した登録が見える。recordは登録後変更しない。親だけがsnapshot／pointerを更新し、workerは担当jobのimmutable attempt／chunk保存に限るworkspace writer責務は不変。v1のjobは互いに異なるunit IDをrequestへ含み、分割子も担当範囲が交差しないため同一requestの競合missは作らない。v2の同一wire request in-flight共有基盤はこの変更に先取りしない。別操作は再読し、公開`load_translation`の独立した全検証・manual履歴検証はcatalogで迂回しない。全履歴snapshot／PNGの常駐や永続indexは追加しない。
+
 ### 基点付き修正
 
 `revise DIR --source FILE --reason TEXT`は全SourceSnapshot置換、`--translations FILE`は指定unitの訳文patchで、いずれも現在のsource／translation hashを基点とするCASである。古い基点・未知ID・不正schema／構造・根拠・assets・参照を採用前に拒否し、理由・旧版・元回答を保持する。操作自体はオフラインで、Node・認証・PDF model・推論を要求せず、訳文を自動更新しない。後のresumeで準備・unit・翻訳・QA／出力を更新する。訳文patchは現在の原文・準備・設定に対応する訳文に限る。具体的なfieldと保存pathは[artifact契約](../reference/artifacts.md#基点付き修正pdf補正候補採用issue-16)を正本とする。
