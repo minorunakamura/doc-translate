@@ -86,6 +86,41 @@ def test_preparation_baseline_public_reuse_separates_search_from_load(
     )
 
 
+def test_preparation_baseline_seed_keeps_three_independent_collect_requests(
+    tmp_path, monkeypatch
+):
+    from doc_translate.preparation import load_preparation
+    from doc_translate.snapshot import load_source_snapshot
+    from doc_translate.units import generate_translation_units
+
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    recipe = load("preparation_baseline")
+    owned, seed = tmp_path / "owned", tmp_path / "seed"
+    owned.mkdir()
+    _, log = recipe.create_seed(owned, seed, 3)
+    adopted = load_preparation(seed)
+    units = generate_translation_units(load_source_snapshot(seed))
+    headings = [unit.source_text for unit in units if unit.kind == "heading"]
+    assert headings == [f"Section group{index}" for index in range(3)]
+    requests = [
+        json.loads(json.loads(line)["messages"][1]["content"][0]["text"])
+        for line in log.read_text().splitlines()
+    ]
+    assert [request["context"]["phase"] for request in requests] == [
+        "collect",
+        "collect",
+        "collect",
+        "organize",
+    ]
+    assert [
+        json.loads(request["text"])[0]["source_text"] for request in requests[:3]
+    ] == headings
+    assert len({request["text"] for request in requests[:3]}) == 3
+    records = {path.stem for path in (seed / "attempts/preparation").glob("*.json")}
+    assert len(records) == len(adopted.runs) == len(set(adopted.runs)) == 4
+    assert records == set(adopted.runs)
+
+
 def test_performance_baseline_distribution_keeps_raw_order():
     assert baseline.distribution([3, 1, 2]) == {
         "raw": [3, 1, 2],

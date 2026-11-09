@@ -34,8 +34,11 @@ def seed_source(size):
     data["uncertainties"] = []
     for index, block in enumerate(data["blocks"]):
         if index % 2 == 0:
+            # Keep headings distinct after marker protection and request-local aliasing.
             block.update(
-                kind="heading", text=f"Section {index // 2}", structure={"level": 1}
+                kind="heading",
+                text=f"Section group{index // 2}",
+                structure={"level": 1},
             )
     return SourceSnapshot.model_validate(data)
 

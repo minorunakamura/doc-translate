@@ -168,6 +168,8 @@ PDF内の1始まりのページ番号を追跡の基準とする。印刷され�
 
 unit IDは入力形式固有の位置情報と別のidentityとする。Docling refやEPUB内の要素IDだけを翻訳対応表の一意keyにしない。1つの原文blockから複数cellのunitが生まれても追跡できるようにする。EPUBにPDFのページ番号・bbox・Docling refを必須化しない。
 
+準備collectのwire v2だけは、request内の読み順alias（`request-unit-N`）と公開unit IDを分離する。原文snapshotから再生成したgroupの全unitとaliasを順序付き全単射で対応させ、headingの追跡位置（`block_id`／`node_path`）と全体section番号は送らない。level・保護済みtext・heading順は保ち、公開unit／locations／hash生成は変更しない。準備が従来送っていないlist／table等のcontextも増減しない。翻訳requestへの適用は別Issueであり、ここでは変更しない。
+
 翻訳開始後、翻訳LLMにunitの分割・統合・ID変更をさせない。大きすぎるunitを分割する場合も、workflow側で元unitとの対応と範囲を保持する。
 
 PDFのDocling refやbboxによる追跡は、そこから導いた原文の正確さの証明ではない。広いitemを分割した場合に、文字単位の位置精度があると偽らない。EPUBのnode位置も参照元snapshotに結び付け、異なる構造へ再解析した位置と混同しない。
@@ -193,6 +195,10 @@ PDFのDocling refやbboxによる追跡は、そこから導いた原文の正�
 翻訳側は準備方式ではなく保存した採用版に依存させ、品質・時間・費用に問題があれば準備部分だけを差し替えられるようにする。初期実装は一方式に絞り、未使用の代替方式や汎用plugin基盤は作らない。黙って別方式へ切り替えない。方式だけが変わり採用glossary・context等の翻訳入力が同じなら、それを理由に再翻訳しない。
 
 準備のsaved attemptは、同じoperationのcollect／organize間で到達済みimmutable raw recordだけを共有する。辞書順・一致時停止を維持し、初めて到達したときにread／hashし、今回新規保存したrecordはatomic保存成功後に登録する。方式・実request／config・規定repair・raw回答と現在の根拠は各照合で再検証する。後方の未到達破損までeager loadせず、到達破損は拒否するため、候補indexや全履歴snapshotの常駐は不要である。共有範囲は一つの`prepare_document`だけで、公開loadと別prepareの破損検知・全run検証を迂回しない。
+
+準備の新規collect／organizeはwire v2を実requestと保存artifactに明示する。保存attemptはv1／v2各方式で厳密照合し、同じtier内では従来の辞書順で最初の成功を使い、不足だけv2で生成する。v1のIDを無視した転用・旧byte書換え・migrationはしない。理由は、単なる前方追加による番号ずれを本文／実heading context変更から区別しつつ、引用・根拠の検査を維持するためである。
+
+v2 raw収集回答のaliasは現在groupへ結び直して引用／用語根拠を再検証し、根拠artifactは現在の追跡IDと位置を持つ。候補のevidenceは全unitの列挙ではなく、同unitの複数引用・疎な根拠・空根拠を許す。整理入力はgroup順の実raw収集回答で、binding後のglobal ID差を再混入させない。公開loadも各runからwire collectionsを再構成し、原文から得たbinding・整理入力・採用結果を独立照合する。利用者terms優先と固定入力hashは不変で、準備wire差だけでは翻訳を無効化しない。
 
 ### 文体と変更
 
@@ -283,6 +289,7 @@ PDF原文修正後の新補正候補が採用待ちの場合も全体は`partial
 | --- | --- |
 | 原文取得 | 原本文書のhash・入力形式・対象範囲、形式別の抽出処理version・設定。PDFではDocling／OCR、EPUBではparser・構造抽出規則等 |
 | PDF補正 | 渡した抽出下書き、所有／参照範囲、画像hashと描画条件、context、補正policy、schema、provider／model／thinking |
+| 準備 | 版付きcollect／organize実request全体・config・方式・raw回答、原文から再構築した現在groupとのbindingと引用／用語根拠（§9）。v1も完全一致なら新規送信より先に再利用 |
 | 翻訳 | unitの原文・ID・context、言語、glossary・文体／翻訳policy、schema、provider／model／thinking |
 | rendering | 採用する翻訳前原文・翻訳snapshot、構造情報、図assets、出力形式と生成処理のversion・設定 |
 

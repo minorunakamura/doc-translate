@@ -1,5 +1,6 @@
 import "./no-network.mjs";
 import { appendFile, readFile } from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
 import { createModels } from "@earendil-works/pi-ai";
 import {
   fauxAssistantMessage,
@@ -21,9 +22,34 @@ faux.setResponses([
     const input = JSON.parse(context.messages[1].content[0].text);
     const answers = JSON.parse(await readFile(answerPath, "utf8"));
     const response = answers[input.context.phase];
-    const answer = Array.isArray(response)
-      ? response[input.context.section]
-      : response;
+    let section = input.context.section;
+    let binding;
+    if (input.context.phase === "collect" && input.context.wire_version === 2) {
+      const groups = JSON.parse(
+        await readFile(
+          answerPath.replace(/\.json$/u, ".bindings.json"),
+          "utf8",
+        ),
+      );
+      section = groups.findIndex((group) =>
+        isDeepStrictEqual(group.wire, JSON.parse(input.text)),
+      );
+      if (section < 0) throw new Error("Missing fixture group binding");
+      binding = groups[section];
+    }
+    const answer = structuredClone(
+      Array.isArray(response) ? response[section] : response,
+    );
+    if (binding && Array.isArray(answer?.candidates)) {
+      for (const candidate of answer.candidates) {
+        if (!Array.isArray(candidate?.evidence)) continue;
+        for (const evidence of candidate.evidence) {
+          const index = binding.unit_ids.indexOf(evidence?.unit_id);
+          // Invalid/global IDs outside this group must remain invalid.
+          if (index >= 0) evidence.unit_id = `request-unit-${index + 1}`;
+        }
+      }
+    }
     const calls = (await readFile(recordingPath, "utf8"))
       .trim()
       .split("\n").length;

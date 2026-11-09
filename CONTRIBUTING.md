@@ -373,6 +373,10 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 .venv/bin/pytest tests/test_preparation.py tests/test_units.py tests/test_inference.py tests/test_source_snapshot.py
 ```
 
+Issue #58は非TDDで、準備だけにwire v2を追加します。公開unit／hash・group方式・固定入力hash・翻訳request・並列数は変更しません。`test_preparation.py`のv2回帰は合成PDF／実EPUB reader・extractor、前方追加・重複本文／疎・複数引用・実heading／本文変更、原文からのbinding再構築、raw alias→現在位置、整理実wire、未知version／再hash改ざん、v1完全一致の無送信reuseと混在を検査します。`tests/fixtures/preparation-v1.json`は変更前`ec49420`で生成した小さい自作PDF準備の**原byte**をpath→UTF-8文字列で保持するfixtureで、v2の降格変換ではありません。旧artifactを上書きせず、現在一致する保存成功を辞書順で先に使い、不足だけv2を生成します。
+
+再実行できる公開prepare→loadの直接手順・証拠・cleanupは[既存Skill](.pi/skills/verify-project/SKILL.md#準備request内idと追跡bindingissue-58)／[Map](.pi/skills/verify-project/references/feature-map.md#準備request内idと追跡bindingissue-58)へ集約します。例えば`pytest tests/test_preparation.py tests/test_translation.py tests/test_render.py tests/test_performance_verification.py`で共有fixtureの必要consumerも確認し、代表fixture単独は`pytest tests/test_preparation.py::test_preparation_v2_rebinds_shifted_groups_and_keeps_real_context_misses tests/test_preparation.py::test_preparation_loads_byte_original_v1_and_only_generates_missing_v2`をfresh processで実行します。既存performance helperの接続selfcheckは最後のmoduleに含まれます。Node fixture変更の正式全Node／core／PDF phaseは上の選定規約に従いRootが実行し、Workerのfocused成功で代替しません。
+
 本節と次節のfocused pytestは境界の再現入口です。Workerの回帰とRoot自身の正式／直接確認を区別し、Rootの範囲は上の変更影響の選定手順で決めます。固定準備のコピーは前提作成だけに使い、実準備→実翻訳→公開load／無送信再利用の対照を維持します。
 
 `tests/test_preparation.py`の自作PDF原文snapshotと実EPUB readerからの人工原文、`ai/tests/preparation-process.mjs`のnetwork拒否下の公開`fauxProvider`＋実`runHelper`を使います。内部`generate`／validator／保存helperをmockしません。保存故障注入はOSの`replace`境界だけです。faux processも通常のBiome／oxlint検査対象です。
