@@ -548,3 +548,11 @@ PY
 証拠：新規ignore済みwork直下のmanifest／dirty／diff、operationごとのcommand／exit、内外wall／CPU、保存QA／map／summary・日英Markdown・生成assetsの全byte、synthetic requests／attempts、別diagnosticの論理read／成功atomic replace数・bytes／実candidate比較とinclusive profile、親とreaped child peakの範囲、statistics／observations／cleanup。物理I/O・詳細miss理由・provider内部／active timeline・aggregate RSS等はunknown。source／fixture／helper hashとoffline／worker／cache条件を必ず残す。現実のsave／generate／validatorへ委譲し内部setterで代替しない。
 
 cleanup：所有child group／handleだけをinterrupt・drain・waitし、所有TemporaryDirectory（入力・人工model／認証・workspace）だけfinally削除。証拠は外側へ保持しcleanup後全fileを再読する。失敗は成功値へ混ぜず、予算到達なら停止して報告。実provider／OCR／layout／意味品質／他OSや将来最適化の保証にはしない。正式testとRootの独立再実行・Reviewer受入れは別に行う。
+
+## preparation保存attempt探索（Issue #56）
+
+入口は保存済み自作sourceからの公開`prepare_document`と独立`load_preparation`。翻訳／renderの前提は不要。起動はrepository rootの既存PDF extra付きPython、Node／compiled resource hash一致を確認し、`../scripts/preparation_baseline.py --evidence work/issue56-worker-<unique>`を既存Pythonで実行する。詳細command／固定区間／停止条件は[性能referenceの#56節](../../../../docs/reference/performance.md#preparation保存attempt探索の比較issue-56)。追加install／build・実provider／実workspaceは禁止。
+
+前提は100 heading＋body（200 units）、本文`queue`の引用根拠を持つ実collect100＋organize1の保存成功seed。実`test_preparation.run`→compiled Node／faux／no-network→公開save/loadで生成し、全fileを独立コピーする。adopted／pointerのみ除去したunadoptedの公開prepareと独立loadを各fresh process3回＋別diagnostic1回。期待はdigest・run数・根拠語一致、実追加requestゼロ、旧immutable／seed全byte不変。primaryは**unadoptedのinclusive `_call`合計秒**、公開loadの再検証は別計数、通常全体wall／CPU／RSS寄与も別記する。afterは`--seed BEFORE/seed`で同じ全byte seedを使う。小さい`--size 2`は接続確認だけ。最適化後の期待は操作内探索の到達record各read/hash1回（公開load分は別）、新規保存recordの後続探索再readなし、別operationでは再検証。`tests/test_preparation.py`のcatalog回帰でrepair／辞書順の先勝ち・到達破損拒否／後方未到達非read・旧採用保持も照合し、raw memoが回答の受理条件を省略しないことを確認する。
+
+証拠はmanifest／dirty／diff／verification-sources、seed全byte・hash、command／exit／metrics／別profileとdigest別read/hash、raw／median／min/max、期待／観測／unknown／cleanup。所有childをwaitし、所有一時workspace／人工credentialだけfinally削除、保持したseedと証拠を全readbackする。物理I/O／同時aggregate RSS／provider性能はunknown。production最適化・70%目標達成・代表run／resume悪化なし・Root／Reviewer受入れを手順生成やbefore取得だけで成功扱いしない。既存status／進捗／review／render手順は不変。

@@ -313,6 +313,8 @@ WORKSPACE/
 
 固定入力hashはsort済みUTF-8 JSONの`{glossary, context, policy}`だけから生成し、準備方式・config／model・usage・根拠artifact hash・参照元snapshot hashを含めません。翻訳callerはunitの実入力hashに加え、この固定入力hashを参照できます。方式だけが変わって採用内容が同じなら翻訳入力を無効化しません。原文とpolicy／book／version／利用者terms、全呼出しの準備方式・configが現採用版と一致するとき、`prepare_document`はloadで再検証してdigestを返し、再送しません。内容変更後の新版も旧artifactを削除しません。`version`はcaller指定の非空文字列であり、時刻や試行数による自動改版を行いません。
 
+準備attemptの探索はfile名の辞書順で、受理可能な一致に達した時点で止まります。一つの`prepare_document`内では、到達してbyte hashを検証したimmutable raw recordだけをmemo化し、後続collect／organizeで同じ元fileを再read／hashしません。今回新規保存したrecordもatomic保存成功後に同じ正規JSON値を登録します。memo化するのは回答の受理結果ではなくraw recordであり、各候補の方式・実request・規定repair・config・raw回答schema／正常terminal／helper終了と現在の根拠の照合は省きません。到達した破損は従来どおり拒否し、一致より後方の未到達recordを先読みして拒否しません。公開`load_preparation`はこのmemoを共有せず、全runを独立検証します。別のprepareも読み直し、永続index・全履歴snapshot常駐・旧artifact書換えは行いません。
+
 保存は同filesystemのfsync／atomic replace、参照切替は全artifact確定後です。schema・根拠拒否でも得られた全attemptを記録してから例外を返し、旧採用参照を維持します。採用参照更新失敗でも実行記録と旧版を保持します。未確定artifactを自動採用する復旧engineは追加しません。
 
 `load_preparation`はNode・認証・通信を使わず、指定digest（省略時は採用参照）のbyte hash／schema、原文snapshot・根拠・全runのhash、元unit／位置・引用の対応、収集範囲と整理語、raw回答・実requestとの対応、採用glossary／style／context／固定入力hashを再検証します。hashだけ正しい捏造根拠や採用内容の差替えを無条件に受理しません。機械的な整合検査であり、実LLMの候補網羅性や文脈・訳語の品質を保証するものではありません。

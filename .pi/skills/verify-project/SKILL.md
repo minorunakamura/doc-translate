@@ -31,3 +31,7 @@ renderer索引の変更前後は別invocationの最初のbeforeラベル3回をp
 ## 再利用
 
 このrepositoryでPiを起動してproject trustを確認する。標準の`.pi/skills/`探索を使い、追加／更新後は新セッションか`/reload`を行う。`/skill:verify-project performance`／`/skill:verify-project PDF progress`／`/skill:verify-project EPUB progress`／`/skill:verify-project review`または`/skill:verify-project status`で明示呼び出しするか、このSKILL.mdを明示readする。自動選択自体は保証しない。通常の関連変更では関係する手順／Mapだけを更新して再実行し、無関係な全Map点検を要求しない。共通Maintainはユーザー明示実行時の別用途で、今回の再実行には不要。
+
+## preparation保存attempt探索（Issue #56）
+
+preparationのbefore／after比較だけを依頼された場合はMapの「preparation保存attempt探索」を選ぶ。[性能referenceの#56節](../../../docs/reference/performance.md#preparation保存attempt探索の比較issue-56)の小さい専用helperを既存Pythonで実行する。公開save→実Node／faux→prepare/loadで100 groupの整合seedを生成し、adopted／unadopted／独立loadをfresh processで測る。primaryはunadoptedのinclusive `_call`合計に固定し、公開load・全体wall／CPU／RSS・別diagnosticを分ける。afterは保持した`seed/`の全byteを再利用し、実追加requestゼロ・旧immutable不変を照合する。before段階の依頼はRootの直接確認で停止し、承認後の最適化段階では同seedでafterを取得する。`tests/test_preparation.py`のcatalog回帰とselfcheckで到達record各read/hash1回、新規保存登録、別operation再検証、辞書順・lazy破損境界を照合する。raw memoは受理結果を共有せず、実request/config/repair/raw回答/根拠検証を残す。手順成立・before取得だけを最適化合格にしない。前提hash不一致では停止し、追加install／build・翻訳pipeline生成・汎用runner追加はしない。所有一時物だけcleanupし、保持した人工seed／証拠全fileをreadbackする。再利用はproject trust確認後、新セッションまたは`/reload`、`/skill:verify-project preparation performance`か実ファイルread。

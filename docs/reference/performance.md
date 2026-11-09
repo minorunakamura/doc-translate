@@ -1,6 +1,6 @@
-# PDF／EPUBのoffline性能baselineとrenderer索引（Issue #54／#55）
+# PDF／EPUBのoffline性能baselineとローカル探索（Issue #54／#55／#56）
 
-[Approved Plan](../plans/pdf-epub-performance.md)のA／B／B2・第1段階のbaselineと、第2段階の優先1（renderer関連付け索引）だけを扱います。Issue #55は現在入力のblock／unit／cell／node／target索引で探索を置き換え、schema・request方式・並列数・statusの共有検証経路は変更しません。同revisionのbefore／afterラベルは**再現性のcontrol比較**であり、高速化の証明ではありません。変更前後は別invocationの最初のbeforeラベル3回をprimaryとして固定します。Planにある旧revisionの秒数（特にB2のwarm Python process）は現在の測定に流用しません。attempt索引・ID分離・新並列、実provider／OCR／layout／model取得・意味品質・料金・任意規模の保証は対象外です。
+[Approved Plan](../plans/pdf-epub-performance.md)のA／B／B2・第1段階のbaseline、第2段階の優先1（renderer関連付け索引）と優先2のpreparation操作内raw record memoを扱います。Issue #55は現在入力のblock／unit／cell／node／target索引で探索を置き換え、schema・request方式・並列数・statusの共有検証経路は変更しません。同revisionのbefore／afterラベルは**再現性のcontrol比較**であり、高速化の証明ではありません。変更前後は別invocationの最初のbeforeラベル3回をprimaryとして固定します。Planにある旧revisionの秒数（特にB2のwarm Python process）は現在の測定に流用しません。preparation attempt探索の変更前後計測は末尾のIssue #56節で扱います。translation索引・ID分離・新並列、実provider／OCR／layout／model取得・意味品質・料金・任意規模の保証は本段階の対象外です。
 
 ## 新しい隔離状態からの再実行
 
@@ -207,3 +207,95 @@ N500のafter／beforeはPDF **0.825%**、EPUB **0.813%**で、両型とも50%以
 最終renderの通常36操作＋別diagnostic2操作、allの通常92操作＋別diagnostic6操作、追加PDF6の12操作はいずれもexit0・期待照合・所有child wait／一時物cleanup・全証拠readback済み。allの成長EPUB200と最小複数resourceも既存recipeのまま成功しましたが、新しい性能目標にはしません。恒久回帰は探索回数（uncertainty数増加で全block／unit再走査なし）、混合block／cell／unit targetの順序・重複除去、page review順、Markdown/assets保存を追加し、秒数依存assertは入れません。既存render全体とreview／run／resume／revise／statusのfocused consumerも成功。初期characterizationのdirectory作成漏れ2失敗と初期format差分は測定から分離して解消し、`work/issue55-worker-validation/`に記録しています。
 
 Rootの最終正式チェック・別invocationでの直接確認とReviewer受入れは別途必要です。Issue #55の採用対象はrenderer索引だけで、attempt索引・ID分離・新並列・status軽量化／UIは追加していません。実provider・OCR／layout・意味品質・任意書籍・他OS／remote CIの性能は未確認、offline合格をそれらの採用推薦にしません。
+
+## preparation保存attempt探索の比較（Issue #56）
+
+本節の入口は公開`save_source_snapshot → prepare_document → load_preparation`だけです。翻訳・render・full pipelineを前提生成しません。production変更前のbeforeをRootが直接確認してから操作内raw record memoを実装し、同seed・同区間でafterを比較します。既存の形式別run／resume・render recipeは上のままです。
+
+### 操作・期待値・固定区間
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/pytest -q tests/test_performance_verification.py
+BEFORE="work/issue56-worker-before-$(date +%Y%m%dT%H%M%S)"
+.venv/bin/python .pi/skills/verify-project/scripts/preparation_baseline.py --evidence "$BEFORE"
+# afterはproduction変更を別途承認・実装した段階だけ実行。同じ生成seedで比較する。
+.venv/bin/python .pi/skills/verify-project/scripts/preparation_baseline.py \
+  --evidence "work/issue56-worker-after-$(date +%Y%m%dT%H%M%S)" --seed "$BEFORE/seed"
+```
+
+repository root・既存PDF extra環境／Node／compiled helper全file hash一致が前提です。不足なら停止し、install／sync／buildしません。人工credential・既存`preparation-process.mjs`の実compiled Node／公開faux／no-networkだけを使います。実workspace・実認証・書籍・providerは使いません。`--size 2`は新規隔離状態での接続確認用で、性能代表は事前固定の**100 heading＋body group（200 units、101 saved attempts）**です。PDF型の公開snapshotであり、PDF取得／EPUB readerの計測ではありません。
+
+生成sourceは`performance_operation.render_source`の自作paragraphを2件ずつheading／bodyへ変え、見出しlevel1でgroupを分けます。各collect回答はそのbody unitの実`source_text`と`queue`の引用根拠を持ち、organizeもその根拠語だけを採用します。`tests/test_preparation.py`の実`run`でseedを生成し、generate／save／raw・schema／domain validatorをfakeにしません。`seed/`は人工workspace全fileだけを保持（credential／answersは所有一時directoryからcleanup）。`seed-hashes.json`の全file SHA256と各コピーの全byteを検査します。afterは`--seed`で同じ生成物を独立コピーし、再生成のelapsed／attempt byte差を持ち込みません。永続production indexや全snapshot常駐ではありません。
+
+3モードを順に各fresh Python process **通常3回＋別diagnostic1回**、他test／benchmarkと非並行、warm filesystem・flushなしで実行します。adoptedはpointer付き公開prepare、unadoptedはコピー後に準備pointerだけ除いた公開prepare（orphan保存成功の再利用）、loadはpointer付き独立公開loadです。各操作後、旧immutable全SHA256・seed全byte不変、prepareの採用digest一致、loadのrun数101と根拠語、実faux新request logが作られないことをassertします。`answers={}`なので意図しないmissは成功回答で隠さず失敗します。
+
+**性能比較のprimary区間はunadoptedの`search_call_inclusive_seconds`**（collect100＋organize1の実`_call`委譲wrapper秒の合計）に事前固定します。全callが保存成功にhitし実送信ゼロなので、glob／到達候補read・hash／request・config・raw／schema／domain照合を含む探索proxyです。純file探索だけではなく、emit等も含みます。生成が発生した試行は比較不能として停止します。inclusive scopeは重複加算せず、public prepare全体の`operation_wall_seconds`、inclusiveな内部公開load、独立load、outer process wall、Python CPUと分けます。adoptedとunadoptedの差をそのまま排他的load時間とは呼びません。通常timer wrapperの設置費用はoperation wallに含まれ、fixture import／seed生成／コピーはsetupまたは計測外です。afterで区間を変更しません。
+
+合格判定は同seed・同helper／config・同cache／起動条件のprimary中央値がbeforeの70%以下。全体寄与が小さくてもread削減と公開prepare全体秒は別報告します。代表run／resumeの悪化上限`max(before×1.10, before＋.05秒)`は既存driverの別比較で、今回のprepareだけでは完了条件7を受け入れません。秒数閾値をpytestへ入れません。
+
+### 観測・証拠・cleanup
+
+`performance_operation.preparation_measurement`は通常passでは`_call`と公開`load_preparation`へtimerのみ委譲します。diagnosticは既存cProfile／logical read・atomic replace観測に加え、`_read`のattempt scope内で実`Path.read_bytes`と`hashlib.sha256`へ委譲し、record digest別のread／hashを`metrics.json:attempt_read_hash_counts`へ記録します。`search_call`（operation探索）／`public_load`（独立した全run再検証）／`operation_other`を分け、公開loadの正当な再読を探索の重複と数えません。この境界外の全read手法・全hash・物理I/Oを網羅するcounterではありません。profile／counterの遅い秒数は通常3回へ混ぜません。到達record数、合計read／hash、最大反復数、論理bytesを別集計し、将来も計数境界を無断変更しません。
+
+親Pythonの生涯`ru_maxrss`（macOS bytes、MiBへ換算）にはimportも含み、Node seed生成のpeakは通常reuse操作のメモリではありません。reuse子のreaped-child peak=0は新helperを起動しなかったという観測です。同時aggregate RSS／物理I/O／cache residency／実provider性能はunknownです。record保持によるメモリ増と探索短縮を別報告します。
+
+各child120秒、invocation900秒の残予算を次child起動前に検査します（seed生成は既存generateの有限timeout／retryに従い、900秒の強制interrupt timerではありません）。超過時は後続を止めます。childのtimeout／取消は既存`invoke`の所有groupだけSIGINT→45秒drain→必要時SIGKILL／waitです。所有TemporaryDirectoryの入力／answers／credential／コピーworkspaceだけfinally削除し、seedと証拠は残します。他process・既存workspace・lock・venv・work全体は触りません。
+
+証拠は新規ignore済み`work/issue56-worker-<unique>/`。manifestのrevision／source・fixture・helper・script hash／条件、dirty／diff、verification-sourcesの新helper全byte、seed全byte／hash、実seed request（自作のみ）、各command／exit／stdout／stderr／metrics／別diagnostic、observations／statistics／cleanupを保存します。参照はそのdirectoryから解決し、cleanup後に全fileをreadbackします。`--seed`使用時は元directoryのseed hash表を先に照合し、変更済みseedは拒否します。秘密値・書籍・不要raw logは残しません。Skill／Mapは手順・期待だけを保持し、今回の成功履歴へ変えません。正式チェック・Rootの独立公開操作とReviewer gateは別に必要です。
+
+### production変更前の観測（Issue #56）
+
+HEAD `637935f5a1f172d7c3cfdf4d0970bb93ca566d62`、production差分なし。macOS arm64／Python 3.14.9／Node v24.22.1／pydantic 2.14.1、既存helper全10file hash一致（main.js `2527d74349df262364360316caff28eba18714a32786e8723c62de92d4e16135`）。source snapshot SHA256は`0d7c6155efff84da8ad5158b2aa87707a2ba862e96c5af23adb586c764ce345f`、全107file／576,922 bytesのseed hash表SHA256は`9796b6ded8edf6b176f49d0eb339deb0f75d86d0d8c15187141774e477816b8d`。実seed prepareは13.231720秒（通常reuse時間から除外）。以下は通常各3回、単位秒、diagnosticは混ぜていません。
+
+| mode／区間 | raw秒 | median [min, max] |
+| --- | --- | --- |
+| unadopted **primary探索proxy** | .816838 / .816953 / .855215 | **.816953** [.816838, .855215] |
+| unadopted 公開prepare全体 | .877837 / .877979 / .916819 | .877979 [.877837, .916819] |
+| adopted 探索proxy | .806467 / .812116 / .841849 | .812116 [.806467, .841849] |
+| adopted 公開prepare全体 | .921873 / .931672 / .960553 | .931672 [.921873, .960553] |
+| adopted 内部公開load（inclusive） | .054619 / .058356 / .057104 | .057104 [.054619, .058356] |
+| 独立公開load全体 | .055567 / .056287 / .057748 | .056287 [.055567, .057748] |
+
+primary探索の全体比は各試行 **93.051%／93.049%／93.281%**（adoptedは87.481%／87.167%／87.642%）で、この100-group workloadでは探索proxyが支配的です。区間を維持したafterのprimary中央値上限は **.571867秒**（before×.70）。このbefore取得段階ではafter／production最適化は未実施でした。以下のafter比較と区別し、before取得だけで70%目標や完了条件3／4／7／10全体の達成を主張しません。
+
+別diagnosticはadopted／unadoptedとも探索read **5,151回**・hash **5,151回**、unique101 record、同record最大101回、論理read **23,100,131 bytes**。辞書順の各成功候補まで止まる走査が全101 callで繰り返される観測です。adopted内部の公開loadは別に各101 read／hash・unique101・最大1回・460,835 bytes、unadopted内部loadは0回。独立loadも各101 read／hash・最大1回・460,835 bytesで、探索の重複には算入していません。diagnostic profileにはschema／domain等の実関数呼出しも保持しますが、Pydantic全field内部検証や物理I/Oの総件数には換算しません。
+
+通常Python CPU rawはunadopted .876562／.876374／.915195、adopted .920541／.930267／.958987、独立load .055533／.056219／.057607秒。outer process wall rawはそれぞれ1.167891／1.169326／1.213506、1.281050／1.221013／1.251088、.348674／.349477／.347909秒。親生涯peak RSS rawはunadopted63.593750／63.015625／63.125000、adopted64.031250／64.234375／64.140625、独立load63.234375／63.328125／63.156250 MiB。全reuse操作のreaped-child peakは0（新helper起動なし）。seed生成時のNode peakと同時aggregate RSSは未計測です。
+
+証拠（追跡外、同checkout）：`work/issue56-worker-before/`のmanifest／seed-hashes／seed、各modeのcommand／metrics／別diagnostic、observations／statistics／contribution／cleanup。全12 fresh operationsはexit0、追加request0・旧immutable／seed全byte不変を照合し、所有一時物cleanup後に全fileをreadbackしました。`work/issue56-worker-connection/`と`work/issue56-worker-seed-replay/`は`--size 2`による新規生成と`--seed`再実行の各12操作で、seed hash表全byte一致を照合した接続確認であり、性能primaryへ混ぜません。
+
+focused検証は`work/issue56-worker-validation/`：新selfcheck代表単独1件、同module10件、既存preparation全61件（repair上限・raw/schema/domain・method/config・orphan・旧採用等）、変更Python3fileのRuff check／format／tyが成功。初期selfcheck2件はheading数字がunitの保護markerになることを見落とした期待誤りで失敗し、公開unitのheading block対応を照合するよう修正（production変更なし）。初期import順／型検査の指摘も通常計測前に解消し、失敗記録は成功時間へ混ぜていません。このbefore取得時点ではRootの正式チェック・独立公開操作・Reviewer gate、および実provider／実workspace／任意書籍／他OSの評価は未実施でした。Rootによる後続のbefore直接確認とafter段階は次節へ分離します。
+
+### 操作内raw record memoのafter（Issue #56）
+
+Rootがbefore helper・raw／stat・全seed hashを直接確認し、同seedの別invocation `work/issue56-root-before/`で公開prepare／load12操作を確認した後に実装しました。production差分は`preparation.py`だけです。`prepare_document`内の辞書へ、初回到達して`_read`が成功したraw recordと、新規atomic保存成功後の正規JSON recordを登録します。各callのsorted glob・元request／規定repair／方式／config／raw回答／根拠検証は残しました。追加fingerprint indexや回答の受理結果cacheは不要だったため作っていません。公開API／schema／request／config／Node／translationは不変です。
+
+afterは`work/issue56-worker-after/`。上のworker beforeのseed全107fileを`--seed`で再使用し、Root beforeともseed hash表の全byte一致、Python／Node／helper／計測script hash・条件／区間／反復数一致を確認しました。source SHA256と差分は各manifest／scope.diff、比較計算はafterの`comparison.json`に保持します。次は通常3回のみで、別diagnosticの時間は混ぜません。
+
+| mode／区間 | after raw秒 | median [min, max] |
+| --- | --- | --- |
+| unadopted **primary探索proxy** | .126623 / .124110 / .125328 | **.125328** [.124110, .126623] |
+| unadopted 公開prepare全体 | .186525 / .183350 / .184729 | .184729 [.183350, .186525] |
+| adopted 探索proxy | .118077 / .119552 / .120540 | .119552 [.118077, .120540] |
+| adopted 公開prepare全体 | .237548 / .236169 / .236786 | .236786 [.236169, .237548] |
+| adopted 内部公開load（inclusive） | .058673 / .057023 / .055881 | .057023 [.055881, .058673] |
+| 独立公開load全体 | .058706 / .061683 / .058341 | .058706 [.058341, .061683] |
+
+primary中央値はworker before .816953秒の **15.341%**（上限 .571867秒を満たす）、Root before .851112秒の **14.725%**です。Root primary rawは .851112／.873658／.848776秒、median .851112 [.848776, .873658]。公開prepare全体中央値の比はworker beforeに対し **21.040%**、Root before .915644 [.912372, .937235]秒に対し **20.175%**。afterの各試行の探索proxy寄与は **67.885%／67.690%／67.844%**（adoptedでは49.707%／50.621%／50.907%）です。純I/O秒や実書籍全体の速度差へ換算せず、全体短縮と探索短縮を区別します。独立loadは最適化しておらず、全run再検証を残したcontrolです。
+
+別diagnosticの探索read／hashはadopted／unadoptedとも各 **101回・unique101・最大1回**（before各5,151回・最大101回）、論理bytes **460,835**（before23,100,131）。adopted内部の公開loadは別に各101回・最大1回・460,835 bytes、独立loadも同じで、正当な再読を削減したとは主張しません。小さい初回／repair回帰では、新規保存recordを後続探索で元fileからread／hashする回数が0であることも確認しました。別prepare／公開loadでの再readと改ざん拒否、辞書順の先勝ち、未到達の後方破損を非read・前方到達破損を拒否し旧pointerを保持することを公開prepare／loadから確認しています。
+
+| mode | after Python CPU raw秒 | after parent生涯peak RSS raw MiB | after outer process wall median [min, max]秒 |
+| --- | --- | --- | --- |
+| unadopted | .185724 / .182584 / .184442 | 65.265625 / 65.265625 / 65.078125 | .488423 [.486833, .503050] |
+| adopted | .235944 / .235393 / .235927 | 67.390625 / 65.265625 / 65.187500 | .537393 [.534309, .584972] |
+| 独立load | .058598 / .061502 / .058190 | 63.578125 / 63.296875 / 63.531250 | .365228 [.362951, .370202] |
+
+primary親peakのmedianはbefore63.125000→after65.265625 MiB（観測差+2.140625 MiB）。このworkloadでは到達した101 raw recordをoperation内に保持し、対応する元fileのserialized在庫量は460,835 bytesです。これはPython dictの実メモリbyteやRSS増分の因果配賦ではありません。保持量は到達record＋今回保存recordに比例し、全履歴snapshot／PNG・mutable pointer・別operationへのcacheは追加しません。helper新起動はなくreaped-child peakは全0、物理I/O／同時aggregate RSS／dict単独のRSS寄与はunknownです。
+
+after12 fresh操作のexit0・追加request0・旧immutable／seed全byte不変・所有一時物cleanupと証拠全fileのreadbackを確認しました。更新手順そのものの新規隔離実行は`work/issue56-worker-after-create/`の`--size 2`（実Nodeからseed新規生成→12公開操作）で別に成功し、primaryへ混ぜていません。`work/issue56-worker-optimization-checks/`には追加catalog回帰の代表単独1件、preparation64件＋selfcheck10件＝74 passed、公開consumer代表5件、変更Pythonと既存helperのRuff／format／ty成功を保持します。初期の新テストに対するRuffのnested-with指摘1件は統合して解消し、失敗を性能値へ混ぜていません。
+
+Rootが取得した代表PDF35／固定EPUB20のrun／無変更resume beforeは`work/issue56-root-cli-before/`（median秒：PDF run3.505303／resume .862172、EPUB run4.322620／resume .443209）。完了条件7の同条件after・全正式チェック・別invocationでの独立公開確認・Reviewer gateはRoot側の後続確認であり、今回のprepare探索合格で代替しません。実provider／実workspace／OCR／任意書籍／他OSの性能と意味品質は未確認です。
+
+以上はWorker段階の記録で、その後Rootが独立after・正式確認を実施しました。同条件・通常各3回（準備のdiagnosticは別pass）の中央値は、primary探索 .851112→.115456秒（beforeの13.5653%）、公開prepare全体 .915644→.171691秒（18.7508%）、親peak RSS 63.28125→65.4375 MiB。代表PDF35はrun 3.505303→3.444379秒／resume .862172→.798275秒、同byte固定EPUB20はrun 4.322620→4.038545秒／resume .443209→.365403秒で、4操作とも`max(before×1.10, before＋.05秒)`以内です。再利用操作の追加request0・旧byte不変と、公開直接操作による新規record登録・別operation再検証・到達／未到達破損境界も確認しました。正式チェックはcore 920 passed／Doclingなしによる123 skipped、PDF4ファイル181 passed、Ruff check／format・ty・公開import・CLI help・diff checkは全exit0・警告なし。集計と全raw／stat・直接操作への導線は`work/issue56-root-checks/acceptance-results.json`、正式command／exitと各logは同directoryの`repository-checks.json`を参照し、詳細は`work/issue56-root-{before,after,cli-before,cli-after,direct}/`に保持しています。独立Correctness（16ee6f41）／Ponytail（93384d8a）Reviewはともに指摘なしでしたが、CodeReviewは未実施であり、最終承認を示す記録ではありません。

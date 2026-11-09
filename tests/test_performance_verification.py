@@ -21,6 +21,71 @@ baseline = load("performance_baseline")
 operation = load("performance_operation")
 
 
+@pytest.mark.parametrize("adopted", [False, True])
+def test_preparation_baseline_public_reuse_separates_search_from_load(
+    tmp_path, monkeypatch, adopted
+):
+    from doc_translate import preparation
+    from doc_translate.snapshot import load_source_snapshot
+    from doc_translate.units import generate_translation_units
+
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    recipe = load("preparation_baseline")
+    owned, seed = tmp_path / "owned", tmp_path / "seed"
+    owned.mkdir()
+    recipe.create_seed(owned, seed, 2)
+    snapshot = load_source_snapshot(seed)
+    units = generate_translation_units(snapshot)
+    assert [unit.kind for unit in units] == ["heading", "body"] * 2
+    for unit, block_id in zip(units[1::2], ["body-0", "body-2"], strict=True):
+        heading_path = unit.context["heading_path"]
+        assert isinstance(heading_path, list)
+        heading = heading_path[-1]
+        assert isinstance(heading, dict) and heading["block_id"] == block_id
+    fixture = recipe.import_module("test_preparation")
+    previous = recipe.files(seed)
+    sent = (owned / "requests.jsonl").read_bytes()
+    if not adopted:
+        (seed / "preparation-snapshot.json").unlink()
+    with operation.preparation_measurement(seed, diagnostic=True) as metrics:
+        preparation.prepare_document(
+            workspace=seed,
+            book="Artificial book",
+            policy=fixture.POLICY,
+            config=fixture.CONFIG,
+            process_command=["must-not-launch-on-reuse"],
+        )
+    assert recipe.files(seed) == previous
+    assert (owned / "requests.jsonl").read_bytes() == sent
+    assert metrics["search_calls"] == 3
+    assert metrics["public_load_calls"] == int(adopted)
+    counts = metrics["attempt_read_hash_counts"]
+    for scope, expected in (("search_call", 3), ("public_load", 3 if adopted else 0)):
+        reads = {
+            k.rsplit("/", 1)[-1]: v
+            for k, v in counts.items()
+            if k.startswith(f"{scope}/read/")
+        }
+        hashes = {
+            k.rsplit("/", 1)[-1]: v
+            for k, v in counts.items()
+            if k.startswith(f"{scope}/hash/")
+        }
+        assert reads == hashes and sum(reads.values()) == expected
+        assert all(count == 1 for count in reads.values())
+    with operation.preparation_measurement(seed, diagnostic=True) as loaded:
+        assert preparation.load_preparation(seed).glossary.terms == {"queue": "キュー"}
+    assert loaded["search_calls"] == 0 and loaded["public_load_calls"] == 1
+    assert (
+        sum(
+            v
+            for k, v in loaded["attempt_read_hash_counts"].items()
+            if k.startswith("public_load/read/")
+        )
+        == 3
+    )
+
+
 def test_performance_baseline_distribution_keeps_raw_order():
     assert baseline.distribution([3, 1, 2]) == {
         "raw": [3, 1, 2],

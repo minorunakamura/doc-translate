@@ -175,6 +175,7 @@ def _call(
     cancel,
     before_send,
     observer,
+    records,
 ):
     reusable_requests = [
         value.model_dump(mode="json")
@@ -184,7 +185,9 @@ def _call(
         ]
     ]
     for path in sorted((workspace / "attempts/preparation").glob("*.json")):
-        saved = _read(workspace, "attempts/preparation", path.stem)
+        if path.stem not in records:
+            records[path.stem] = _read(workspace, "attempts/preparation", path.stem)
+        saved = records[path.stem]
         saved_request = saved.get("request")
         context = (
             saved_request.get("context") if isinstance(saved_request, dict) else None
@@ -220,20 +223,19 @@ def _call(
     current_request = request
 
     def record(status, attempts, validation_error=None):
-        return _store(
-            workspace,
-            "attempts/preparation",
-            {
-                "stage": "prepare",
-                "method": _METHOD,
-                "status": status,
-                "request": current_request,
-                "config": config,
-                "validation_error": validation_error,
-                "elapsed_seconds": time.monotonic() - started,
-                "attempts": [asdict(attempt) for attempt in attempts],
-            },
-        )
+        saved = {
+            "stage": "prepare",
+            "method": _METHOD,
+            "status": status,
+            "request": current_request,
+            "config": config,
+            "validation_error": validation_error,
+            "elapsed_seconds": time.monotonic() - started,
+            "attempts": [asdict(attempt) for attempt in attempts],
+        }
+        digest = _store(workspace, "attempts/preparation", saved)
+        records[digest] = json.loads(_bytes(saved))
+        return digest
 
     for number in range(3):
         started = time.monotonic()
@@ -407,6 +409,8 @@ def prepare_document(
             load_preparation(workspace)
         units = generate_translation_units(snapshot, source_sha256=source_digest)
         collections = []
+        # Memoize only reached immutable records; each public operation validates anew.
+        records = {}
         emit(observer, "prepare", "collect")
         runs = []
         for index, group in enumerate(_groups(units)):
@@ -451,6 +455,7 @@ def prepare_document(
                     phase=f"collect section {index}",
                     unit_ids=tuple(unit.unit_id for unit in group),
                 ),
+                records,
             )
             collections.append(collection)
             runs.append(run)
@@ -495,6 +500,7 @@ def prepare_document(
                 phase="organize",
                 unit_ids=(),
             ),
+            records,
         )
         evidence = PreparationEvidence(
             source_snapshot_sha256=source_digest,

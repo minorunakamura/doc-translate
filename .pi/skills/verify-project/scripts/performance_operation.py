@@ -2,6 +2,7 @@
 
 import argparse
 import cProfile
+import hashlib
 import json
 import os
 import pstats
@@ -12,6 +13,7 @@ from collections import Counter
 from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / "tests"))
@@ -209,12 +211,90 @@ def observe(workspace, output):
         )
 
 
+@contextmanager
+def preparation_measurement(workspace, diagnostic=False):
+    """Time inclusive lookup proxies; diagnostics delegate actual read/hash boundaries."""
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    from doc_translate import preparation
+
+    metrics: dict[str, Any] = {
+        "search_call_inclusive_seconds": 0.0,
+        "search_calls": 0,
+        "public_load_inclusive_seconds": 0.0,
+        "public_load_calls": 0,
+    }
+    counts = Counter()
+    scope, attempt = "operation_other", None
+    call, load, read = (
+        preparation._call,
+        preparation.load_preparation,
+        preparation._read,
+    )
+    read_bytes, sha256 = Path.read_bytes, hashlib.sha256
+
+    def timed(original, label):
+        def wrapped(*args, **kwargs):
+            nonlocal scope
+            previous, scope = scope, label
+            started = time.perf_counter()
+            try:
+                return original(*args, **kwargs)
+            finally:
+                metrics[f"{label}_inclusive_seconds"] += time.perf_counter() - started
+                metrics[
+                    "search_calls" if label == "search_call" else "public_load_calls"
+                ] += 1
+                scope = previous
+
+        return wrapped
+
+    def artifact_read(workspace, directory, digest):
+        nonlocal attempt
+        previous = attempt
+        attempt = str(digest) if directory == "attempts/preparation" else None
+        try:
+            return read(workspace, directory, digest)
+        finally:
+            attempt = previous
+
+    def actual_read(path):
+        data = read_bytes(path)
+        if attempt is not None:
+            counts[f"{scope}/read/{attempt}"] += 1
+            counts[f"{scope}/logical_bytes"] += len(data)
+        return data
+
+    def actual_hash(*args, **kwargs):
+        if attempt is not None:
+            counts[f"{scope}/hash/{attempt}"] += 1
+        return sha256(*args, **kwargs)
+
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch.object(preparation, "_call", timed(call, "search_call"))
+        )
+        stack.enter_context(
+            patch.object(preparation, "load_preparation", timed(load, "public_load"))
+        )
+        if diagnostic:
+            stack.enter_context(patch.object(preparation, "_read", artifact_read))
+            stack.enter_context(patch.object(Path, "read_bytes", actual_read))
+            stack.enter_context(patch.object(hashlib, "sha256", actual_hash))
+        yield metrics
+    if diagnostic:
+        metrics["attempt_read_hash_counts"] = dict(counts)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--format", choices=("pdf", "epub"), required=True)
     parser.add_argument("--size", type=int, required=True)
     parser.add_argument(
-        "--operation", choices=("run", "resume", "render"), required=True
+        "--operation",
+        choices=("run", "resume", "render", "prepare", "load-preparation"),
+        required=True,
     )
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--source", type=Path)
@@ -223,7 +303,9 @@ def main():
     parser.add_argument("--metrics", type=Path, required=True)
     parser.add_argument("--observe", type=Path)
     args = parser.parse_args()
-    if args.operation == "render":
+    if args.operation in ("prepare", "load-preparation"):
+        assert args.size in (2, 100)
+    elif args.operation == "render":
         assert args.size in (50, 200, 500)
     else:
         assert args.size in ((6, 35) if args.format == "pdf" else (2, 20, 200))
@@ -238,7 +320,11 @@ def main():
         from doc_translate.render import render_document
         from doc_translate.snapshot import save_source_snapshot
 
-        if args.operation == "render":
+        if args.operation in ("prepare", "load-preparation"):
+            fixture = import_module("test_preparation")
+            import_module("unittest.mock")
+            arguments = []
+        elif args.operation == "render":
             source = render_source(args.format, args.size)
             save_source_snapshot(args.workspace, source)
             arguments = []
@@ -272,12 +358,34 @@ def main():
         from contextlib import nullcontext
 
         exit_code = 0
+        preparation_metrics = {}
         wall, cpu = time.perf_counter(), time.process_time()
         try:
             with (
                 observe(args.workspace, args.observe) if args.observe else nullcontext()
             ):
-                if args.operation == "render":
+                if args.operation in ("prepare", "load-preparation"):
+                    from doc_translate import preparation
+
+                    with preparation_measurement(
+                        args.workspace, bool(args.observe)
+                    ) as preparation_metrics:
+                        if args.operation == "prepare":
+                            digest = preparation.prepare_document(
+                                workspace=args.workspace,
+                                book="Artificial book",
+                                policy=fixture.POLICY,
+                                config=fixture.CONFIG,
+                                process_command=json.loads(args.helper),
+                            )
+                            print(json.dumps({"sha256": digest}))
+                        else:
+                            print(
+                                preparation.load_preparation(
+                                    args.workspace
+                                ).model_dump_json()
+                            )
+                elif args.operation == "render":
                     print(
                         json.dumps(render_document(args.workspace), ensure_ascii=False)
                     )
@@ -294,6 +402,7 @@ def main():
                 json.dumps(
                     {
                         "exit": exit_code,
+                        **preparation_metrics,
                         "setup_import_fixture_save_wall_seconds": setup_wall,
                         "operation_wall_seconds": time.perf_counter() - wall,
                         "operation_python_cpu_seconds": time.process_time() - cpu,
