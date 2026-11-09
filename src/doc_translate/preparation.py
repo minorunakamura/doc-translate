@@ -94,6 +94,8 @@ class EvidenceSource(Contract):
 
 
 class PreparationEvidence(Contract):
+    wire_version: Literal[1, 2] = 1
+    bindings: list[list[Nonempty]] = Field(default_factory=list)
     source_snapshot_sha256: Sha256
     sources: dict[str, EvidenceSource]
     collections: list[CollectionAnswer]
@@ -176,14 +178,21 @@ def _call(
     before_send,
     observer,
     records,
+    *,
+    legacy_request,
+    legacy_validate,
 ):
-    reusable_requests = [
-        value.model_dump(mode="json")
-        for value in [
-            request,
-            *(_repair_request(request, code) for code in _VALIDATION_ERRORS),
+    requests = {1: (legacy_request, legacy_validate), 2: (request, validate)}
+    reusable_requests = {
+        version: [
+            value.model_dump(mode="json")
+            for value in [
+                original,
+                *(_repair_request(original, code) for code in _VALIDATION_ERRORS),
+            ]
         ]
-    ]
+        for version, (original, _) in requests.items()
+    }
     for path in sorted((workspace / "attempts/preparation").glob("*.json")):
         if path.stem not in records:
             records[path.stem] = _read(workspace, "attempts/preparation", path.stem)
@@ -195,15 +204,17 @@ def _call(
         feedback = (
             context.get("validation_feedback") if isinstance(context, dict) else None
         )
-        matching_requests = reusable_requests
+        version = _wire_version(saved)
+        original, check = requests[version]
+        matching_requests = reusable_requests[version]
         if (
             isinstance(feedback, dict)
             and isinstance(feedback.get("code"), str)
             and feedback["code"] in _VALIDATION_ERRORS
         ):
             matching_requests = [
-                *reusable_requests,
-                _repair_request(request, feedback["code"], feedback).model_dump(
+                *matching_requests,
+                _repair_request(original, feedback["code"], feedback).model_dump(
                     mode="json"
                 ),
             ]
@@ -215,7 +226,7 @@ def _call(
             continue
         try:
             answer = _saved_answer(saved, config, response_model)
-            validate(answer)
+            check(answer)
         except ValueError, KeyError, TypeError, IndexError, InferenceError:
             continue
         emit(observer, "prepare", "reused")
@@ -226,6 +237,7 @@ def _call(
         saved = {
             "stage": "prepare",
             "method": _METHOD,
+            "wire_version": 2,
             "status": status,
             "request": current_request,
             "config": config,
@@ -285,15 +297,48 @@ def _groups(units):
     return groups
 
 
-def _projection(units):
+def _wire_version(record):
+    version = record.get("wire_version", 1)
+    if version not in (1, 2):
+        raise ValueError("Unknown preparation wire version")
+    return version
+
+
+def _projection(units, wire_version=1):
     return [
         {
-            "unit_id": unit.unit_id,
+            "unit_id": unit.unit_id if wire_version == 1 else f"request-unit-{index}",
             "source_text": unit.source_text,
-            "heading_path": unit.context.get("heading_path", []),
+            "heading_path": [
+                {
+                    key: value
+                    for key, value in heading.items()
+                    if wire_version == 1 or key not in ("block_id", "node_path")
+                }
+                for heading in unit.context.get("heading_path", [])
+            ],
         }
-        for unit in units
+        for index, unit in enumerate(units, 1)
     ]
+
+
+def _bind_collection(answer, group, wire_version):
+    if wire_version == 1:
+        _validate_collection(answer, group)
+        return answer
+    aliases = {f"request-unit-{index}": unit for index, unit in enumerate(group, 1)}
+    # Validate in wire coordinates so repair feedback never leaks tracking IDs.
+    _validate_collection(
+        answer,
+        [unit.model_copy(update={"unit_id": alias}) for alias, unit in aliases.items()],
+    )
+    bound = answer.model_dump(mode="json")
+    for candidate in bound["candidates"]:
+        for evidence in candidate["evidence"]:
+            evidence["unit_id"] = aliases[evidence["unit_id"]].unit_id
+    collection = CollectionAnswer.model_validate(bound)
+    _validate_collection(collection, group)
+    return collection
 
 
 def _sources(units):
@@ -409,11 +454,13 @@ def prepare_document(
             load_preparation(workspace)
         units = generate_translation_units(snapshot, source_sha256=source_digest)
         collections = []
+        wire_collections = []
+        groups = _groups(units)
         # Memoize only reached immutable records; each public operation validates anew.
         records = {}
         emit(observer, "prepare", "collect")
         runs = []
-        for index, group in enumerate(_groups(units)):
+        for index, group in enumerate(groups):
             request = GenerationInput(
                 stage="prepare",
                 policy=(
@@ -436,12 +483,23 @@ def prepare_document(
                 },
                 glossary=None,
             )
+            legacy_request = request
+            request = request.model_copy(
+                update={
+                    "text": json.dumps(_projection(group, 2), ensure_ascii=False),
+                    "context": {
+                        "phase": "collect",
+                        "response_schema": CollectionAnswer.model_json_schema(),
+                        "wire_version": 2,
+                    },
+                }
+            )
             collection, run = _call(
                 workspace,
                 config,
                 request,
                 CollectionAnswer,
-                lambda answer, group=group: _validate_collection(answer, group),
+                lambda answer, group=group: _bind_collection(answer, group, 2),
                 process_command,
                 cancel,
                 scoped_before_send(
@@ -456,6 +514,14 @@ def prepare_document(
                     unit_ids=tuple(unit.unit_id for unit in group),
                 ),
                 records,
+                legacy_request=legacy_request,
+                legacy_validate=lambda answer, group=group: _bind_collection(
+                    answer, group, 1
+                ),
+            )
+            wire_collections.append(collection)
+            collection = _bind_collection(
+                collection, group, _wire_version(records[run])
             )
             collections.append(collection)
             runs.append(run)
@@ -485,6 +551,22 @@ def prepare_document(
                 }
             },
         )
+        legacy_request = request
+        request = request.model_copy(
+            update={
+                "text": json.dumps(
+                    [item.model_dump(mode="json") for item in wire_collections],
+                    ensure_ascii=False,
+                ),
+                "context": {
+                    "phase": "organize",
+                    "book": book,
+                    "style_policy": policy.model_dump(mode="json"),
+                    "response_schema": OrganizationAnswer.model_json_schema(),
+                    "wire_version": 2,
+                },
+            }
+        )
         emit(observer, "prepare", "organize")
         organization, run2 = _call(
             workspace,
@@ -501,15 +583,33 @@ def prepare_document(
                 unit_ids=(),
             ),
             records,
+            legacy_request=legacy_request,
+            legacy_validate=lambda answer: _validate_organization(
+                answer, collections, supplied.terms
+            ),
         )
+        wire_version = max(_wire_version(records[run]) for run in [*runs, run2])
         evidence = PreparationEvidence(
+            wire_version=wire_version,
+            bindings=(
+                [[unit.unit_id for unit in group] for group in groups]
+                if wire_version == 2
+                else []
+            ),
             source_snapshot_sha256=source_digest,
             sources=_sources(units),
             collections=collections,
             organization=organization,
             user_terms=supplied.terms,
         )
-        evidence_digest = _store(workspace, "preparation/evidence", evidence)
+        evidence_digest = _store(
+            workspace,
+            "preparation/evidence",
+            evidence.model_dump(
+                mode="json",
+                exclude={"wire_version", "bindings"} if wire_version == 1 else set(),
+            ),
+        )
         adopted = _adopt(
             evidence, book, version, policy, evidence_digest, [*runs, run2]
         )
@@ -544,6 +644,12 @@ def load_preparation(workspace: Path, sha256: str | None = None) -> PreparationS
         or evidence.sources != _sources(units)
         or len(groups) != len(evidence.collections)
         or len(adopted.runs) != len(groups) + 1
+        or (
+            evidence.wire_version == 2
+            and evidence.bindings
+            != [[unit.unit_id for unit in group] for group in groups]
+        )
+        or (evidence.wire_version == 1 and evidence.bindings)
     ):
         raise ValueError("Preparation evidence source correspondence mismatch")
     for group, collection in zip(groups, evidence.collections, strict=True):
@@ -560,28 +666,45 @@ def load_preparation(workspace: Path, sha256: str | None = None) -> PreparationS
         adopted.runs,
     ):
         raise ValueError("Preparation differs from adopted inputs and evidence")
+    wire_collections = []
     for index, digest in enumerate(adopted.runs):
         record = _read(workspace, "attempts/preparation", digest)
         if record["stage"] != "prepare" or record["status"] != "validated":
             raise ValueError("Preparation run was not validated")
+        wire_version = _wire_version(record)
+        if evidence.wire_version == 1 and wire_version != 1:
+            raise ValueError("Legacy preparation cannot contain v2 runs")
         request = GenerationInput.model_validate(record["request"])
         config = GenerationConfig.model_validate(record["config"])
         if not isinstance(request.context, dict):
             raise TypeError("Preparation run needs object context")
+        if _wire_version(request.context) != wire_version:
+            raise ValueError("Preparation wire version mismatch")
         if index < len(groups):
             answer = _saved_answer(record, config, CollectionAnswer)
             matches = (
-                answer == evidence.collections[index]
-                and json.loads(request.text) == _projection(groups[index])
+                _bind_collection(answer, groups[index], wire_version)
+                == evidence.collections[index]
+                and json.loads(request.text) == _projection(groups[index], wire_version)
                 and request.context["phase"] == "collect"
-                and request.context["section"] == index
+                and (
+                    request.context.get("section") == index
+                    if wire_version == 1
+                    else "section" not in request.context
+                )
             )
+            wire_collections.append(answer)
         else:
             answer = _saved_answer(record, config, OrganizationAnswer)
             matches = (
                 answer == evidence.organization
                 and json.loads(request.text)
-                == [item.model_dump(mode="json") for item in evidence.collections]
+                == [
+                    item.model_dump(mode="json")
+                    for item in (
+                        evidence.collections if wire_version == 1 else wire_collections
+                    )
+                ]
                 and request.context["phase"] == "organize"
                 and request.context["book"] == adopted.glossary.book
                 and request.context["style_policy"]

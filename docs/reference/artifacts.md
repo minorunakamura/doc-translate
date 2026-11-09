@@ -297,6 +297,20 @@ print(fixed.glossary.terms, fixed.translation_inputs_sha256)
 3. 全節の収集結果を独立した整理呼出しへ渡します。`OrganizationAnswer`は文書全体の`context`（主題・章節の解釈）と`terms`を持ち、自動採用するkeyは根拠のある収集候補に限ります（利用者指定keyの再掲も許容しますが本文根拠ありにはしません）。同一語の複数案はこの1回で整理します。複合語も通常のkey、原表記を保つ語は同じvalueとし、文脈別ルールや採否stateは追加しません。
 4. 最後に利用者`user_terms`を上書き優先で合成します。利用者だけが指定した語も保存できますが本文確認済み候補にはしません。採用`Glossary`は`version/book/style/terms`だけです。`StylePolicy(version/text)`が唯一の文体指定で、`glossary.style`は常にその`text`から生成します。modelにstyleを別途生成させません。
 
+### 準備wire v1／v2と追跡binding（Issue #58）
+
+`chapter-collect-organize-v1`はgroup方式名のまま維持し、wire方式は別の`wire_version`で識別します。新規collect／organizeの実requestは`context.wire_version: 2`、attempt recordはtop-level `wire_version: 2`を保存します。旧v1はfield欠落を1として読み、未知versionとrequest／recordの版不一致はloadで拒否します。公開`PreparationSnapshot.schema_version: 1`は変更しません。翻訳requestのwireは今回の変更対象外です。
+
+v2 collectのtextは読み順の`unit_id: request-unit-1, request-unit-2, ...`、`source_text`、`heading_path`だけです。headingは`block_id`とEPUB `node_path`だけを外し、level・保護済みtext・順序を保持します。全体`context.section`は送信しません（ローカルの送信前通知／進捗には従来のsectionを残します）。group算法は不変で、list／table等の未送信contextを追加する変更や任意fieldの再帰的正規化は行いません。
+
+v2根拠artifactは従来fieldに`wire_version: 2`と`bindings: list[list[unit_id]]`を加えます。外側はgroup順、内側はそのgroupの公開追跡unit ID順で、内側の位置Nが`request-unit-N`に対応します。loadは参照原文snapshotからunits／groupsを再生成し、全groupの順序付き全単射と完全一致するか検査します。保存mappingの自己申告は信用しません。`collections`内の根拠は現在の追跡ID、`sources`は現在のsnapshot位置です。raw回答はattemptにaliasのまま残し、現在groupへ対応後も引用／用語根拠を検査します。訂正feedbackもbinding前のwire座標を使います。evidence自体には全unit列挙・順序・一意性を要求せず、定義域membershipと従来の引用／用語検査を課します。同unitの複数quote・疎な根拠・空根拠は有効です。
+
+v2 organizeは元group順の**実raw成功回答**をtextのcollectionsとして使います。公開loadも各collect runのraw回答を再取得し、その同じ並びを整理実requestと照合します。現在のglobal追跡IDへのbinding結果を整理へ戻さないため、番号だけがずれた後続groupの再利用を整理入力差へ再混入させません。v1 organizeは従来どおりv1の追跡ID付きcollectionsと照合します。
+
+保存候補はv1／v2それぞれの実request全体・config・規定repair・正常終了／raw schema・現在の根拠で厳密照合し、辞書順の最初の適合成功を、新規生成より先に使います。全v1を全v2より優先する別tierや先読みは作りません。現在と完全一致するv1だけなら旧digestを返し、新規不足だけv2を生成します。v1／v2混在時もrunごとの方式で検証し、混在根拠artifactはv2です。v1根拠は新fieldなしの旧byte形式を維持します。旧記録のIDを無視してv2扱いする転用・書換え・再hash・migrationはしません。v1しかない番号変更groupのmissは許容し、次の不足生成からv2になります。
+
+公開prepare/loadからの再現手順は[開発ガイド](../../CONTRIBUTING.md#文書contextglossary準備の検証境界)と[検証Map](../../.pi/skills/verify-project/references/feature-map.md#準備request内idと追跡bindingissue-58)を参照してください。固定glossary／context／policyのhash、利用者terms最優先、全attempt／usage・atomic保存・旧採用保持は不変です。実context／本文／config等の正当な変更は引き続きmissになり、実LLMの意味品質を保証するものではありません。
+
 ### 固定版・根拠・実行記録
 
 ```text
@@ -311,7 +325,7 @@ WORKSPACE/
 
 実行記録は`stage: prepare`、`method`、`status: validated | rejected`、実`request/config`、`elapsed_seconds`、既存adapterの全`attempts`を保存します。成功・失敗・retryのprovider／model・要求／確認済み設定・terminal・終了code・時間・raw回答・usage生値・不明状態を失いません。準備の根拠検証だけは、未知unit・引用不一致・用語表記不一致・整理後の根拠なし用語を固定codeの`PreparationValidationError`として区別し、本文投影・glossaryを変えず、固定の訂正指示と`context.validation_feedback`を加えて初回込み最大3回答まで再生成します。feedbackには固定codeと、収集時は0始まりのcandidate／evidence index・用語・不正な根拠のunit_id／quote、整理時は根拠なし用語の一覧を含めます。これらは未信頼dataとしてJSONで渡し、system指示やterminalのエラー文に埋め込みません。有効な根拠は残し、不正な根拠だけの訂正・削除をmodelに求めます。失敗recordには`validation_error`を残し、成功した訂正requestも通常requestと同じ再検証で再利用します。schema不正・認証・保存・timeout・取消等にはこの再生成を適用しません。各`generate`の一時的通信失敗retryは既存どおり最大3試行のため、1収集／整理の新規helper試行は最大9回であり、再生成でも利用量を消費します。準備usageを訳文生成usageと合算した記録にはしません。参考costはproviderの生値で、実請求を主張しません。
 
-固定入力hashはsort済みUTF-8 JSONの`{glossary, context, policy}`だけから生成し、準備方式・config／model・usage・根拠artifact hash・参照元snapshot hashを含めません。翻訳callerはunitの実入力hashに加え、この固定入力hashを参照できます。方式だけが変わって採用内容が同じなら翻訳入力を無効化しません。原文とpolicy／book／version／利用者terms、全呼出しの準備方式・configが現採用版と一致するとき、`prepare_document`はloadで再検証してdigestを返し、再送しません。内容変更後の新版も旧artifactを削除しません。`version`はcaller指定の非空文字列であり、時刻や試行数による自動改版を行いません。
+固定入力hashはsort済みUTF-8 JSONの`{glossary, context, policy}`だけから生成し、準備方式・config／model・usage・根拠artifact hash・参照元snapshot hashを含めません。翻訳callerはunitの実入力hashに加え、この固定入力hashを参照できます。方式だけが変わって採用内容が同じなら翻訳入力を無効化しません。原文とpolicy／book／version／利用者terms、全呼出しの準備方式・configと各版の実requestが現採用版と一致するとき、`prepare_document`はloadで再検証してdigestを返し、再送しません。内容変更後の新版も旧artifactを削除しません。`version`はcaller指定の非空文字列であり、時刻や試行数による自動改版を行いません。
 
 準備attemptの探索はfile名の辞書順で、受理可能な一致に達した時点で止まります。一つの`prepare_document`内では、到達してbyte hashを検証したimmutable raw recordだけをmemo化し、後続collect／organizeで同じ元fileを再read／hashしません。今回新規保存したrecordもatomic保存成功後に同じ正規JSON値を登録します。memo化するのは回答の受理結果ではなくraw recordであり、各候補の方式・実request・規定repair・config・raw回答schema／正常terminal／helper終了と現在の根拠の照合は省きません。到達した破損は従来どおり拒否し、一致より後方の未到達recordを先読みして拒否しません。公開`load_preparation`はこのmemoを共有せず、全runを独立検証します。別のprepareも読み直し、永続index・全履歴snapshot常駐・旧artifact書換えは行いません。
 

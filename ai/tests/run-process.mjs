@@ -87,7 +87,15 @@ faux.setResponses([
                       {
                         term: "Original",
                         translation: "自動",
-                        evidence: [{ unit_id: "unit-1", quote: "Original" }],
+                        evidence: [
+                          {
+                            unit_id:
+                              input.context.wire_version === 2
+                                ? "request-unit-1"
+                                : "unit-1",
+                            quote: "Original",
+                          },
+                        ],
                       },
                     ]
                   : [],

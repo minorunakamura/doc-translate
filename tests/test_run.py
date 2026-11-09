@@ -101,8 +101,16 @@ def test_run_announces_actual_auth_and_scope_before_provider_receives_data(
     ]
     assert events[1]["transmission"]["unit_ids"] == []
     assert "no full source units" in events[1]["transmission"]["content"]
-    assert events[0]["transmission"]["unit_ids"] == [
-        u["unit_id"] for u in json.loads(sent[0]["text"])
+    from doc_translate.units import generate_translation_units
+
+    units = generate_translation_units(load_source_snapshot(tmp_path / "new"))
+    assert events[0]["transmission"]["unit_ids"] == [unit.unit_id for unit in units]
+    collect_units = json.loads(sent[0]["text"])
+    assert [unit["unit_id"] for unit in collect_units] == [
+        f"request-unit-{index}" for index in range(1, len(units) + 1)
+    ]
+    assert [unit["source_text"] for unit in collect_units] == [
+        unit.source_text for unit in units
     ]
     assert events[2]["transmission"]["unit_ids"] == [
         u["unit_id"] for u in json.loads(sent[2]["text"])

@@ -553,7 +553,7 @@ cleanup：所有child group／handleだけをinterrupt・drain・waitし、所�
 
 入口は保存済み自作sourceからの公開`prepare_document`と独立`load_preparation`。翻訳／renderの前提は不要。起動はrepository rootの既存PDF extra付きPython、Node／compiled resource hash一致を確認し、`../scripts/preparation_baseline.py --evidence work/issue56-worker-<unique>`を既存Pythonで実行する。詳細command／固定区間／停止条件は[性能referenceの#56節](../../../../docs/reference/performance.md#preparation保存attempt探索の比較issue-56)。追加install／build・実provider／実workspaceは禁止。
 
-前提は100 heading＋body（200 units）、本文`queue`の引用根拠を持つ実collect100＋organize1の保存成功seed。実`test_preparation.run`→compiled Node／faux／no-network→公開save/loadで生成し、全fileを独立コピーする。adopted／pointerのみ除去したunadoptedの公開prepareと独立loadを各fresh process3回＋別diagnostic1回。期待はdigest・run数・根拠語一致、実追加requestゼロ、旧immutable／seed全byte不変。primaryは**unadoptedのinclusive `_call`合計秒**、公開loadの再検証は別計数、通常全体wall／CPU／RSS寄与も別記する。afterは`--seed BEFORE/seed`で同じ全byte seedを使う。小さい`--size 2`は接続確認だけ。最適化後の期待は操作内探索の到達record各read/hash1回（公開load分は別）、新規保存recordの後続探索再readなし、別operationでは再検証。`tests/test_preparation.py`のcatalog回帰でrepair／辞書順の先勝ち・到達破損拒否／後方未到達非read・旧採用保持も照合し、raw memoが回答の受理条件を省略しないことを確認する。
+前提は100 heading＋body（200 units）、本文`queue`の引用根拠を持つ実collect100＋organize1の保存成功seed。Issue #58以降の新規recipeは`Section groupN`をheadingに使い、marker保護後もwireを一意にして独立attempt数を維持する。`tests/test_performance_verification.py::test_preparation_baseline_seed_keeps_three_independent_collect_requests`で実collect3＋organize1／4元recordを確認する。新規recipeはmanifestのsource／script hashで区別し、保持済みv1 seed・過去比較値は変更しない。旧v1との比較は引き続き`--seed`の同byteを使い、新規入力の値を旧比較へ混ぜない。実`test_preparation.run`→compiled Node／faux／no-network→公開save/loadで生成し、全fileを独立コピーする。adopted／pointerのみ除去したunadoptedの公開prepareと独立loadを各fresh process3回＋別diagnostic1回。期待はdigest・run数・根拠語一致、実追加requestゼロ、旧immutable／seed全byte不変。primaryは**unadoptedのinclusive `_call`合計秒**、公開loadの再検証は別計数、通常全体wall／CPU／RSS寄与も別記する。afterは`--seed BEFORE/seed`で同じ全byte seedを使う。小さい`--size 2`は接続確認だけ。最適化後の期待は操作内探索の到達record各read/hash1回（公開load分は別）、新規保存recordの後続探索再readなし、別operationでは再検証。`tests/test_preparation.py`のcatalog回帰でrepair／辞書順の先勝ち・到達破損拒否／後方未到達非read・旧採用保持も照合し、raw memoが回答の受理条件を省略しないことを確認する。
 
 証拠はmanifest／dirty／diff／verification-sources、seed全byte・hash、command／exit／metrics／別profileとdigest別read/hash、raw／median／min/max、期待／観測／unknown／cleanup。所有childをwaitし、所有一時workspace／人工credentialだけfinally削除、保持したseedと証拠を全readbackする。物理I/O／同時aggregate RSS／provider性能はunknown。production最適化・70%目標達成・代表run／resume悪化なし・Root／Reviewer受入れを手順生成やbefore取得だけで成功扱いしない。既存status／進捗／review／render手順は不変。
 
@@ -561,6 +561,123 @@ cleanup：所有child group／handleだけをinterrupt・drain・waitし、所�
 
 入口は公開`save_source_snapshot → prepare_document → translate_document → load_translation`。前提は既存PDF extra付きPython／Node／compiled resource全hash一致、人工credential・実faux＋no-network。起動・固定区間・停止条件は[性能referenceの#57節](../../../../docs/reference/performance.md#translation保存attempt探索の計測issue-57)。repository rootで既存Pythonから`.venv/bin/python .pi/skills/verify-project/scripts/translation_baseline.py --evidence work/issue57-new-connection --size 2`を接続確認し、既定100 groupのbeforeを他benchmarkと非並行実行する。汎用runner／新Skill／install／buildは不要。
 
-自作PDF型100 heading＋body／200 units、実prepareと翻訳100 attemptsの整合seedを全byte保存。adopted、翻訳pointerのみ除去したunadopted、独立loadをfresh Python・warm filesystemで各通常3回＋別diagnostic1回。primaryはunadoptedの初回attempt glob→Executor.__enter__までのinclusive pre-job探索proxy。全体wall／CPU／RSS・内部previous load・独立load・snapshot保存数／bytesは別記。期待はcompleted・回答ID／text対応・返却digestと実pointer一致、worker submit0・実追加request0、旧immutable／seed不変。診断はthread-local scopeで探索／public_load／storeを分けてread/hash/parse/request/比較を委譲計数する。
+自作PDF型100 heading＋body／200 units、実prepareと翻訳100 attemptsの整合seedを全byte保存。準備seedは上の共通recipeを使うため、新規headingも`Section groupN`で独立collect100＋organize1を維持する。保持済み旧seedは`--seed`で再生成せず同byteを使う。adopted、翻訳pointerのみ除去したunadopted、独立loadをfresh Python・warm filesystemで各通常3回＋別diagnostic1回。primaryはunadoptedの初回attempt glob→Executor.__enter__までのinclusive pre-job探索proxy。全体wall／CPU／RSS・内部previous load・独立load・snapshot保存数／bytesは別記。期待はcompleted・回答ID／text対応・返却digestと実pointer一致、worker submit0・実追加request0、旧immutable／seed不変。診断はthread-local scopeで探索／public_load／storeを分けてread/hash/parse/request/比較を委譲計数する。
 
 証拠はmanifest／dirty／diff／verification-sources、seed全byte／hash、人工request、command／exit／metrics／diagnostic、raw／median／min/max／探索寄与／保持record数・論理bytes・親RSSとunknown／cleanup。所有childだけwaitし所有一時workspace／人工credentialだけ回収後、保持全fileをreadback。承認後afterは同seed・同script・同境界で比較する。catalogはrequest text／先頭unit IDで候補を取得した後に全configを照合し、等値なsigned zeroをconfig JSON byteキーで分離しない。開始時全元record検証・採用済みmanual優先・辞書順・全実入力/raw/domain検証を維持する。`tests/test_translation.py`のcatalog回帰は通常/repair/失敗/adjusted/分割失敗のatomic保存後別thread取得、候補順、元read各1回、別操作の破損拒否を扱う。`test_translation_recovers_orphan_with_equal_signed_zero_config`は正負両方向のpointer除去後回収・無送信・旧immutable保持・現在config／新旧loadを確認する。異なるconfigの候補は既存の実入力変更回帰で拒否を確認する。70%目標と代表run／resume上限は別比較で、レビュー修正前値を新sourceの測定に読み替えずRootが再計測する。手順成立やbefore取得を成功判定にしない。実provider／実workspace／任意書籍／意味品質／全履歴snapshot常駐は対象外。正式チェック／Root独立操作／Reviewer gateは別途必要。
+
+## 準備request内IDと追跡binding（Issue #58）
+
+対象は準備collect／organizeだけ。公開unit／locations／hash、固定入力hash、group算法、未送信list／table context、翻訳wire、並列は変更しない。既存`.venv`／Node／compiled helperのhash一致が前提で、追加install／sync／build・実provider・model取得・実書籍は使わない。下のshellとPythonをrepository rootで順に非並行実行する。`test_preparation`の人工入力／外部faux fixture起動を再利用するが、generate／save／domain検証は実物、EPUBは実archive reader／extractorを通る。
+
+```sh
+set -eu
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+mkdir -p work
+EVIDENCE=$(mktemp -d "$PWD/work/issue58-preparation-ids-XXXXXX")
+export EVIDENCE
+PYTHONPATH=tests .venv/bin/python - <<'PY'
+import hashlib, json, os, shutil, subprocess, tempfile
+from pathlib import Path
+from test_preparation import ROOT, CONFIG, id_source, id_answers, run
+from doc_translate.ai_runtime import _resources
+from doc_translate.preparation import prepare_document, load_preparation
+from doc_translate.snapshot import save_source_snapshot
+
+evidence = Path(os.environ['EVIDENCE'])
+assert evidence.parent == ROOT / 'work' and evidence.name.startswith('issue58-')
+observations = []
+
+def files(root):
+    return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in root.rglob('*') if p.is_file()}
+
+try:
+    (evidence / 'revision.txt').write_text(subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True))
+    (evidence / 'dirty.txt').write_text(subprocess.check_output(['git', 'status', '--short'], text=True))
+    (evidence / 'scope.diff').write_text(subprocess.check_output(['git', 'diff'], text=True))
+    assert shutil.which('node'), 'existing Node required; no install'
+    build = files(ROOT / 'ai/dist')
+    assert build and build == files(_resources() / 'dist'), 'resource mismatch: stop; do not build'
+    (evidence / 'conditions.json').write_text(json.dumps({'helper_hashes': build,
+        'entry': 'public prepare_document -> load_preparation via existing fixture launcher',
+        'network': 'existing no-network.mjs + public faux; artificial credentials only',
+        'input': 'self-authored PDF source and actual EPUB archive reader/extractor',
+        'command': 'PYTHONPATH=tests .venv/bin/python (Map inline script)',
+        'unverified': 'real provider/Docling/OCR/meaning quality/viewer/concurrency/translation v2'}, indent=2))
+    with tempfile.TemporaryDirectory(prefix='issue58-ids-owned-') as temporary:
+        owned = Path(temporary)
+        for source_format in ['pdf', 'epub']:
+            case = owned / source_format
+            case.mkdir()
+            workspace = case / 'workspace'
+            original = id_source(case, source_format)
+            save_source_snapshot(workspace, original)
+            first = run(case, workspace, [], answers_override=id_answers(original), terms={'queue': '利用者'})
+            old = load_preparation(workspace, first)
+            immutable = {p: p.read_bytes() for directory in ['snapshots', 'attempts', 'preparation']
+                         for p in (workspace / directory).rglob('*.json')}
+            shifted = id_source(case, source_format, prefix=True)
+            save_source_snapshot(workspace, shifted)
+            notices = []
+            digest = run(case, workspace, [], answers_override=id_answers(shifted), terms={'queue': '利用者'},
+                         before_send=lambda config, request, preflight: notices.append(request))
+            current = load_preparation(workspace, digest)
+            assert [r.context['phase'] for r in notices] == ['collect', 'collect', 'organize']
+            assert current.runs[2] == old.runs[1], 'Beta must reuse with shifted tracking IDs'
+            assert current.glossary.terms == {'queue': '利用者'}
+            assert current.translation_inputs_sha256 == old.translation_inputs_sha256
+            bound = json.loads((workspace / 'preparation/evidence' / f'{current.evidence_sha256}.json').read_bytes())
+            assert bound['bindings'][-1] == ['unit-5', 'unit-6']
+            assert bound['collections'][-1]['candidates'][0]['evidence'][0]['unit_id'] == 'unit-6'
+            raw = json.loads((workspace / 'attempts/preparation' / f'{current.runs[2]}.json').read_bytes())
+            assert raw['wire_version'] == raw['request']['context']['wire_version'] == 2
+            assert 'section' not in raw['request']['context']
+            assert [u['unit_id'] for u in json.loads(raw['request']['text'])] == ['request-unit-1', 'request-unit-2']
+            organize = json.loads((workspace / 'attempts/preparation' / f'{current.runs[-1]}.json').read_bytes())
+            collections = json.loads(organize['request']['text'])
+            assert len(collections) == 3
+            assert all(e['unit_id'] == 'request-unit-2' for c in collections for e in c['candidates'][0]['evidence'])
+            assert all(path.read_bytes() == data for path, data in immutable.items())
+            assert load_preparation(workspace, first) == old
+            (evidence / f'{source_format}-binding.json').write_text(json.dumps(bound, ensure_ascii=False, indent=2))
+            (evidence / f'{source_format}-raw.json').write_text(json.dumps(raw, ensure_ascii=False, indent=2))
+            (evidence / f'{source_format}-organize.json').write_text(json.dumps(organize, ensure_ascii=False, indent=2))
+            (evidence / f'{source_format}-requests.jsonl').write_bytes((case / 'requests.jsonl').read_bytes())
+            observations.append({'format': source_format, 'expected_new_collect': 2, 'observed_new_collect': 2,
+                'reused_group': 'Beta', 'tracking_unit': 'unit-6', 'raw_alias': 'request-unit-2',
+                'user_terms_precedence': True, 'immutable_unchanged': True, 'old_load_unchanged': True})
+        workspace = owned / 'v1'
+        fixture = json.loads((ROOT / 'tests/fixtures/preparation-v1.json').read_bytes())
+        for name, data in fixture.items():
+            path = workspace / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(data)
+        old = load_preparation(workspace)
+        before = files(workspace)
+        digest = prepare_document(workspace=workspace, book=old.glossary.book, policy=old.policy,
+                                  config=CONFIG, process_command=['must-not-launch-on-v1-reuse'])
+        assert digest == json.loads(fixture['preparation-snapshot.json'])['sha256']
+        assert files(workspace) == before
+        observations.append({'format': 'frozen byte-original v1 from ec49420', 'new_requests': 0,
+                             'same_digest': True, 'all_original_bytes_unchanged': True})
+finally:
+    (evidence / 'observations.json').write_text(json.dumps(observations, ensure_ascii=False, indent=2))
+    (evidence / 'cleanup.txt').write_text('TemporaryDirectory-owned workspaces/artificial credentials removed; subprocess.run children reaped; evidence retained\n')
+    for path in evidence.rglob('*'):
+        if path.is_file():
+            path.read_bytes()
+assert len(observations) == 3
+print(evidence, 'PDF/EPUB current binding + raw organize + v1 no-send matched; cleanup/readback complete')
+PY
+```
+
+期待：PDF／EPUB双方でPreface追加時にcollect 2件＋organize 1件のみ新規送信し、Betaは保存成功を無送信reuseする。rawは`request-unit-2`のまま、現在evidenceは`unit-6`と現在snapshot位置へ対応する。organizeはgroup順raw collections、利用者terms最優先、旧immutable全byte・旧版load・固定hashは不変。変更前v1 fixtureは同digest・追加送信0・旧byte不変。失敗はassertを緩めず原因／未確認として報告する。
+
+証拠は`revision.txt/dirty.txt/scope.diff/conditions.json/observations.json/cleanup.txt`と形式別`*-binding.json/*-raw.json/*-organize.json/*-requests.jsonl`で、workspace削除後も再読する。binding順序／重複・request順序／重複alias・未知版・再hash quote／raw／organize改ざん、実heading／本文変更miss、同unit複数quote／疎／空根拠、同一wireの異なるbinding、v1／v2混在と旧ID非転用は次の小さい回帰で補完する。
+
+```sh
+PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  .venv/bin/pytest tests/test_preparation.py -k 'v2 or byte_original_v1 or repairs or orphan or recovers_validated' -q
+```
+
+Mapは再実行入口であり成功台帳ではない。実行ごとにcommand／exit・実観測／未確認を残し、Rootは別invocationと正式phaseを行う。翻訳full pipeline・新並列・実provider品質／速度・実Docling／OCR・viewer・他OS・remote CIを本手順の合格に含めない。
