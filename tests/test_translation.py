@@ -71,6 +71,19 @@ def test_prepared_copies_load_independently_without_changing_seed(
 def translate(tmp_path, workspace, response=None, **kwargs):
     answers = tmp_path / "translation-answers.json"
     answers.write_text(json.dumps(response or {}))
+    from doc_translate.translation import _projection
+
+    units = generate_translation_units(
+        load_source_snapshot(workspace, kwargs.get("source_sha256"))
+    )
+    answers.with_suffix(".bindings.json").write_text(
+        json.dumps(
+            {
+                "units": _projection(units, 2),
+                "unit_ids": [unit.unit_id for unit in units],
+            }
+        )
+    )
     node = shutil.which("node")
     assert node
     return translate_document(
@@ -186,10 +199,10 @@ def test_translation_repairs_all_marker_moves_with_specific_untrusted_feedback(
             return
         assert feedback["code"] == "translation_marker_mismatch"
         first, second = feedback["units"]
-        assert first["unit_id"] == units[0].unit_id
+        assert first["unit_id"] == "request-unit-1"
         assert first["expected_markers"] == first["missing_markers"] == [marker]
         assert first["actual_markers"] == first["extra_markers"] == []
-        assert second["unit_id"] == units[1].unit_id
+        assert second["unit_id"] == "request-unit-2"
         assert second["expected_markers"] == second["missing_markers"] == []
         assert second["actual_markers"] == second["extra_markers"] == [marker]
         assert second["translated_text"] == "ARTIFICIAL_INJECTION " + marker
@@ -692,10 +705,14 @@ def test_translation_load_rejects_rehashed_unvalidated_attempt(
 
 
 @pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+@pytest.mark.parametrize("shared", [False, True])
 def test_translation_cancels_parallel_children_and_drains_before_return(
-    tmp_path, signum
+    tmp_path, signum, shared
 ):
-    workspace = prepare_blocks(tmp_path, [("body", letter * 6500) for letter in "abcd"])
+    workspace = prepare_blocks(
+        tmp_path, [("body", letter * 6500) for letter in ("aaaa" if shared else "abcd")]
+    )
+    active = 1 if shared else 2
     script = (
         "from pathlib import Path; from test_translation import translate; "
         f"translate(Path({str(tmp_path)!r}), Path({str(workspace)!r}), {{'wait': True}})"
@@ -712,7 +729,9 @@ def test_translation_cancels_parallel_children_and_drains_before_return(
     try:
         recording = tmp_path / "translation-requests.jsonl"
         deadline = time.monotonic() + 10
-        while not recording.exists() or len(recording.read_text().splitlines()) < 2:
+        while (
+            not recording.exists() or len(recording.read_text().splitlines()) < active
+        ):
             assert child.poll() is None
             assert time.monotonic() < deadline
             time.sleep(0.01)
@@ -722,11 +741,11 @@ def test_translation_cancels_parallel_children_and_drains_before_return(
         adopted = load_translation(workspace)
         assert adopted.processing.status == "failed"
         assert adopted.translations == []
-        assert len(requests(tmp_path)) == 2
+        assert len(requests(tmp_path)) == active
         assert (
             tmp_path / "translation-requests.jsonl.drained"
-        ).read_text().splitlines() == ["drained", "drained"]
-        assert len(adopted.runs) == 2
+        ).read_text().splitlines() == ["drained"] * active
+        assert len(adopted.runs) == active
         records = [
             json.loads(
                 (workspace / "attempts/translation" / f"{run}.json").read_bytes()
@@ -1253,3 +1272,396 @@ def test_translation_catalog_indexes_orphans_in_digest_order_once_per_operation(
     with pytest.raises(ValueError, match="SHA-256"):
         translate(tmp_path, workspace)
     assert requests(tmp_path) == sent
+
+
+@pytest.mark.parametrize("source_format", ["pdf", "epub"])
+def test_translation_v2_rebinds_prefix_without_erasing_real_context(
+    tmp_path, source_format
+):
+    from test_preparation import id_answers, id_source
+
+    workspace = tmp_path / "workspace"
+    original = id_source(tmp_path, source_format)
+    save_source_snapshot(workspace, original)
+    prepare(tmp_path, workspace, [], answers_override=id_answers(original))
+    first = translate(tmp_path, workspace)
+    old = load_translation(workspace, first)
+    immutable = {
+        p: p.read_bytes()
+        for d in ["snapshots", "attempts", "translations"]
+        for p in (workspace / d).rglob("*.json")
+    }
+    shifted = id_source(tmp_path, source_format, prefix=True)
+    save_source_snapshot(workspace, shifted)
+    sent = len(requests(tmp_path))
+    digest = translate(tmp_path, workspace)
+    current = load_translation(workspace, digest)
+    assert len(requests(tmp_path)) == sent + 2  # Preface and changed Alpha context.
+    assert current.chunks[-1].units[-1].unit_id == "unit-6"
+    artifact = json.loads(
+        (
+            workspace
+            / "translations/chunks"
+            / f"{current.chunks[-1].artifact_sha256}.json"
+        ).read_bytes()
+    )
+    assert artifact["run"] in old.runs
+    assert artifact["wire_version"] == 2
+    assert artifact["bindings"] == ["unit-5", "unit-6"]
+    raw = json.loads(
+        (workspace / "attempts/translation" / f"{artifact['run']}.json").read_bytes()
+    )
+    assert raw["wire_version"] == raw["request"]["context"]["wire_version"] == 2
+    raw_answer = json.loads(
+        raw["attempts"][-1]["final"]["message"]["content"][0]["text"]
+    )
+    assert [u["unit_id"] for u in raw_answer["translations"]] == [
+        "request-unit-1",
+        "request-unit-2",
+    ]
+    assert current.chunks[-1].answer is not None
+    assert [u.unit_id for u in current.chunks[-1].answer.translations] == artifact[
+        "bindings"
+    ]
+    assert all(p.read_bytes() == data for p, data in immutable.items())
+    assert load_translation(workspace, first) == old
+    for heading, body in [
+        ("Beta changed", "queue queue."),
+        ("Beta changed", "queue changed."),
+    ]:
+        changed = id_source(
+            tmp_path, source_format, prefix=True, heading=heading, body=body
+        )
+        save_source_snapshot(workspace, changed)
+        count = len(requests(tmp_path))
+        translate(tmp_path, workspace)
+        assert len(requests(tmp_path)) == count + 1
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_translation_v2_single_flight_binds_independent_jobs_and_counts_usage_once(
+    tmp_path, failure
+):
+    # Distinct tracking IDs, identical complete wire input, two concurrent jobs.
+    workspace = prepare_blocks(tmp_path, [("body", "same queue ")] * 2)
+    events = []
+    digest = translate(
+        tmp_path,
+        workspace,
+        {"fail": "same"} if failure else {},
+        max_source_chars=11,
+        observer=events.append,
+    )
+    adopted = load_translation(workspace, digest)
+    assert len(requests(tmp_path)) == 1
+    assert len(adopted.chunks) == 2
+    assert len(adopted.runs) == len(set(adopted.runs)) == 1
+    assert adopted.processing.status == ("failed" if failure else "completed")
+    assert len([e for e in events if e.kind == "request_start"]) == 1
+    if not failure:
+        assert [item.unit_id for item in adopted.translations] == ["unit-1", "unit-2"]
+        assert len({c.artifact_sha256 for c in adopted.chunks}) == 2
+        assert translate(tmp_path, workspace, max_source_chars=11) == digest
+        assert len(requests(tmp_path)) == 1
+
+
+def test_translation_v2_single_flight_persistence_exception_completes_followers(
+    tmp_path, monkeypatch
+):
+    workspace = prepare_blocks(tmp_path, [("body", "same queue ")] * 2)
+    replace = os.replace
+
+    def fail_replace(src, dst):
+        if "attempts/translation" in str(dst):
+            raise OSError("shared attempt save failed")
+        return replace(src, dst)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_replace)
+        with pytest.raises(OSError, match="shared attempt save failed"):
+            translate(tmp_path, workspace, max_source_chars=11)
+    assert len(requests(tmp_path)) == 1
+    assert not (workspace / "translation-snapshot.json").exists()
+    translate(tmp_path, workspace, max_source_chars=11)
+    assert load_translation(workspace).processing.status == "completed"
+    assert len(requests(tmp_path)) == 2
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "binding-order",
+        "binding-duplicate",
+        "version",
+        "request-version",
+        "raw-order",
+        "raw-duplicate",
+        "raw-tracking",
+        "split-range",
+        "split-parent",
+    ],
+)
+def test_translation_v2_load_rejects_rehashed_binding_raw_version_and_split_changes(
+    tmp_path, tamper
+):
+    split = tamper.startswith("split-")
+    workspace = prepare_blocks(
+        tmp_path,
+        [("body", "word " * 10)] if split else [("body", "first"), ("body", "second")],
+    )
+    digest = translate(
+        tmp_path, workspace, **({"max_source_chars": 30} if split else {})
+    )
+    data = load_translation(workspace, digest).model_dump(mode="json")
+    chunk = data["chunks"][0]
+    artifact = json.loads(
+        (
+            workspace / "translations/chunks" / f"{chunk['artifact_sha256']}.json"
+        ).read_bytes()
+    )
+    run = json.loads(
+        (workspace / "attempts/translation" / f"{artifact['run']}.json").read_bytes()
+    )
+    if tamper == "binding-order":
+        artifact["bindings"].reverse()
+    elif tamper == "binding-duplicate":
+        artifact["bindings"][1] = artifact["bindings"][0]
+    elif tamper == "version":
+        artifact["wire_version"] = 99
+    elif tamper == "request-version":
+        artifact["request"]["context"]["wire_version"] = 99
+    elif split:
+        field = artifact["request"]["context"]["split_inputs"][0]
+        if tamper == "split-range":
+            field["source_range"]["start"] += 1
+        else:
+            field["parent_source_hash"] = "a" * 64
+        run["request"] = artifact["request"]
+    else:
+        raw = json.loads(run["attempts"][-1]["final"]["message"]["content"][0]["text"])
+        if tamper == "raw-order":
+            raw["translations"].reverse()
+        elif tamper == "raw-duplicate":
+            raw["translations"][1]["unit_id"] = "request-unit-1"
+        else:
+            raw["translations"][0]["unit_id"] = "unit-1"
+        run["attempts"][-1]["final"]["message"]["content"][0]["text"] = json.dumps(raw)
+    new_run = rewrite_artifact(workspace, "attempts/translation", run)
+    data["runs"] = [new_run if r == artifact["run"] else r for r in data["runs"]]
+    artifact["run"] = new_run
+    chunk["artifact_sha256"] = rewrite_artifact(
+        workspace, "translations/chunks", artifact
+    )
+    changed = rewrite_artifact(workspace, "snapshots/translation", data)
+    with pytest.raises(ValueError):
+        load_translation(workspace, changed)
+
+
+def test_translation_byte_original_v1_reuse_mixed_v2_and_manual_history(tmp_path):
+    from doc_translate.revise import revise_document
+
+    workspace = tmp_path / "workspace"
+    frozen = json.loads((ROOT / "tests/fixtures/translation-v1.json").read_bytes())
+    for name, text in frozen.items():
+        path = workspace / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    old = load_translation(workspace)
+    before = {p: p.read_bytes() for p in workspace.rglob("*.json")}
+    digest = translate_document(
+        workspace=workspace, config=CONFIG, process_command=["must-not-launch"]
+    )
+    assert digest == json.loads(frozen["translation-snapshot.json"])["sha256"]
+    assert all(p.read_bytes() == value for p, value in before.items())
+    original = load_source_snapshot(workspace)
+    original.blocks.append(
+        original.blocks[0].model_copy(
+            update={"block_id": "new-heading", "kind": "heading", "text": "New section"}
+        )
+    )
+    save_source_snapshot(workspace, original)
+    translate(tmp_path, workspace)
+    mixed = load_translation(workspace)
+    artifacts = [
+        json.loads(
+            (
+                workspace / "translations/chunks" / f"{c.artifact_sha256}.json"
+            ).read_bytes()
+        )
+        for c in mixed.chunks
+    ]
+    assert [a.get("wire_version", 1) for a in artifacts] == [1, 2]
+    for index in [0, 1, 1]:
+        current = load_translation(workspace)
+        answer = current.chunks[index].answer
+        assert answer is not None
+        item = answer.translations[0].model_dump(mode="json")
+        item["text"] = "手修正 " + item["text"]
+        patch = tmp_path / "manual.json"
+        patch.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "base_source_sha256": current.source_snapshot_sha256,
+                    "base_translation_sha256": json.loads(
+                        (workspace / "translation-snapshot.json").read_bytes()
+                    )["sha256"],
+                    "translations": [item],
+                }
+            )
+        )
+        revise_document(
+            workspace=workspace, translations=patch, reason="Self-authored manual check"
+        )
+    manual = load_translation(workspace)
+    sent = requests(tmp_path)
+    translate(tmp_path, workspace)
+    assert load_translation(workspace).translations == manual.translations
+    assert requests(tmp_path) == sent
+    assert load_translation(workspace, digest) == old
+    assert all(
+        p.read_bytes() == value
+        for p, value in before.items()
+        if p.name != "translation-snapshot.json" and p.name != "source-snapshot.json"
+    )
+
+
+def test_translation_v2_does_not_transfer_manual_edits_after_prefix_shift(tmp_path):
+    from test_preparation import id_answers, id_source
+
+    from doc_translate.revise import revise_document
+
+    workspace = tmp_path / "workspace"
+    original = id_source(tmp_path, "pdf")
+    save_source_snapshot(workspace, original)
+    prepare(tmp_path, workspace, [], answers_override=id_answers(original))
+    translate(tmp_path, workspace)
+    current = load_translation(workspace)
+    patch = tmp_path / "manual.json"
+    item = current.translations[-1].model_dump(mode="json")
+    item["text"] = "手修正限定"
+    patch.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "base_source_sha256": current.source_snapshot_sha256,
+                "base_translation_sha256": json.loads(
+                    (workspace / "translation-snapshot.json").read_bytes()
+                )["sha256"],
+                "translations": [item],
+            }
+        )
+    )
+    revised = revise_document(
+        workspace=workspace, translations=patch, reason="Self-authored check"
+    )
+    manual = load_translation(workspace)
+    translate(tmp_path, workspace)
+    assert load_translation(workspace).translations == manual.translations
+    save_source_snapshot(workspace, id_source(tmp_path, "pdf", prefix=True))
+    count = len(requests(tmp_path))
+    translate(tmp_path, workspace)
+    assert len(requests(tmp_path)) == count + 2
+    assert "手修正限定" not in [
+        u.text for u in load_translation(workspace).translations
+    ]
+    assert load_translation(workspace, revised["translation_snapshot_sha256"]) == manual
+
+
+def test_translation_v2_orphan_cannot_swallow_current_manual_subchunk(tmp_path):
+    from doc_translate.revise import revise_document
+
+    workspace = prepare_blocks(tmp_path, [("body", "first"), ("body", "second")])
+    translate(tmp_path, workspace, {"fail": "first"})
+    failed_pointer = (workspace / "translation-snapshot.json").read_bytes()
+    translate(tmp_path, workspace)  # Genuine full-size success, later left orphaned.
+    (workspace / "translation-snapshot.json").write_bytes(failed_pointer)
+    failed = load_translation(workspace)
+    patch = tmp_path / "manual.json"
+    patch.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "base_source_sha256": failed.source_snapshot_sha256,
+                "base_translation_sha256": json.loads(failed_pointer)["sha256"],
+                "translations": [
+                    {"unit_id": "unit-2", "text": "手修正優先", "uncertainties": []}
+                ],
+            }
+        )
+    )
+    revise_document(
+        workspace=workspace, translations=patch, reason="Self-authored partial check"
+    )
+    sent = len(requests(tmp_path))
+    translate(tmp_path, workspace)
+    assert [u.text for u in load_translation(workspace).translations] == [
+        "訳:first",
+        "手修正優先",
+    ]
+    assert len(requests(tmp_path)) == sent + 1
+    assert len(json.loads(requests(tmp_path)[-1]["text"])) == 1
+
+
+def test_translation_v2_split_reuse_checks_whole_parent_not_just_matching_parts(
+    tmp_path,
+):
+    workspace = prepare_blocks(tmp_path, [("body", "word " * 20)])
+    first = translate(tmp_path, workspace, max_source_chars=30)
+    original = load_translation(workspace, first)
+    assert len(original.chunks) == 4
+    source = load_source_snapshot(workspace)
+    source.blocks[0].text = "word " * 19 + "edit "
+    save_source_snapshot(workspace, source)
+    sent = len(requests(tmp_path))
+    translate(tmp_path, workspace, max_source_chars=30)
+    current = load_translation(workspace)
+    assert (
+        current.chunks[0].units[0].source_text
+        == original.chunks[0].units[0].source_text
+    )
+    assert len(requests(tmp_path)) == sent + 4
+    assert set(current.runs) > set(original.runs)
+    assert load_translation(workspace, first) == original
+
+
+def test_translation_v2_projection_keeps_nonheading_context_verbatim(tmp_path):
+    from doc_translate.translation import _request
+
+    workspace = prepare_blocks(tmp_path, [("body", "queue")])
+    unit = generate_translation_units(load_source_snapshot(workspace))[0]
+    context = {
+        "heading_path": [
+            {
+                "block_id": "position",
+                "node_path": "node",
+                "level": 2,
+                "text": "Heading",
+                "other": "keep",
+            }
+        ],
+        "list": {"parent_id": "position", "level": 1},
+        "table": {"cell_id": "cell", "column": 1},
+        "caption": {"block_id": "figure"},
+        "arbitrary": {"node_path": "keep"},
+    }
+    unit = unit.model_copy(update={"context": context})
+    projected = json.loads(_request([unit], load_preparation(workspace)).text)[0]
+    expected = {
+        **context,
+        "heading_path": [{"level": 2, "text": "Heading", "other": "keep"}],
+    }
+    assert projected["context"] == expected
+    assert unit.context == context
+
+
+def test_translation_v2_requires_aliases_in_actual_raw_answer(tmp_path, prepared):
+    response = {
+        "wire_answer": True,
+        "answer": {
+            "translations": [{"unit_id": "unit-1", "text": "訳文", "uncertainties": []}]
+        },
+    }
+    digest = translate(tmp_path, prepared, response)
+    assert load_translation(prepared, digest).translations == []
+    assert len(requests(tmp_path)) == 1

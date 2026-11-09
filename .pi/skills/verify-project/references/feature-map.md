@@ -681,3 +681,165 @@ PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 ```
 
 Mapは再実行入口であり成功台帳ではない。実行ごとにcommand／exit・実観測／未確認を残し、Rootは別invocationと正式phaseを行う。翻訳full pipeline・新並列・実provider品質／速度・実Docling／OCR・viewer・他OS・remote CIを本手順の合格に含めない。
+
+## 翻訳request内IDと追跡binding（Issue #59）
+
+対象は公開`prepare_document → translate_document → load_translation`と`revise_document`の翻訳ID／binding／無効化だけ。先の準備ID手順・既存fixtureを再利用し、新helper／汎用harnessは追加しない。repository rootの既存`.venv`／Node／compiled helper hash一致が前提。自作PDF型sourceと実EPUB archive reader／extractor、人工credential、実Node helper／公開faux＋no-networkだけを使う。追加install／sync／build、実provider／既存workspace・実書籍／model取得は禁止。以下を同じshellで非並行実行する。
+
+```sh
+set -eu
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+mkdir -p work
+EVIDENCE=$(mktemp -d "$PWD/work/issue59-translation-ids-XXXXXX")
+export EVIDENCE
+PYTHONPATH=tests .venv/bin/python - <<'PY'
+import hashlib, json, os, shutil, subprocess, sys, tempfile
+from pathlib import Path
+from test_preparation import ROOT, CONFIG, id_source, id_answers, run, rewrite_artifact
+from test_translation import translate, requests
+from doc_translate.ai_runtime import _resources
+from doc_translate.preparation import load_preparation
+from doc_translate.revise import revise_document
+from doc_translate.snapshot import save_source_snapshot
+from doc_translate.translation import translate_document, load_translation
+
+evidence = Path(os.environ['EVIDENCE'])
+assert evidence.parent == ROOT / 'work' and evidence.name.startswith('issue59-')
+observations = []
+
+def files(root):
+    return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in root.rglob('*') if p.is_file()}
+
+def read(workspace, directory, digest):
+    return json.loads((workspace / directory / f'{digest}.json').read_bytes())
+
+try:
+    for name, command in [('revision.txt', ['git', 'rev-parse', 'HEAD']),
+                          ('dirty.txt', ['git', 'status', '--short']),
+                          ('scope.diff', ['git', 'diff'])]:
+        (evidence / name).write_bytes(subprocess.check_output(command))
+    assert shutil.which('node'), 'existing Node required; stop without install'
+    build = files(ROOT / 'ai/dist')
+    assert build and build == files(_resources() / 'dist'), 'resource mismatch; stop without build'
+    (evidence / 'conditions.json').write_text(json.dumps({'python': sys.version,
+        'node': subprocess.check_output(['node', '--version'], text=True), 'helper_hashes': build,
+        'command': 'PYTHONPATH=tests .venv/bin/python (Feature Map Issue #59 inline script)',
+        'entry': 'public prepare/translate/load/revise through existing real Node fixture launchers',
+        'network': 'existing no-network.mjs + faux; artificial credentials only',
+        'unverified': 'real provider/Docling/OCR/meaning quality/full performance/other OS/remote CI'}, indent=2))
+    with tempfile.TemporaryDirectory(prefix='issue59-ids-owned-') as temporary:
+        owned = Path(temporary)
+        for source_format in ['pdf', 'epub']:
+            case = owned / source_format
+            case.mkdir()
+            workspace = case / 'workspace'
+            original = id_source(case, source_format)
+            save_source_snapshot(workspace, original)
+            run(case, workspace, [], answers_override=id_answers(original))
+            first = translate(case, workspace)
+            old = load_translation(workspace, first)
+            fixed = load_preparation(workspace).translation_inputs_sha256
+            patch = case / 'manual.json'
+            item = old.translations[-1].model_dump(mode='json')
+            item['text'] = 'Self-authored manual translation.'
+            patch.write_text(json.dumps({'schema_version': 1, 'base_source_sha256': old.source_snapshot_sha256,
+                'base_translation_sha256': first, 'translations': [item]}))
+            manual_digest = revise_document(workspace=workspace, translations=patch,
+                                           reason='Self-authored verification')['translation_snapshot_sha256']
+            manual = load_translation(workspace, manual_digest)
+            sent = len(requests(case))
+            assert translate(case, workspace) == manual_digest
+            assert len(requests(case)) == sent, 'current manual has priority, no resend'
+            immutable = {p: p.read_bytes() for directory in ['snapshots', 'attempts', 'translations', 'preparation']
+                         for p in (workspace / directory).rglob('*.json')}
+            shifted = id_source(case, source_format, prefix=True)
+            save_source_snapshot(workspace, shifted)
+            run(case, workspace, [], answers_override=id_answers(shifted))
+            assert load_preparation(workspace).translation_inputs_sha256 == fixed
+            digest = translate(case, workspace)
+            current = load_translation(workspace, digest)
+            assert len(requests(case)) == sent + 2, 'only Preface and changed Alpha context send'
+            assert 'Self-authored manual translation.' not in [u.text for u in current.translations]
+            chunk = current.chunks[-1]
+            bound = read(workspace, 'translations/chunks', chunk.artifact_sha256)
+            raw = read(workspace, 'attempts/translation', bound['run'])
+            assert bound['run'] in old.runs
+            assert bound['wire_version'] == raw['wire_version'] == raw['request']['context']['wire_version'] == 2
+            assert bound['bindings'] == [u.unit_id for u in chunk.units] == ['unit-5', 'unit-6']
+            raw_answer = json.loads(raw['attempts'][-1]['final']['message']['content'][0]['text'])
+            assert [u['unit_id'] for u in raw_answer['translations']] == ['request-unit-1', 'request-unit-2']
+            assert [u.unit_id for u in chunk.answer.translations] == bound['bindings']
+            for unit in json.loads(raw['request']['text']):
+                assert all('block_id' not in h and 'node_path' not in h for h in unit['context']['heading_path'])
+            assert all(p.read_bytes() == data for p, data in immutable.items())
+            assert load_translation(workspace, first) == old
+            assert load_translation(workspace, manual_digest) == manual
+            changed = id_source(case, source_format, prefix=True, body='queue changed.')
+            save_source_snapshot(workspace, changed)
+            run(case, workspace, [], answers_override=id_answers(changed))
+            sent = len(requests(case))
+            changed_digest = translate(case, workspace)
+            changed_snapshot = load_translation(workspace, changed_digest)
+            assert len(requests(case)) == sent + 1, 'actual body change invalidates Beta'
+            # Rehashing cannot authorize a reordered mapping. Do not alter adopted pointer.
+            invalid = changed_snapshot.model_dump(mode='json')
+            bad_chunk = invalid['chunks'][-1]
+            bad = read(workspace, 'translations/chunks', bad_chunk['artifact_sha256'])
+            bad['bindings'].reverse()
+            bad_chunk['artifact_sha256'] = rewrite_artifact(workspace, 'translations/chunks', bad)
+            bad_digest = rewrite_artifact(workspace, 'snapshots/translation', invalid)
+            try:
+                load_translation(workspace, bad_digest)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('rehashed bad binding accepted')
+            assert load_translation(workspace) == changed_snapshot
+            (evidence / f'{source_format}-bound.json').write_text(json.dumps(bound, ensure_ascii=False, indent=2))
+            (evidence / f'{source_format}-raw.json').write_text(json.dumps(raw, ensure_ascii=False, indent=2))
+            (evidence / f'{source_format}-requests.jsonl').write_bytes((case / 'translation-requests.jsonl').read_bytes())
+            (evidence / f'{source_format}-immutable-hashes.json').write_text(json.dumps(
+                {str(p.relative_to(workspace)): hashlib.sha256(data).hexdigest() for p, data in immutable.items()}, indent=2))
+            observations.append({'format': source_format, 'expected_prefix_sends': 2, 'observed_prefix_sends': 2,
+                'expected_body_change_sends': 1, 'observed_body_change_sends': 1,
+                'raw_aliases': ['request-unit-1', 'request-unit-2'], 'current_ids': bound['bindings'],
+                'manual_priority': True, 'manual_not_transferred': True, 'rehashed_bad_binding_rejected': True,
+                'old_bytes_and_loads_unchanged': True})
+        workspace = owned / 'v1'
+        fixture = json.loads((ROOT / 'tests/fixtures/translation-v1.json').read_bytes())
+        for name, text in fixture.items():
+            path = workspace / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        previous = files(workspace)
+        old = load_translation(workspace)
+        digest = translate_document(workspace=workspace, config=CONFIG,
+                                    process_command=['must-not-launch-on-v1-reuse'])
+        assert digest == json.loads(fixture['translation-snapshot.json'])['sha256']
+        assert files(workspace) == previous and load_translation(workspace) == old
+        observations.append({'format': 'frozen original v1 from eb2f9a9', 'new_requests': 0,
+                             'same_digest': True, 'all_original_bytes_unchanged': True})
+finally:
+    (evidence / 'observations.json').write_text(json.dumps(observations, ensure_ascii=False, indent=2))
+    (evidence / 'cleanup.txt').write_text('TemporaryDirectory-owned workspaces/artificial credentials removed; synchronous fixture children reaped; evidence retained\n')
+    for path in evidence.rglob('*'):
+        if path.is_file():
+            path.read_bytes()
+assert len(observations) == 3
+(evidence / 'result.json').write_text(json.dumps({'exit': 0, 'expected': 'PDF/EPUB binding, reuse/miss, manual protection and v1 bytes', 'observed': 'matched'}))
+(evidence / 'result.json').read_bytes()
+print(evidence, 'translation IDs matched; cleanup/readback complete')
+PY
+```
+
+期待：prefix追加時はPDF／EPUB双方で新規翻訳2件、Betaの自動raw成功を無送信reuseし、alias1/2→現在unit-5/6へbindingする。現在manualは無変更で優先するが、IDずれした別unitへ転写しない。実Beta本文変更は1件miss、固定文書context／glossary／policy／schema／実config変更も通常どおり無効化する。binding順を再hashで偽装してもpublic loadが拒否する。旧immutable／旧自動版・manual履歴load／v1原byte・同digestを保つ。
+
+証拠はrevision／dirty／scope.diff／conditions、形式別bound／raw／request／immutable-hashes、observations／result／cleanup。全参照を所有workspace削除後も読む。例外は成功へ置換せず、必要な前提がなければ止め、失敗command／exitと未確認を別記する。本文・heading・固定入力miss／未知版・raw順／重複／marker・split親hash／範囲／part順・mixed v1/v2/manual・current manual subchunk優先・single-flight成功／失敗／保存例外／取消drainは次で補完する。
+
+```sh
+PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  .venv/bin/pytest tests/test_translation.py -k 'v2 or byte_original or signed_zero or cancels or actual_input_changes' -q
+```
+
+Mapは成功台帳でなく再実行入口。全体性能／新しい準備・PDF並列設定、実provider速度・意味品質、実Docling／OCR、viewer、他OS／remote CIは未確認。正式full core／PDF4／Node checks・Rootの別workspace独立再実行・Reviewer gateは別に行う。

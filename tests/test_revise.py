@@ -563,7 +563,9 @@ def test_failed_chunk_partial_manual_patch_resumes_only_unfilled_units(
     )
     sent = requests(tmp_path)[count:]
     assert len(sent) == 1
-    assert [unit["unit_id"] for unit in json.loads(sent[0]["text"])] == ["unit-2"]
+    assert [unit["unit_id"] for unit in json.loads(sent[0]["text"])] == [
+        "request-unit-1"
+    ]
     assert not load_translation(workspace, base).translations
     assert_preserved(before)
 

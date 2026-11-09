@@ -658,7 +658,9 @@ def test_adopted_candidate_reuses_manual_translation_only_for_exact_actual_reque
         assert body["source_text"] == (
             "Changed paragraph." if change == "body" else "Original paragraph."
         )
-        assert body["unit_id"] == ("unit-3" if change == "id" else "unit-2")
+        assert body["unit_id"] == (
+            "request-unit-3" if change == "id" else "request-unit-2"
+        )
         if change == "context":
             assert body["context"]["heading_path"][0]["text"] == "Changed chapter"
         if change == "policy":

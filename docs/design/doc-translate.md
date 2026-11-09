@@ -168,7 +168,7 @@ PDF内の1始まりのページ番号を追跡の基準とする。印刷され�
 
 unit IDは入力形式固有の位置情報と別のidentityとする。Docling refやEPUB内の要素IDだけを翻訳対応表の一意keyにしない。1つの原文blockから複数cellのunitが生まれても追跡できるようにする。EPUBにPDFのページ番号・bbox・Docling refを必須化しない。
 
-準備collectのwire v2だけは、request内の読み順alias（`request-unit-N`）と公開unit IDを分離する。原文snapshotから再生成したgroupの全unitとaliasを順序付き全単射で対応させ、headingの追跡位置（`block_id`／`node_path`）と全体section番号は送らない。level・保護済みtext・heading順は保ち、公開unit／locations／hash生成は変更しない。準備が従来送っていないlist／table等のcontextも増減しない。翻訳requestへの適用は別Issueであり、ここでは変更しない。
+準備collectと翻訳のwire v2は、request内の読み順alias（`request-unit-N`）と公開unit IDを分離する。原文snapshotから再生成したgroupの全unitとaliasを順序付き全単射で対応させ、headingの追跡位置（`block_id`／`node_path`）と全体section番号は送らない。level・保護済みtext・heading順は保ち、公開unit／locations／hash生成は変更しない。準備が従来送っていないlist／table等のcontextも増減しない。翻訳ではheading_pathのblock_id／node_pathだけを除き、list／table／caption等を含む他のcontext fieldは全て維持する。
 
 翻訳開始後、翻訳LLMにunitの分割・統合・ID変更をさせない。大きすぎるunitを分割する場合も、workflow側で元unitとの対応と範囲を保持する。
 
@@ -198,7 +198,7 @@ PDFのDocling refやbboxによる追跡は、そこから導いた原文の正�
 
 準備の新規collect／organizeはwire v2を実requestと保存artifactに明示する。保存attemptはv1／v2各方式で厳密照合し、同じtier内では従来の辞書順で最初の成功を使い、不足だけv2で生成する。v1のIDを無視した転用・旧byte書換え・migrationはしない。理由は、単なる前方追加による番号ずれを本文／実heading context変更から区別しつつ、引用・根拠の検査を維持するためである。
 
-v2 raw収集回答のaliasは現在groupへ結び直して引用／用語根拠を再検証し、根拠artifactは現在の追跡IDと位置を持つ。候補のevidenceは全unitの列挙ではなく、同unitの複数引用・疎な根拠・空根拠を許す。整理入力はgroup順の実raw収集回答で、binding後のglobal ID差を再混入させない。公開loadも各runからwire collectionsを再構成し、原文から得たbinding・整理入力・採用結果を独立照合する。利用者terms優先と固定入力hashは不変で、準備wire差だけでは翻訳を無効化しない。
+v2 raw収集回答のaliasは現在groupへ結び直して引用／用語根拠を再検証し、根拠artifactは現在の追跡IDと位置を持つ。候補のevidenceは全unitの列挙ではなく、同unitの複数引用・疎な根拠・空根拠を許す。整理入力はgroup順の実raw収集回答で、binding後のglobal ID差を再混入させない。公開loadも各runからwire collectionsを再構成し、原文から得たbinding・整理入力・採用結果を独立照合する。利用者terms優先と固定入力hashは不変で、準備wire差だけでは翻訳を無効化しない。翻訳v2でも固定document context／glossary／policy／schemaは全実wire照合に含め、意味的に似ていることを理由に同一視しない。
 
 ### 文体と変更
 
@@ -210,7 +210,7 @@ glossary・文体policyを変更した場合は旧版・旧訳を保持し、影
 
 ## 10. 翻訳LLMの契約
 
-入力は固定ID付きunit、明示したcontext、文書glossary、翻訳policy。原本画像・原本ファイル（PDF／EPUB）・未検査の抽出下書き・コード本体・数式は渡さない。EPUBのXHTML全文を自由に書き換えさせず、文単位のcontextと必要なinline構造の保護情報を渡す。
+入力はrequest内の固定順序alias付きunit（旧wire v1は追跡ID）、明示したcontext、文書glossary、翻訳policy。原本画像・原本ファイル（PDF／EPUB）・未検査の抽出下書き・コード本体・数式は渡さない。EPUBのXHTML全文を自由に書き換えさせず、文単位のcontextと必要なinline構造の保護情報を渡す。
 
 - 内容を完全に訳し、要約・説明の追加・勝手な省略をしない。
 - 原文を再補正せず、不確かならその箇所を報告する。
@@ -290,18 +290,22 @@ PDF原文修正後の新補正候補が採用待ちの場合も全体は`partial
 | 原文取得 | 原本文書のhash・入力形式・対象範囲、形式別の抽出処理version・設定。PDFではDocling／OCR、EPUBではparser・構造抽出規則等 |
 | PDF補正 | 渡した抽出下書き、所有／参照範囲、画像hashと描画条件、context、補正policy、schema、provider／model／thinking |
 | 準備 | 版付きcollect／organize実request全体・config・方式・raw回答、原文から再構築した現在groupとのbindingと引用／用語根拠（§9）。v1も完全一致なら新規送信より先に再利用 |
-| 翻訳 | unitの原文・ID・context、言語、glossary・文体／翻訳policy、schema、provider／model／thinking |
+| 翻訳 | 版付き実wire request全体・config・raw回答、現在unitへの順序付き全単射とmarker／split対応、glossary・文書context・文体／翻訳policy・schema・provider／model／thinking／options |
 | rendering | 採用する翻訳前原文・翻訳snapshot、構造情報、図assets、出力形式と生成処理のversion・設定 |
 
 **再利用できる根拠があれば使い、対応が曖昧な旧訳は無理に引き継がない。** 原文blockのIDだけで古い訳を使わず、旧訳との対応と実際の翻訳入力を照合する。原文block・unitの分割や統合で対応が曖昧になった場合は、旧訳を機械的に分割・接合して流用せず、元の対応・変更経緯を残して必要な範囲を再翻訳する。
 
-コードの内容だけが変わり、本文の翻訳unit・context等の実requestが同じなら、本文を再送しない。影響するrendering・QAは更新する。旧訳・手修正訳とも実request全体の一致だけを再利用根拠とし、ID一致だけの転用はしない。glossary／文体policy変更では固定準備入力と影響する訳を更新し、PDF取得・補正を無効化しない。`resume --policy FILE`は`version/text`の検証可能なStylePolicyデータであり、自由な実行コードではない。
+コードの内容だけが変わり、本文の翻訳unit・context等の実requestが同じなら、本文を再送しない。影響するrendering・QAは更新する。自動v2は全実wire／config一致に加え現在unitへbindingし直して検証する。手修正訳は追跡IDと全実入力が一致する従来の範囲だけで使い、alias一致・類似本文・位置だけで別unitへ移さない。glossary／文体policy変更では固定準備入力と影響する訳を更新し、PDF取得・補正を無効化しない。`resume --policy FILE`は`version/text`の検証可能なStylePolicyデータであり、自由な実行コードではない。
 
 未完了attempt、保存途中、確定済み結果を区別して再開する。同じworkspaceへ重複実行して状態を壊さない。変更後の再利用根拠が不明な結果は無条件で有効とせず、旧成果物を保持したまま再検証する。準備の操作内raw record memo（§9）は、この再利用の受理条件やorphan成功回収・失敗時の旧採用保持を変えず、重複した元file read／hashだけを減らす。
 
-翻訳は単一`translate_document`内だけのattempt catalogで、開始時に全元recordをread／hash／JSON検証し、無関係recordの破損も従来どおり事前拒否する。実request textと先頭unit IDをそれぞれキーにした索引は候補を絞るだけで、configは取得後に全体を照合する。JSON byte列では等値な数値（`-0.0`／`0.0`等）を別候補に分けない。採用済みchunk（manual含む）優先→辞書順orphan成功→worker処理の順を維持する。同じ長さの現在入力requestは候補間で再構築せず、実request全体・規定repair差分・config・raw回答／schema／現在unitのdomain検証は省かない。adjustment／length replayも従来の順序と再検証で扱う。理由は、多数のattemptで元read以上に反復request構築・候補照合が支配したためであり、受理判定をcacheするためではない。
+翻訳は単一`translate_document`内だけのattempt catalogで、開始時に全元recordをread／hash／JSON検証し、無関係recordの破損も従来どおり事前拒否する。実request textと先頭unit（v1は追跡ID、v2はwire投影）をそれぞれキーにした索引は候補を絞るだけで、configは取得後に全体を照合する。JSON byte列では等値な数値（`-0.0`／`0.0`等）を別候補に分けない。採用済みchunk（manual含む）優先→辞書順orphan成功→worker処理の順を維持する。同じ長さの現在入力requestは候補間で再構築せず、実request全体・規定repair差分・config・raw回答／schema／現在unitのdomain検証は省かない。adjustment／length replayも従来の順序と再検証で扱う。理由は、多数のattemptで元read以上に反復request構築・候補照合が支配したためであり、受理判定をcacheするためではない。
 
-catalogはhash／JSON検証済み値だけを保持し、新規の通常／repair／失敗／分割記録はatomic保存成功後に登録する。登録とdigest辞書順tuple snapshot取得を同じthread lockで保護し、取得済みsnapshotは後続登録で変わらず、次の取得には完了した登録が見える。recordは登録後変更しない。親だけがsnapshot／pointerを更新し、workerは担当jobのimmutable attempt／chunk保存に限るworkspace writer責務は不変。v1のjobは互いに異なるunit IDをrequestへ含み、分割子も担当範囲が交差しないため同一requestの競合missは作らない。v2の同一wire request in-flight共有基盤はこの変更に先取りしない。別操作は再読し、公開`load_translation`の独立した全検証・manual履歴検証はcatalogで迂回しない。全履歴snapshot／PNGの常駐や永続indexは追加しない。
+catalogはhash／JSON検証済み値だけを保持し、新規の通常／repair／失敗／分割記録はatomic保存成功後に登録する。登録とdigest辞書順tuple snapshot取得を同じthread lockで保護し、取得済みsnapshotは後続登録で変わらず、次の取得には完了した登録が見える。recordは登録後変更しない。親だけがsnapshot／pointerを更新し、workerは担当jobのimmutable attempt／chunk保存に限るworkspace writer責務は不変。同一operationの同じv2実request＋configが競合missした場合は、thread-safeなFutureでraw成功／失敗を共有し、実送信とusageを重複させない。保存例外／取消でもFutureを完結させ、各利用箇所は現在unitへ独立binding／marker検証する。別操作は再読し、公開`load_translation`の独立した全検証・manual履歴検証はcatalogで迂回しない。全履歴snapshot／PNGの常駐や永続indexは追加しない。
+
+翻訳artifactの版欠落はv1として厳密に読み、新規自動翻訳は実requestとattempt／chunk artifactへwire v2を明示する。chunkのbindingsは保存snapshotから再生成したunit順と照合し、raw alias回答から現在追跡ID回答を再構築する。未知版／不正bindingは再hashされていても拒否する。旧byteのmigrationはせず、現在採用済み結果（manual含む）→辞書順の適合attempt（v1／v2）→新規v2の順を守る。manual artifactは追跡IDのv1 requestを使い、v2自動結果を基点にした混在履歴も再検証する。
+
+splitのv2実requestには順序付きsplit_inputs（非splitはnull、splitは親source_hashと元source_range）を加える。親hashは親全文・保護tokenを含み、現在sourceからの全unit／split操作再生成で本文・座標・part順も検証するため、親全文／保護payloadは追加送信しない。adjustmentは追跡bindingも一致する場合だけreplayし、不明対応をaliasで移植したり旧訳を推測分割・接合したりしない。
 
 ### 基点付き修正
 
@@ -327,6 +331,8 @@ catalogはhash／JSON検証済み値だけを保持し、新規の通常／repai
 346ページ検証での確定済み55ページ再利用は§18の過去実験である。現在のCLIでは人工入力・固定人工応答／実helperによって修正・候補待ち・明示採用・設定変更・中断復旧の機械的契約を検査する（§19）。それを実provider・実Doclingの一般的品質や、訂正の意味的な完全保持の保証にしない。
 
 ## 15. retry・concurrency・入力上限
+
+翻訳は既存の12,000文字chunk算法・concurrency既定2を維持する。同一wireのin-flight共有は新しいschedulerや並列設定を追加せず、親の部分snapshot確定とchild取消／drainを変えない。
 
 retryは有限とし、provider内部のretryとworkflowの再試行を別に記録する。失敗chunkのために完了結果を破棄して全文を再送しない。
 
