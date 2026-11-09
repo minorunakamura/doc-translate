@@ -1831,3 +1831,104 @@ def test_read_saved_status_rejects_directory_in_place_of_required_json(tmp_path)
     (workspace / "source-snapshot.json").mkdir()
     with pytest.raises(ValueError, match="record"):
         read_saved_status(workspace)
+
+
+def test_markdown_target_index_keeps_source_unit_and_page_review_order(tmp_path):
+    from doc_translate.render import _Markdown
+    from doc_translate.units import generate_translation_units
+
+    workspace = save_source(
+        tmp_path,
+        [
+            {
+                "block_id": "table",
+                "kind": "table",
+                "text": "",
+                "structure": {
+                    "cells": [
+                        {"cell_id": "cell", "row": 0, "column": 0, "text": "Value"}
+                    ]
+                },
+            },
+            {"block_id": "list", "kind": "list", "text": "Item"},
+            {"block_id": "caption", "kind": "caption", "text": "Caption"},
+            {"block_id": "code", "kind": "code", "text": "KEEP()"},
+        ],
+        uncertainties=[
+            {
+                "reason": "Mixed targets",
+                "target_ids": ["code", "caption", "unit-1", "cell", "table"],
+                "locations": [{"format": "pdf", "page": 2, "evidence": "own"}],
+                "stage": "source",
+                "origin": "original",
+            }
+        ],
+    )
+    source = load_source_snapshot(workspace)
+    units = list(reversed(generate_translation_units(source)))
+    finding = {
+        "reason": "Page review",
+        "target_kind": "page",
+        "block_ids": ["caption", "list", "table"],
+        "unit_ids": ["unit-3", "unit-1"],
+        "locations": [{"format": "pdf", "page": 2, "evidence": "own"}],
+    }
+    renderer = _Markdown(workspace, source, units, None, [finding])
+    mixed, page = renderer.concerns
+    assert mixed["block_ids"] == ["table", "caption", "code"]
+    assert mixed["unit_ids"] == ["unit-3", "unit-1"]
+    assert mixed["output_anchors"] == ["block-1", "block-3", "block-4"]
+    assert page["target_ids"] == ["unit-3", "unit-1", "list"]
+    assert page["block_ids"] == finding["block_ids"]
+    assert page["unit_ids"] == finding["unit_ids"]
+    assert page["output_anchors"] == ["block-3", "block-2", "block-1"]
+    assert renderer.unit_by_block.get("table", []) == []
+    assert [u.unit_id for u in renderer.units_by_block["table"]] == ["unit-1"]
+    for japanese in (True, False):
+        document = renderer.document(japanese)
+        assert "<td>Value※</td>" in document and "Caption※" in document
+        assert "KEEP()※" not in document
+
+
+def test_markdown_target_index_does_not_rescan_all_blocks_or_units_per_uncertainty(
+    tmp_path,
+):
+    from doc_translate.render import _Markdown
+    from doc_translate.snapshot import Uncertainty
+    from doc_translate.units import generate_translation_units
+
+    class CountedList(list):
+        visits = 0
+
+        def __iter__(self):
+            for item in super().__iter__():
+                self.visits += 1
+                yield item
+
+    workspace = save_source(
+        tmp_path,
+        [
+            {"block_id": f"body-{i}", "kind": "body", "text": "Own text"}
+            for i in range(20)
+        ],
+    )
+    source = load_source_snapshot(workspace)
+    units = CountedList(generate_translation_units(source))
+    blocks = CountedList(source.blocks)
+    source.blocks = blocks
+    warning = Uncertainty(
+        reason="Own warning",
+        target_ids=["body-1"],
+        locations=source.blocks[1].locations,
+        stage="source",
+        origin="original",
+    )
+    counts = []
+    for count in (1, 200):
+        source.uncertainties = [warning] * count
+        units.visits = blocks.visits = 0
+        renderer = _Markdown(workspace, source, units, None)
+        assert len(renderer.concerns) == count
+        assert all(c["unit_ids"] == ["unit-2"] for c in renderer.concerns)
+        counts.append((blocks.visits, units.visits))
+    assert counts[0] == counts[1]

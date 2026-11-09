@@ -133,16 +133,31 @@ class _Markdown:
                 self.node_anchors[node["location"]["resource_path"], path] = (
                     f"node-{index}-{number}"
                 )
-        self.units = units
         self.translated = (
             {item.unit_id: item.text for item in translation.translations}
             if translation
             else {}
         )
+        self.block_by_id = {b.block_id: b for b in source.blocks}
+        block_order = {b.block_id: i for i, b in enumerate(source.blocks)}
+        self.units_by_block = {}
+        self.units_by_node = {}
+        self.units_by_cell = {}
         self.unit_by_block = {}
-        for unit in units:
-            if not unit.cell_id:
+        units_by_target = {}
+        for index, unit in enumerate(units):
+            self.units_by_block.setdefault(unit.block_id, []).append(unit)
+            self.units_by_node.setdefault((unit.block_id, unit.node_path), []).append(
+                unit
+            )
+            if unit.cell_id:
+                self.units_by_cell.setdefault((unit.block_id, unit.cell_id), []).append(
+                    unit
+                )
+            else:
                 self.unit_by_block.setdefault(unit.block_id, []).append(unit)
+            for target in {unit.block_id, unit.unit_id, unit.cell_id} - {None}:
+                units_by_target.setdefault(target, []).append(index)
         self.anchors = {
             block.block_id: f"block-{i}" for i, block in enumerate(source.blocks, 1)
         }
@@ -169,19 +184,20 @@ class _Markdown:
             ),
         ]:
             targets = set(item.target_ids)
-            block_ids = [
-                b.block_id
-                for b in source.blocks
-                if b.block_id in targets
-                or any(
-                    u.block_id == b.block_id
-                    and (u.unit_id in targets or u.cell_id in targets)
-                    for u in units
+            candidates = [
+                units[i]
+                for i in sorted(
+                    {i for target in targets for i in units_by_target.get(target, [])}
                 )
             ]
+            block_ids = sorted(
+                (targets & self.block_by_id.keys()) | {u.block_id for u in candidates},
+                key=block_order.__getitem__,
+            )
             scoped_blocks = set()
             scoped_locations = []
-            for block in source.blocks:
+            for block_id in block_ids:
+                block = self.block_by_id[block_id]
                 root = block.locations[0]
                 if block.block_id not in targets or root.format != "epub":
                     continue
@@ -203,7 +219,7 @@ class _Markdown:
                     )
             related = [
                 u
-                for u in units
+                for u in candidates
                 if u.unit_id in targets
                 or u.cell_id in targets
                 or (
@@ -256,12 +272,15 @@ class _Markdown:
         for finding in review_findings or []:
             if finding["target_kind"] != "page":
                 continue
-            related = [u for u in units if u.unit_id in finding["unit_ids"]]
+            related_blocks = {
+                units[i].block_id
+                for target in finding["unit_ids"]
+                for i in units_by_target.get(target, [])
+                if units[i].unit_id == target
+            }
             # Keep block correspondence without marking units on other pages.
             block_targets = [
-                bid
-                for bid in finding["block_ids"]
-                if not any(u.block_id == bid for u in related)
+                bid for bid in finding["block_ids"] if bid not in related_blocks
             ]
             self.marked.update(block_targets)
             self.marked_units.update(finding["unit_ids"])
@@ -336,11 +355,14 @@ class _Markdown:
         location = value.get("location", {})
         units = [
             u
-            for u in self.units
-            if self.current_block
-            and u.block_id == self.current_block.block_id
-            and u.node_path == location.get("node_path")
-            and u.attribute in {"alt", "title"}
+            for u in self.units_by_node.get(
+                (
+                    self.current_block.block_id if self.current_block else None,
+                    location.get("node_path"),
+                ),
+                [],
+            )
+            if u.attribute in {"alt", "title"}
         ]
         return "".join(
             f' {name}="{html.escape("".join(self.plain_text(u, japanese) for u in units if u.attribute == name), quote=True)}"'
@@ -481,8 +503,8 @@ class _Markdown:
         tree = block.structure["tree"]
         nodes = tree["nodes"]
         by_node = {}
-        for unit in self.units:
-            if unit.block_id == block.block_id and not unit.attribute:
+        for unit in self.units_by_block.get(block.block_id, []):
+            if not unit.attribute:
                 by_node.setdefault(unit.node_path, []).append(unit)
 
         def node_anchor(path):
@@ -490,13 +512,11 @@ class _Markdown:
             anchor = self.node_anchors[node["location"]["resource_path"], path]
             marked = any(
                 u.attribute
-                and u.node_path == path
                 and (
                     u.unit_id in self.marked_units
                     or (japanese and u.unit_id not in self.translated)
                 )
-                for u in self.units
-                if u.block_id == block.block_id
+                for u in self.units_by_node.get((block.block_id, path), [])
             )
             return f'<a id="{anchor}"{self.attributes(node, japanese)}></a>' + (
                 "※" if marked else ""
@@ -876,7 +896,7 @@ class _Markdown:
     def problem(self, block, reason: str, *, location=None, unit=None):
         related = [
             u
-            for u in self.units
+            for u in ([unit] if unit else self.units_by_block.get(block.block_id, []))
             if u.block_id == block.block_id
             and (
                 u.unit_id == unit.unit_id
@@ -1033,12 +1053,9 @@ class _Markdown:
                 else:
                     cells = []
                     for cell in structure.get("cells", []):
-                        cell_units = [
-                            u
-                            for u in self.units
-                            if u.block_id == block.block_id
-                            and u.cell_id == cell["cell_id"]
-                        ]
+                        cell_units = self.units_by_cell.get(
+                            (block.block_id, cell["cell_id"]), []
+                        )
                         if not cell_units and cell["text"].strip():
                             continue
                         cells.append(
@@ -1141,7 +1158,7 @@ def _build(workspace: Path):
     renderer = _Markdown(workspace, source, units, active, review_findings)
     for unit in units:
         if unit.unit_id not in renderer.translated:
-            block = next(b for b in source.blocks if b.block_id == unit.block_id)
+            block = renderer.block_by_id[unit.block_id]
             renderer.problem(
                 block,
                 "Translation unavailable"

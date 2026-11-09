@@ -1,6 +1,6 @@
-# PDF／EPUBのoffline性能baseline（Issue #54）
+# PDF／EPUBのoffline性能baselineとrenderer索引（Issue #54／#55）
 
-対象は[Approved Plan](../plans/pdf-epub-performance.md)のA／B／B2と第1段階だけです。production・schema・request方式・並列数は変更しません。同revisionのbefore／afterは**再現性のcontrol比較**であり、高速化の証明ではありません。Planにある旧revisionの秒数（特にB2のwarm Python process）は現在の測定に流用しません。stage2以降、実provider／OCR／layout／model取得・意味品質・料金・任意規模の保証は対象外です。
+[Approved Plan](../plans/pdf-epub-performance.md)のA／B／B2・第1段階のbaselineと、第2段階の優先1（renderer関連付け索引）だけを扱います。Issue #55は現在入力のblock／unit／cell／node／target索引で探索を置き換え、schema・request方式・並列数・statusの共有検証経路は変更しません。同revisionのbefore／afterラベルは**再現性のcontrol比較**であり、高速化の証明ではありません。変更前後は別invocationの最初のbeforeラベル3回をprimaryとして固定します。Planにある旧revisionの秒数（特にB2のwarm Python process）は現在の測定に流用しません。attempt索引・ID分離・新並列、実provider／OCR／layout／model取得・意味品質・料金・任意規模の保証は対象外です。
 
 ## 新しい隔離状態からの再実行
 
@@ -32,7 +32,7 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 | EPUB B | `test_epub.make_epub`で単一XHTMLにN組の`<h1>Section {i}</h1><p>Original queue record.</p>`。2／20 sections、成長200 sections／400 units | 実CLI run→別fresh processのresume、completed、4／40／400 units |
 | EPUB resource境界 | 最小2 sectionsを2つのspine XHTMLに分ける別case、1回 | archive reader→source→run／resumeでresource境界を維持。全規模×resource数の積は実行しない |
 
-主要baselineは各before／after **3 raw値とmedian／min／max**。成長200 sectionsは代表3回だけ、複数resource境界とdiagnosticは各1回です。各操作はfresh Pythonでwarm filesystem cache（flushしない）。同じinvocation内の各EPUB規模は1つの生成archiveを使いinput hashを揃えます。PDFのraw inputは固定人工byte、fixture定義・helperもhash記録します。renderは保存source hashを記録します。
+主要baselineは各before／after **3 raw値とmedian／min／max**。成長200 sectionsは代表3回だけ、複数resource境界とdiagnosticは各1回です。各操作はfresh Pythonでwarm filesystem cache（flushしない）。同じinvocation内の各EPUB規模は1つの生成archiveを使いinput hashを揃えます。既存fixtureのZIP timestampにより別invocationのarchive hashは変わるため、同一recipeだけを固定byte同一とせず、変更前後の固定hash受入れには同じ生成archiveを旧／新版rendererへ渡す対照を使います（#55の追加対照参照）。PDFのraw inputは固定人工byte、fixture定義・helperもhash記録します。renderは保存source hashを記録します。
 
 各resumeで実faux logの**全byteが増えていない**こと、および既存originals／drafts／corrections／attempts／snapshots全fileのSHA256不変をassertします。completedと出力存在だけでなく、QA／source-mapのshape、unit数、PDF所有集合と実送信所有／参照も照合します。これは実翻訳の意味品質やviewerの保証ではありません。
 
@@ -50,13 +50,13 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 ## 証拠・cleanup・再読
 
-`manifest.json`にrevision、Python／Node／PDF依存、全helper resource一致hash、source／fixture／script hash、offline／worker／cache条件と事前budget、`dirty.txt`／`scope.diff`に差分を残します。各operationの`command.json`に**完全command・exit・外側wall**、`metrics.json`に内側timer／resource、`stdout.json`／`stderr.txt`、QA／map／summaryとsynthetic attempts／requestを残します。`observations.json`と`statistics.json`がrawと集計です。入力・workspaceの一時絶対pathはcommand記録のみ、証拠fileはその外に保持します。
+`manifest.json`にrevision、Python／Node／PDF依存、全helper resource一致hash、source／fixture／script hash、offline／worker／cache条件と事前budget、`dirty.txt`／`scope.diff`に差分を残します。各operationの`command.json`に**完全command・exit・外側wall**、`metrics.json`に内側timer／resource、`stdout.json`／`stderr.txt`、QA／map／summaryと日英Markdown・生成local assetsの全byte、synthetic attempts／requestを残します。`observations.json`と`statistics.json`がrawと集計です。入力・workspaceの一時絶対pathはcommand記録のみ、証拠fileはその外に保持します。
 
 証拠は新規ignore済み`work/issue54-<unique>/`のみ。ignoreは秘密保護境界ではありません。自作text・人工認証だけを使い、実秘密・実書籍・不要raw logを取得／公開しません。所有TemporaryDirectoryに入力・人工model・credential・workspaceをまとめ、成功／失敗ともfinallyで削除し、所有child handleをwaitします。他process・lock・既存work・venvには触れません。`cleanup.txt`を確認し、cleanup後に全証拠fileをreadbackします。異常時は失敗commandと残存を別記し、古い成功を再利用しません。
 
 [検証Skill](../../.pi/skills/verify-project/SKILL.md)／[Feature Map](../../.pi/skills/verify-project/references/feature-map.md#形式別runresume性能とrender負荷issue-54)から今回の機能だけを選びます。project trust確認後、新セッションまたは`/reload`、`/skill:verify-project performance`かSKILL.md明示readで再利用します。通常pytest・正式チェック・Rootの独立操作・Reviewerの受入れを代用しません。
 
-## 今回の観測
+## baselineの観測（Issue #54）
 
 今回の計測はHEAD `60f94dff8c21c21dec7002efbbeddf842d6aecc5`、macOS arm64／Python 3.14.9／Node v24.22.1／Docling 2.142.1／docling-core 2.104.0／pydantic 2.14.1。production差分なし。helper全10fileのrepo／installed resource SHA256一致を各manifestへ記録（main.js `2527d74349df262364360316caff28eba18714a32786e8723c62de92d4e16135`）。historical Plan値は不使用。次はoperation-only秒、各raw3回のcontrol比較。
 
@@ -117,3 +117,93 @@ normal runのparent生涯peakはPDF6約439–443 MiB／PDF35約445–447 MiB、E
 計測後、driverの手動取消にも45秒drainを適用する最小修正とinvocation残予算の適用を加えた。通常operation／fixture／production codeは不変、元計測版hashはmanifestへ保持し、通常値を新hashで測定したと偽らない。修正した取消境界はtimeout／KeyboardInterruptの2 selfcheckでowned groupだけSIGINT→45秒→SIGKILL→waitを確認した。自動回帰7件、既存consumer代表8件成功。初期selfcheckではsource-only QAに未訳のuncertaintyも追加されるため期待数を誤り2件失敗（製品変更なし、原文uncertainty Nと未訳Nを別照合へ修正）、初期Ruffでcheck引数不足1件を修正。これらをmeasurement成功値へ混ぜず、`work/issue54-worker-validation-20260717a/`に別記した。Rootの正式チェック／独立操作とReviewer受入れは別途必要。
 
 正式型検査後、fixture importを既存の`import_module`方式へ合わせ、Optionalのassert、phase秒のfloat辞書、raw pstatsのruntime属性取得、test loaderのassertだけを補正した。profileの関数別tuple・call数・時間精度・JSON shapeは維持する（`get_stats_profile`の名前集約／丸めへ切り替えていない）。元98操作のhash／raw値は当時の証拠のまま、新helper hashによる再測定値とは扱わない。補正後は`work/issue54-worker-types-lVda8W/`にPDF6／EPUB2のrun→resumeと両型render50の別fresh-process diagnostic計6操作、selfcheck7件・PDF環境ty／Ruff成功、cleanup／readbackを記録した。これは小規模の接続・型修正確認であり、baselineの置換や高速化比較ではない。
+
+## renderer索引の比較（Issue #55）
+
+変更前はHEAD `8f19b4b`のclean状態でRootが取得した`work/issue55-root-before/`。変更後は同環境・同fixture・helper一致hash・fresh Python／warm filesystem・offline・非並行で`work/issue55-worker-after/`（all＋別diagnostic）を取得しました。最終的に未使用の`self.units`参照だけを削除したため、renderは最終差分で`work/issue55-worker-final-render/`を別invocationで再測定し、**この最終render値**を採用します。run／resume表はall測定時（探索ロジックは最終版と同じ）の値です。revision・実行時source／script hash・差分・完全command／exit／CPU／メモリは各manifest／operationへ保持し、後の文書更新まで当時測定したと扱いません。
+
+同revision内の後半afterラベル3回はcontrolとして分離し、前後どちらも最初のbeforeラベル3回をprimaryに固定しました。有利なrepeat・controlを選びません。次は公開操作全体のoperation秒（setup／importは除外、renderのhash／write／pointer確定は含む）。通常値と別diagnosticを混ぜません。
+
+### 公開render全体
+
+| 入力／操作 | before raw秒 | median [min, max] | after raw秒 | median [min, max] |
+| --- | --- | --- | --- | --- |
+| render-pdf-50-render | 0.034319 / 0.031780 / 0.033369 | 0.033369 [0.031780, 0.034319] | 0.021344 / 0.021599 / 0.020964 | 0.021344 [0.020964, 0.021599] |
+| render-pdf-200-render | 0.687721 / 0.699808 / 0.698979 | 0.698979 [0.687721, 0.699808] | 0.039162 / 0.041116 / 0.041740 | 0.041116 [0.039162, 0.041740] |
+| render-pdf-500-render | 10.434544 / 10.632701 / 10.277307 | 10.434544 [10.277307, 10.632701] | 0.086077 / 0.085882 / 0.089203 | 0.086077 [0.085882, 0.089203] |
+| render-epub-50-render | 0.031317 / 0.030137 / 0.031171 | 0.031171 [0.030137, 0.031317] | 0.023321 / 0.024182 / 0.022884 | 0.023321 [0.022884, 0.024182] |
+| render-epub-200-render | 0.684464 / 0.678290 / 0.692289 | 0.684464 [0.678290, 0.692289] | 0.039177 / 0.038168 / 0.038854 | 0.038854 [0.038168, 0.039177] |
+| render-epub-500-render | 10.192784 / 10.241180 / 10.229796 | 10.229796 [10.192784, 10.241180] | 0.081208 / 0.083164 / 0.083140 | 0.083140 [0.081208, 0.083164] |
+
+### 代表run／無変更resume
+
+次の初回EPUB値は同一recipeですが、既存`make_epub`のZIP timestampが変わり、invocation間のarchive SHA256は異なります。原本はcleanup済みのため旧ZIP全entry byte同一とは主張せず、**EPUB4操作は参考比較**とし、性能受入れは後述の同一archive追加対照で独立判定します。PDF入力とrender source hashは前後一致です。
+
+| 入力／操作 | before raw秒 | median [min, max] | after raw秒 | median [min, max] |
+| --- | --- | --- | --- | --- |
+| run-resume-pdf-6-run | 1.091975 / 0.889975 / 0.889183 | 0.889975 [0.889183, 1.091975] | 1.107088 / 0.904163 / 0.984621 | 0.984621 [0.904163, 1.107088] |
+| run-resume-pdf-6-resume | 0.193780 / 0.191297 / 0.199557 | 0.193780 [0.191297, 0.199557] | 0.194225 / 0.208610 / 0.209377 | 0.208610 [0.194225, 0.209377] |
+| run-resume-pdf-35-run | 3.187953 / 3.201332 / 3.276034 | 3.201332 [3.187953, 3.276034] | 3.574072 / 3.282215 / 3.278976 | 3.282215 [3.278976, 3.574072] |
+| run-resume-pdf-35-resume | 0.785303 / 0.793520 / 0.787226 | 0.787226 [0.785303, 0.793520] | 0.799814 / 0.781913 / 0.784422 | 0.784422 [0.781913, 0.799814] |
+| run-resume-epub-2-run | 0.597463 / 0.582974 / 0.581933 | 0.582974 [0.581933, 0.597463] | 0.581790 / 0.583113 / 0.577846 | 0.581790 [0.577846, 0.583113] |
+| run-resume-epub-2-resume | 0.092311 / 0.079330 / 0.076878 | 0.079330 [0.076878, 0.092311] | 0.077929 / 0.080718 / 0.081473 | 0.080718 [0.077929, 0.081473] |
+| run-resume-epub-20-run | 4.033086 / 4.041388 / 4.025311 | 4.033086 [4.025311, 4.041388] | 4.524534 / 4.235985 / 4.012114 | 4.235985 [4.012114, 4.524534] |
+| run-resume-epub-20-resume | 0.406692 / 0.400282 / 0.396398 | 0.400282 [0.396398, 0.406692] | 0.455177 / 0.398721 / 0.398593 | 0.398721 [0.398593, 0.455177] |
+
+N500のafter／beforeはPDF **0.825%**、EPUB **0.813%**で、両型とも50%以下。medianの増加率（N200／N50、N500／N200）はPDF before **20.947倍／14.928倍**→after **1.926倍／2.094倍**、EPUB before **21.958倍／14.946倍**→after **1.666倍／2.140倍**。計算量の支配箇所を除いた人工source-only入力の結果であり、実書籍全体やEPUB archive読込みの高速化率ではありません。
+
+代表run／resumeの許容上限は`max(before median × 1.10, before median + .05秒)`。**初回PDF6 runだけは上限 .978973秒に対し .984621秒で .005648秒超過、初回判定は未達**でした。他7操作は上限内です。PDF6のafter raw .904–1.107秒と後半control median .900161秒には分散があり、Root承認のもとPlanの外乱時対称追加を**一度だけ**実施しました。成功選別・閾値変更はしていません。
+
+### PDF6の承認済み対称追加
+
+`work/issue55-worker-pdf6-additional/`に旧／最終rendererのbyteコピー・hashとone-off操作を保存。同じwrapperが双方のrendererをsetup／operation timerの前にloadし、同じ既存performance_operation・fixture・実CLI／helperを使ってbefore→afterを3組、run→別fresh process resumeで計12操作しました。旧版だけのload費用をoperationへ入れていません。人工PDF input hashは全12操作で一致、immutable／request増加0／QAを照合、所有一時物cleanupと証拠再読済みです。
+
+| 追加操作 | before raw秒 | median [min, max] | after raw秒 | median [min, max] |
+| --- | --- | --- | --- | --- |
+| PDF6 run | 1.105905 / .942973 / .950716 | .950716 [.942973, 1.105905] | .960561 / .947206 / .918617 | .947206 [.918617, .960561] |
+| PDF6 resume | .207486 / .199853 / .206696 | .206696 [.199853, .207486] | .209758 / .210160 / .207145 | .209758 [.207145, .210160] |
+
+初回primary3回＋追加3回の**全6 raw**（上の2表、control混入なし）を合算すると、run before median **.946844** [.889183, 1.105905]→after **.953883** [.904163, 1.107088]秒、上限 **1.041529秒**以内。resume before **.199705** [.191297, .207486]→after **.208993** [.194225, .210160]秒、上限 **.249705秒**以内です。追加だけ・合算とも合格ですが、初回未達の事実は取り消しません。起動／host変動を含む小差をrenderer単独の速度差と断定しません。
+
+### EPUB2／20の同一archive追加対照
+
+上のZIP timestamp差を確認後、Root承認により同一hash archiveを旧／最終rendererへ渡す追加対照を行いました。`work/issue55-worker-epub-fixed-evidence/`にinput hash・全command／exit・raw／resource・QA／map／日英本文を保存。各規模につきarchiveを一度だけ生成し、PDF6と同じ隔離module-load wrapperからbefore→afterを3組、公開run→fresh process resumeの計24操作を実行しました。旧primary値・controlは保持し、**異なるhashの初回値とは合算しません**。
+
+| 固定archive操作 | before raw秒 | median [min, max] | after raw秒 | median [min, max] | 許容上限秒 |
+| --- | --- | --- | --- | --- | --- |
+| EPUB2 run | .577707 / .579765 / .575971 | .577707 [.575971, .579765] | .574631 / .567655 / .570291 | .570291 [.567655, .574631] | .635478 |
+| EPUB2 resume | .077117 / .077142 / .078165 | .077142 [.077117, .078165] | .087294 / .077929 / .076982 | .077929 [.076982, .087294] | .127142 |
+| EPUB20 run | 3.978144 / 3.964201 / 3.964383 | 3.964383 [3.964201, 3.978144] | 3.982247 / 3.965720 / 3.986915 | 3.982247 [3.965720, 3.986915] | 4.360821 |
+| EPUB20 resume | .398732 / .393452 / .397389 | .397389 [.393452, .398732] | .414407 / .391448 / .412655 | .412655 [.391448, .414407] | .447389 |
+
+4操作とも同条件before上限内。全24操作でcompleted・unit4／40・request5／41・QA checks passed、全resumeでrequest log増加0・旧immutable hash不変・cleanup／readback成功。さらに全12組の旧／新版run／resumeで日英Markdown・QA・source map・assetsの**全byte一致**を確認しました（`equivalence.json`、elapsed／派生directoryを含むsummaryだけ分離）。初回source-only characterizationとは別に、実準備／翻訳を経た出力の同等性です。
+
+追加対照のRoot再実行入口（既存PDF extra／helper・offline条件、未作成のwork直下を指定。workのone-off資産を保持する同checkout用）：
+
+```sh
+.venv/bin/python work/issue55-worker-pdf6-additional/measure.py "work/issue55-pdf6-replay-$(date +%Y%m%dT%H%M%S)"
+.venv/bin/python work/issue55-worker-epub-fixed/measure.py "work/issue55-epub-replay-$(date +%Y%m%dT%H%M%S)"
+```
+
+これらは固定PDF6／EPUB2・20だけの今回の証拠補完です。新しい汎用runner／公開test APIではなく、再取得の標準入口は引き続き既存performance_baselineです。
+
+### control・資源・同等性と限界
+
+後半controlのmedian秒をprimaryと分離して記します（raw各3回とmin/maxは各`statistics.json`の`-after`キー）。renderはN50／200／500順、run／resumeは各組の順です。
+
+| control | before invocation | after invocation |
+| --- | --- | --- |
+| PDF render | .032098 / .688987 / 10.103604 | .022041 / .040330 / .085963（最終render） |
+| EPUB render | .031305 / .677072 / 10.221784 | .021990 / .038367 / .081418（最終render） |
+| PDF6 run／resume | .893105 / .194331 | .900161 / .195598（all） |
+| PDF35 run／resume | 3.217650 / .790516 | 3.430520 / .853003（all） |
+| EPUB2 run／resume | .581677 / .080454 | .582132 / .078295（all） |
+| EPUB20 run／resume | 4.050972 / .400488 | 3.998541 / .394076（all） |
+
+資源はall invocationのprimary normal run範囲。PDF6／35のPython CPUは .316091–.317467／2.066581–2.182081秒、parent生涯peakは約439／444–446 MiB。EPUB2／20／成長200はCPU .078651–.080715／.561438–.633757／15.741473–16.976080秒、parent約60／62–63／99–102 MiB。reaped child最大peakは約81–82 MiBで同時RSS合計ではありません。既存translation workers=2、preparation／correctionは逐次のまま。新索引は現在source／unitsのID・位置・object参照のみO(B+U)、画像や履歴snapshotの一括常駐・永続cacheは追加しません。aggregate RSSは未計測です。
+
+同等性はproduction編集**前**に旧rendererで公開renderを実行・保存した`work/issue55-worker-characterization/`を対照に確認しました。同じ保存入力8ケース（PDF型／EPUB型各N50／200／500、PDF cell／list／caption／crop、EPUB attributes／table／link／unsafe外部image／local image）をfinal差分で再実行し、日英Markdown・source map・QA（全対象／順序／anchor含む）・生成assetsの**全byte一致**、入力file hash不変、QA checks全passedをassert。非決定的なelapsed秒とその派生render directoryを含むsummaryだけを直接byte比較から分離しました。比較したQAの対象を削っていません。外部送信0（renderは保存-only、runはnetwork拒否付きfaux）。
+
+最終renderの通常36操作＋別diagnostic2操作、allの通常92操作＋別diagnostic6操作、追加PDF6の12操作はいずれもexit0・期待照合・所有child wait／一時物cleanup・全証拠readback済み。allの成長EPUB200と最小複数resourceも既存recipeのまま成功しましたが、新しい性能目標にはしません。恒久回帰は探索回数（uncertainty数増加で全block／unit再走査なし）、混合block／cell／unit targetの順序・重複除去、page review順、Markdown/assets保存を追加し、秒数依存assertは入れません。既存render全体とreview／run／resume／revise／statusのfocused consumerも成功。初期characterizationのdirectory作成漏れ2失敗と初期format差分は測定から分離して解消し、`work/issue55-worker-validation/`に記録しています。
+
+Rootの最終正式チェック・別invocationでの直接確認とReviewer受入れは別途必要です。Issue #55の採用対象はrenderer索引だけで、attempt索引・ID分離・新並列・status軽量化／UIは追加していません。実provider・OCR／layout・意味品質・任意書籍・他OS／remote CIの性能は未確認、offline合格をそれらの採用推薦にしません。

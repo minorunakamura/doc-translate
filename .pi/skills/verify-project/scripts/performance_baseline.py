@@ -35,6 +35,15 @@ def immutable(workspace):
     }
 
 
+def save_render_artifacts(workspace, summary, output):
+    for key in ("qa", "source_map", "summary", "japanese", "english"):
+        artifact = workspace / summary["artifacts"][key]
+        (output / f"saved-{key}{artifact.suffix}").write_bytes(artifact.read_bytes())
+    assets = workspace / Path(summary["artifacts"]["english"]).parent / "assets"
+    if assets.exists():
+        shutil.copytree(assets, output / "saved-assets")
+
+
 def distribution(values):
     return {
         "raw": values,
@@ -228,7 +237,7 @@ def main():
                 ROOT / "ai/tests/no-network.mjs",
             ]
         },
-        "conditions": "fresh Python per operation; warm filesystem cache, not flushed; sequential; no network faux; empty settings; translation workers existing default 2, preparation/correction sequential; no production changes",
+        "conditions": "fresh Python per operation; warm filesystem cache, not flushed; sequential; no network faux; empty settings; translation workers existing default 2, preparation/correction sequential; revision/diff recorded separately",
         "stop_budget": {
             "operation_seconds": 120,
             "growth_operation_seconds": 180,
@@ -458,10 +467,7 @@ def main():
                                 (output / "requests.jsonl").write_bytes(
                                     log.read_bytes()
                                 )
-                            for key in ("qa", "source_map", "summary"):
-                                (output / f"saved-{key}.json").write_bytes(
-                                    (workspace / summary["artifacts"][key]).read_bytes()
-                                )
+                            save_render_artifacts(workspace, summary, output)
                             (output / "saved-attempts.json").write_text(
                                 json.dumps(attempts, indent=2)
                             )
