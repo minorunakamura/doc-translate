@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import platform
+import resource
 import shutil
 import subprocess
 import sys
@@ -182,7 +183,15 @@ def main():
     )
     args = parser.parse_args()
     if args.case:
-        print(json.dumps(case(args.case, args.concurrency, args.evidence)))
+        result = case(args.case, args.concurrency, args.evidence)
+        result.update(
+            parent_ru_maxrss=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+            reaped_child_ru_maxrss=resource.getrusage(
+                resource.RUSAGE_CHILDREN
+            ).ru_maxrss,
+            ru_maxrss_unit="bytes" if sys.platform == "darwin" else "KiB",
+        )
+        print(json.dumps(result))
         return
     assert Path.cwd() == ROOT, "run at repository root"
     evidence = args.evidence.absolute()
@@ -250,6 +259,7 @@ def main():
         if args.feature == "pdf-correction"
         else "public prepare_document wall, including helper process startup, validation, immutable saves and pointer; source generation/save and separate load excluded; external Python wall recorded separately",
         "active": "cross-process start/end monotonic ns at actual faux callbacks, not process-local counters or pre-send notices",
+        "memory": "resource ru_maxrss: operation Python lifetime peak (including import/setup/load/no-change check), and maximum reaped child peak; macOS bytes/Linux KiB; not simultaneous stage aggregate RSS",
         "unknown": [
             "real provider speed/rate limits/quality",
             "physical I/O",

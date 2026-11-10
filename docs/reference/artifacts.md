@@ -303,7 +303,7 @@ print(fixed.glossary.terms, fixed.translation_inputs_sha256)
 
 ### 準備wire v1／v2と追跡binding（Issue #58）
 
-`chapter-collect-organize-v1`はgroup方式名のまま維持し、wire方式は別の`wire_version`で識別します。新規collect／organizeの実requestは`context.wire_version: 2`、attempt recordはtop-level `wire_version: 2`を保存します。旧v1はfield欠落を1として読み、未知versionとrequest／recordの版不一致はloadで拒否します。公開`PreparationSnapshot.schema_version: 1`は変更しません。翻訳requestのwireは今回の変更対象外です。
+`chapter-collect-organize-v1`はgroup方式名のまま維持し、wire方式は別の`wire_version`で識別します。新規collect／organizeの実requestは`context.wire_version: 2`、attempt recordはtop-level `wire_version: 2`を保存します。旧v1はfield欠落を1として読み、未知versionとrequest／recordの版不一致はloadで拒否します。公開`PreparationSnapshot.schema_version: 1`は変更しません。翻訳requestのwireはIssue #58の変更対象外です（後続Issue #59の翻訳wire v2は下記の翻訳節を参照）。
 
 v2 collectのtextは読み順の`unit_id: request-unit-1, request-unit-2, ...`、`source_text`、`heading_path`だけです。headingは`block_id`とEPUB `node_path`だけを外し、level・保護済みtext・順序を保持します。全体`context.section`は送信しません（ローカルの送信前通知／進捗には従来のsectionを残します）。group算法は不変で、list／table等の未送信contextを追加する変更や任意fieldの再帰的正規化は行いません。
 
