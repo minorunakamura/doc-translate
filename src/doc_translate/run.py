@@ -5,7 +5,9 @@ import json
 import shlex
 import signal
 import threading
+from collections import deque
 from collections.abc import Generator, Sequence
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
@@ -69,6 +71,7 @@ class RunManifest(Contract):
     correction: GenerationConfig | None
     translation: GenerationConfig
     preparation_concurrency: Literal[1, 2, 4] = 1
+    correction_concurrency: Literal[1, 2, 4] = 1
     policy: StylePolicy
     user_terms: dict[str, str]
     corrected_pages: list[int] = Field(default_factory=list)
@@ -86,6 +89,7 @@ def run_document(
     workspace: Path,
     translation: GenerationConfig,
     preparation_concurrency: Literal[1, 2, 4] = 1,
+    correction_concurrency: Literal[1, 2, 4] | None = None,
     correction: GenerationConfig | None = None,
     pages: tuple[int, int] | None = None,
     reference_pages: tuple[int, int] | None = None,
@@ -101,9 +105,16 @@ def run_document(
         4,
     ):
         raise ValueError("preparation concurrency must be 1, 2 or 4")
+    if correction_concurrency is not None and (
+        type(correction_concurrency) is not int
+        or correction_concurrency not in (1, 2, 4)
+    ):
+        raise ValueError("correction concurrency must be 1, 2 or 4")
     format = source.suffix.lower().lstrip(".")
     if format not in {"pdf", "epub"}:
         raise ValueError("INPUT must be a local PDF or EPUB")
+    if format == "epub" and correction_concurrency is not None:
+        raise ValueError("EPUB does not accept correction concurrency")
     if format == "epub" and (pages is not None or reference_pages is not None):
         raise ValueError("EPUB does not accept page ranges")
     if format == "pdf" and (artifacts_path is None or correction is None):
@@ -150,6 +161,7 @@ def run_document(
         correction=correction,
         translation=translation,
         preparation_concurrency=preparation_concurrency,
+        correction_concurrency=correction_concurrency or 1,
         policy=StylePolicy(
             version="1", text="本文はですます調。見出しは自然な体言止めを認めます。"
         ),
@@ -194,6 +206,7 @@ def resume_document(
     workspace: Path,
     translation: GenerationConfig | Selection | None = None,
     preparation_concurrency: Literal[1, 2, 4] | None = None,
+    correction_concurrency: Literal[1, 2, 4] | None = None,
     correction: GenerationConfig | Selection | None = None,
     shared: Selection | None = None,
     policy: StylePolicy | None = None,
@@ -213,6 +226,11 @@ def resume_document(
         or preparation_concurrency not in (1, 2, 4)
     ):
         raise ValueError("preparation concurrency must be 1, 2 or 4")
+    if correction_concurrency is not None and (
+        type(correction_concurrency) is not int
+        or correction_concurrency not in (1, 2, 4)
+    ):
+        raise ValueError("correction concurrency must be 1, 2 or 4")
     if not (workspace / "run.json").is_file():
         raise ValueError("Resume requires a workspace with run.json")
     emit(observer, "validate", "start")
@@ -220,6 +238,8 @@ def resume_document(
         manifest = RunManifest.model_validate_json(
             (workspace / "run.json").read_bytes()
         )
+        if manifest.document.format == "epub" and correction_concurrency is not None:
+            raise ValueError("EPUB does not accept correction concurrency")
         emit(
             observer,
             "validate",
@@ -263,6 +283,8 @@ def resume_document(
 
         if preparation_concurrency is not None:
             manifest.preparation_concurrency = preparation_concurrency
+        if correction_concurrency is not None:
+            manifest.correction_concurrency = correction_concurrency
         manifest.translation = selected(manifest.translation, translation)
         if manifest.correction is not None:
             manifest.correction = selected(manifest.correction, correction)
@@ -760,9 +782,9 @@ def _pdf_source(
 ) -> SourceSnapshot:
     from doc_translate.pdf import PDF_VERSIONS, acquire_pdf, load_pdf_draft
     from doc_translate.pdf_correction import (
+        _correct_pdf,
         _load_pdf_correction,
         _recover_pdf_correction,
-        correct_pdf,
     )
     from doc_translate.pdf_source import assemble_pdf_source
 
@@ -832,6 +854,7 @@ def _pdf_source(
     emit(observer, "correction", "start")
     # Reconcile immutable chunks first, including a crash before progress publication.
     accepted = []
+    ownership = {}
     covered = set()
     drafts = {}
     paths = {path.stem for path in (workspace / "corrections/pdf").glob("*.json")}
@@ -847,6 +870,7 @@ def _pdf_source(
             and record["request"]["policy"] == CORRECTION_POLICY
         ):
             accepted.append(digest)
+            ownership[digest] = chunk.owned_pages
             covered.update(chunk.owned_pages)
     for path in sorted((workspace / "attempts/pdf-correction").glob("*.json")):
         recovered = _recover_pdf_correction(
@@ -862,8 +886,9 @@ def _pdf_source(
         if recovered is not None:
             digest, owned = recovered
             accepted.append(digest)
+            ownership[digest] = owned
             covered.update(owned)
-    manifest.chunk_sha256s = accepted
+    manifest.chunk_sha256s = sorted(accepted, key=lambda digest: min(ownership[digest]))
     manifest.corrected_pages = sorted(covered)
     manifest.failed_pages = []
     manifest.not_processed_pages = [
@@ -889,15 +914,32 @@ def _pdf_source(
     progress()
     if reused:
         emit(observer, "correction", "reused")
-    stopped = False
+    send_lock = threading.Lock()
+
+    def stop():
+        with send_lock:
+            cancelled.set()
+
+    def stop_on_error(error: InferenceError):
+        if error.code in CONFIG_ERROR_CODES | {
+            "auth_failed",
+            "auth_unavailable",
+            "storage_failed",
+            "cancelled",
+        }:
+            stop()
+
+    def permitted(config, request, preflight):
+        with send_lock:
+            if cancelled.is_set():
+                raise InferenceError("cancelled", [])
+        if before_send is not None:
+            before_send(config, request, preflight)
 
     def correct(owned):
-        nonlocal stopped
-        if stopped or cancelled.is_set():
-            return
         references = sorted(({owned[0] - 1, owned[-1] + 1} & allowed) - set(owned))
         try:
-            chunk = correct_pdf(
+            return _correct_pdf(
                 workspace=workspace,
                 draft_sha256=draft_digest,
                 owned_pages=owned,
@@ -905,70 +947,120 @@ def _pdf_source(
                 policy=CORRECTION_POLICY,
                 config=manifest.correction,
                 process_command=process_command,
-                before_send=before_send,
+                before_send=permitted,
                 cancel=cancelled,
                 observer=observer,
-            )
+                on_inference_error=stop_on_error,
+            ), None
         except (InferenceError, ValueError) as error:
-            limited = isinstance(error, InferenceError) and (
-                error.code == "input_limit"
-                or any(
-                    attempt.final is not None
-                    and attempt.final.terminal is not None
-                    and attempt.final.terminal.reason == "length"
-                    for attempt in error.attempts
-                )
-            )
-            if limited and len(owned) > 1:
-                emit(
-                    observer,
-                    "correction",
-                    "split",
-                    owned_pages=tuple(owned),
-                    reference_pages=tuple(references),
-                    reason="input_limit" if error.code == "input_limit" else "length",
-                )
-                middle = len(owned) // 2
-                correct(owned[:middle])
-                correct(owned[middle:])
-                return
-            manifest.failed_pages.extend(owned)
-            if cancelled.is_set():
-                cancelled_pages.update(owned)
-                emit(observer, "correction", "cancelled")
-            else:
-                emit(
-                    observer,
-                    "correction",
-                    "failed",
-                    reason="correction_rejected",
-                    owned_pages=tuple(owned),
-                    reference_pages=tuple(references),
-                )
-            manifest.error = "PDF correction failed; inspect saved draft and attempts"
-            manifest.error_code = (
-                error.code if isinstance(error, InferenceError) else "answer_invalid"
-            )
-            stopped = manifest.error_code in CONFIG_ERROR_CODES | {
-                "auth_failed",
-                "storage_failed",
-                "cancelled",
-            }
-        except RuntimeError:
-            emit(observer, "correction", "failed", reason="correction_failed")
+            if isinstance(error, InferenceError):
+                stop_on_error(error)
+            return None, error
+        except BaseException:
+            stop()
             raise
-        else:
-            manifest.chunk_sha256s.append(chunk)
-            manifest.corrected_pages.extend(owned)
-        manifest.not_processed_pages = [
-            page for page in manifest.not_processed_pages if page not in owned
-        ]
-        _atomic_write(workspace / "run.json", manifest.model_dump_json().encode())
-        progress()
 
-    pending = list(manifest.not_processed_pages)
-    for start in range(0, len(pending), 5):
-        correct(pending[start : start + 5])
+    pending = deque(
+        manifest.not_processed_pages[start : start + 5]
+        for start in range(0, len(manifest.not_processed_pages), 5)
+    )
+    with ThreadPoolExecutor(max_workers=manifest.correction_concurrency) as executor:
+        active = {}
+
+        def submit():
+            with send_lock:
+                if cancelled.is_set() or not pending:
+                    return False
+                owned = pending.popleft()
+                active[executor.submit(correct, owned)] = owned
+                return True
+
+        try:
+            while len(active) < manifest.correction_concurrency and submit():
+                pass
+            while active:
+                finished, _ = wait(active, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    owned = active.pop(future)
+                    chunk, error = future.result()
+                    references = sorted(
+                        ({owned[0] - 1, owned[-1] + 1} & allowed) - set(owned)
+                    )
+                    limited = isinstance(error, InferenceError) and (
+                        error.code == "input_limit"
+                        or any(
+                            attempt.final is not None
+                            and attempt.final.terminal is not None
+                            and attempt.final.terminal.reason == "length"
+                            for attempt in error.attempts
+                        )
+                    )
+                    if limited and len(owned) > 1 and not cancelled.is_set():
+                        emit(
+                            observer,
+                            "correction",
+                            "split",
+                            owned_pages=tuple(owned),
+                            reference_pages=tuple(references),
+                            reason="input_limit"
+                            if error.code == "input_limit"
+                            else "length",
+                        )
+                        middle = len(owned) // 2
+                        pending.extendleft(reversed([owned[:middle], owned[middle:]]))
+                        continue
+                    if error is not None:
+                        manifest.failed_pages.extend(owned)
+                        if (
+                            isinstance(error, InferenceError)
+                            and error.code == "cancelled"
+                        ):
+                            cancelled_pages.update(owned)
+                            emit(observer, "correction", "cancelled")
+                        else:
+                            emit(
+                                observer,
+                                "correction",
+                                "failed",
+                                reason="correction_rejected",
+                                owned_pages=tuple(owned),
+                                reference_pages=tuple(references),
+                            )
+                        manifest.error = (
+                            "PDF correction failed; inspect saved draft and attempts"
+                        )
+                        if manifest.error_code not in CONFIG_ERROR_CODES | {
+                            "auth_failed",
+                            "auth_unavailable",
+                            "storage_failed",
+                        }:
+                            manifest.error_code = (
+                                error.code
+                                if isinstance(error, InferenceError)
+                                else "answer_invalid"
+                            )
+                    else:
+                        ownership[chunk] = owned
+                        manifest.chunk_sha256s.append(chunk)
+                        manifest.chunk_sha256s.sort(
+                            key=lambda digest: min(ownership[digest])
+                        )
+                        manifest.corrected_pages.extend(owned)
+                        manifest.corrected_pages.sort()
+                    manifest.failed_pages.sort()
+                    manifest.not_processed_pages = [
+                        page
+                        for page in manifest.not_processed_pages
+                        if page not in owned
+                    ]
+                    _save_run(workspace, manifest)
+                    progress()
+                while len(active) < manifest.correction_concurrency and submit():
+                    pass
+        except BaseException:
+            stop()
+            # Executor exit cancels/drains children; saved successes are recovered on resume.
+            raise
     manifest.corrected_pages.sort()
     _save_run(workspace, manifest)
     if cancelled.is_set():
@@ -983,6 +1075,8 @@ def _pdf_source(
         else "done",
     )
     emit(observer, "correction", "finished")
+    if cancelled.is_set():
+        raise InferenceError(manifest.error_code or "cancelled", [])
     if not manifest.chunk_sha256s:
         raise RuntimeError(
             "No PDF correction chunk was accepted; see saved draft and attempts"

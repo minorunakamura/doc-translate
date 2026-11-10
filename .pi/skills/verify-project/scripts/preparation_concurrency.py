@@ -1,4 +1,4 @@
-"""Issue #60 only: public preparation, 12 independent 500ms collects, 1/2/4 x3."""
+"""Offline 12-job/500ms preparation or PDF correction comparisons, 1/2/4 x3."""
 
 import argparse
 import json
@@ -18,6 +18,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 
 def case(source_format, concurrency, evidence):
+    if source_format == "pdf-correction":
+        return import_module("pdf_correction_concurrency").case(concurrency, evidence)
     fixture = import_module("test_preparation")
 
     from doc_translate.preparation import (
@@ -169,7 +171,12 @@ def case(source_format, concurrency, evidence):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence", type=Path, required=True)
-    parser.add_argument("--case", choices=("pdf", "epub"), help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--feature", choices=("preparation", "pdf-correction"), default="preparation"
+    )
+    parser.add_argument(
+        "--case", choices=("pdf", "epub", "pdf-correction"), help=argparse.SUPPRESS
+    )
     parser.add_argument(
         "--concurrency", type=int, choices=(1, 2, 4), help=argparse.SUPPRESS
     )
@@ -211,21 +218,37 @@ def main():
     )
     fixture = import_module("test_preparation")
 
-    with tempfile.TemporaryDirectory(prefix="issue60-input-owned-") as temporary:
-        fixture.parallel_source(Path(temporary), "epub", size=12)
-        (evidence / "input.epub").write_bytes(
-            (Path(temporary) / "book.epub").read_bytes()
-        )
+    if args.feature == "preparation":
+        with tempfile.TemporaryDirectory(prefix="issue60-input-owned-") as temporary:
+            fixture.parallel_source(Path(temporary), "epub", size=12)
+            (evidence / "input.epub").write_bytes(
+                (Path(temporary) / "book.epub").read_bytes()
+            )
+    if args.feature == "pdf-correction":
+        import_module("pdf_correction_concurrency").seed(evidence)
     manifest = {
-        "input_epub_sha256": digest(evidence / "input.epub"),
+        "input_epub_sha256": digest(evidence / "input.epub")
+        if args.feature == "preparation"
+        else None,
+        "feature": args.feature,
+        "seed_immutable": immutable(evidence / "seed")
+        if args.feature == "pdf-correction"
+        else None,
         "command": sys.argv,
         "python": sys.version,
         "executable": sys.executable,
         "platform": platform.platform(),
         "node": subprocess.check_output(["node", "--version"], text=True).strip(),
         "helper_dist_sha256": build,
-        "conditions": "fresh Python per sample; warm filesystem; no cache flush; sequential; synthetic PDF type and real EPUB reader/extractor; faux/no-network/artificial credential",
-        "interval": "public prepare_document wall, including helper process startup, validation, immutable saves and pointer; source generation/save and separate load excluded; external Python wall recorded separately",
+        "conditions": "fresh Python per sample; warm filesystem; no cache flush; sequential; faux/no-network/artificial credential; "
+        + (
+            "same public-run acquisition seed copied byte-for-byte; self-authored 60 owned pages, 12 independent jobs, 1800px PNG; converter/page backend only replaced"
+            if args.feature == "pdf-correction"
+            else "synthetic PDF type and real EPUB reader/extractor"
+        ),
+        "interval": "PDF correction start through finished inside public resume_document from identical public-run acquisition seed, including reconciliation, Node process startup, validation, immutable and manifest saves; acquisition/assemble/downstream excluded; Python/full run wall separately"
+        if args.feature == "pdf-correction"
+        else "public prepare_document wall, including helper process startup, validation, immutable saves and pointer; source generation/save and separate load excluded; external Python wall recorded separately",
         "active": "cross-process start/end monotonic ns at actual faux callbacks, not process-local counters or pre-send notices",
         "unknown": [
             "real provider speed/rate limits/quality",
@@ -238,6 +261,10 @@ def main():
             for path in [
                 Path(__file__).resolve(),
                 ROOT / "tests/test_preparation.py",
+                Path(__file__).with_name("pdf_correction_concurrency.py"),
+                ROOT / "tests/test_run.py",
+                ROOT / "tests/test_pdf.py",
+                ROOT / "ai/tests/run-process.mjs",
                 ROOT / "ai/tests/preparation-process.mjs",
                 ROOT / "ai/tests/no-network.mjs",
                 *sorted((ROOT / "src/doc_translate").glob("*.py")),
@@ -254,7 +281,9 @@ def main():
     results = []
     summary = {}
     try:
-        for source_format in ("pdf", "epub"):
+        for source_format in (
+            ("pdf-correction",) if args.feature == "pdf-correction" else ("pdf", "epub")
+        ):
             expected = None
             summary[source_format] = {}
             for concurrency in (1, 2, 4):
@@ -277,7 +306,16 @@ def main():
                     finally:
                         # Only this new sample's child-owned temp dirs, after group reap.
                         for owned in directory.glob("owned-*"):
-                            shutil.rmtree(owned)
+                            if owned.is_dir():
+                                shutil.rmtree(owned)
+                        owned_marker = directory / "owned-path.txt"
+                        if owned_marker.exists():
+                            owned = Path(owned_marker.read_text())
+                            assert owned.parent == Path(
+                                tempfile.gettempdir()
+                            ) and owned.name.startswith("issue61-owned-")
+                            if owned.exists():
+                                shutil.rmtree(owned)
                         (directory / "parent-cleanup.txt").write_text(
                             "owned temp dirs absent after child/group reap; evidence retained\n"
                         )

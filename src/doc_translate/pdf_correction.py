@@ -2,7 +2,7 @@
 
 import json
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Literal, Self
@@ -847,82 +847,113 @@ def correct_pdf(
     observer: Observer | None = None,
 ) -> str:
     """Generate, validate and save one chunk; never adopt a source snapshot."""
+    with workspace_lock(workspace):
+        return _correct_pdf(
+            workspace=workspace,
+            draft_sha256=draft_sha256,
+            owned_pages=owned_pages,
+            reference_pages=reference_pages,
+            policy=policy,
+            config=config,
+            process_command=process_command,
+            cancel=cancel,
+            before_send=before_send,
+            observer=observer,
+        )
+
+
+def _correct_pdf(
+    *,
+    workspace: Path,
+    draft_sha256: str,
+    owned_pages: list[int],
+    reference_pages: list[int],
+    policy: str,
+    config: GenerationConfig,
+    process_command: Sequence[str] | None = None,
+    cancel: threading.Event | None = None,
+    before_send: BeforeSend | None = None,
+    observer: Observer | None = None,
+    on_inference_error: Callable[[InferenceError], None] | None = None,
+) -> str:
+    """Caller holds the workflow lock; workers save only immutable artifacts."""
     observer = scoped_observer(
         observer, owned_pages=tuple(owned_pages), reference_pages=tuple(reference_pages)
     )
     emit(observer, "correction", "validating")
     config = GenerationConfig.model_validate(config.model_dump())
-    with workspace_lock(workspace):
-        _draft, pages, items = _authorized_draft(
-            workspace, draft_sha256, owned_pages, reference_pages
+    _draft, pages, items = _authorized_draft(
+        workspace, draft_sha256, owned_pages, reference_pages
+    )
+    allowed = owned_pages + reference_pages
+    projection = _projection(items, allowed)
+    request = _correction_request(
+        draft_sha256, owned_pages, reference_pages, policy, projection
+    )
+    images = _images(workspace, pages)
+    for path in sorted((workspace / "attempts/pdf-correction").glob("*.json")):
+        run = PDFArtifact(
+            artifact=f"attempts/pdf-correction/{path.name}", sha256=path.stem
         )
-        allowed = owned_pages + reference_pages
-        projection = _projection(items, allowed)
-        request = _correction_request(
-            draft_sha256, owned_pages, reference_pages, policy, projection
+        record = json.loads(_read_artifact(workspace, run))
+        recovered = _saved_correction(
+            workspace, run, record, config, request, pages, items, projection
         )
-        images = _images(workspace, pages)
-        for path in sorted((workspace / "attempts/pdf-correction").glob("*.json")):
-            run = PDFArtifact(
-                artifact=f"attempts/pdf-correction/{path.name}", sha256=path.stem
+        if recovered is not None:
+            emit(observer, "correction", "reused")
+            return recovered
+    current_request = request
+    for number in range(3):
+        try:
+            result = generate(
+                config,
+                current_request,
+                response_model=CorrectionAnswer,
+                images=images,
+                process_command=process_command,
+                cancel=cancel,
+                before_send=before_send,
+                observer=observer,
             )
-            record = json.loads(_read_artifact(workspace, run))
-            recovered = _saved_correction(
-                workspace, run, record, config, request, pages, items, projection
+        except InferenceError as error:
+            if on_inference_error is not None:
+                on_inference_error(error)
+            _record(workspace, "rejected", current_request, config, error.attempts)
+            raise
+        emit(observer, "correction", "validating")
+        try:
+            _validate_answer(result.answer, draft_sha256, owned_pages, items, pages)
+        except _PageCoverageError as error:
+            _record(
+                workspace,
+                "rejected",
+                current_request,
+                config,
+                result.attempts,
+                error.feedback,
             )
-            if recovered is not None:
-                emit(observer, "correction", "reused")
-                return recovered
-        current_request = request
-        for number in range(3):
-            try:
-                result = generate(
-                    config,
-                    current_request,
-                    response_model=CorrectionAnswer,
-                    images=images,
-                    process_command=process_command,
-                    cancel=cancel,
-                    before_send=before_send,
-                    observer=observer,
-                )
-            except InferenceError as error:
-                _record(workspace, "rejected", current_request, config, error.attempts)
+            if number == 2:
                 raise
-            emit(observer, "correction", "validating")
-            try:
-                _validate_answer(result.answer, draft_sha256, owned_pages, items, pages)
-            except _PageCoverageError as error:
-                _record(
-                    workspace,
-                    "rejected",
-                    current_request,
-                    config,
-                    result.attempts,
-                    error.feedback,
-                )
-                if number == 2:
-                    raise
-                emit(
-                    observer,
-                    "correction",
-                    "repair",
-                    reason="owned_page_coverage_incomplete",
-                )
-                current_request = _repair_request(request, error.feedback)
-            except ValueError:
-                _record(workspace, "rejected", current_request, config, result.attempts)
-                raise
-            else:
-                break
-        emit(observer, "correction", "saving")
-        run = _record(workspace, "validated", current_request, config, result.attempts)
-        chunk = _make_chunk(
-            result.answer, reference_pages, pages, run, projection["problems"]
-        )
-        return _store(
-            workspace, "corrections/pdf", "json", chunk.model_dump_json().encode()
-        ).sha256
+            emit(
+                observer,
+                "correction",
+                "repair",
+                reason="owned_page_coverage_incomplete",
+            )
+            current_request = _repair_request(request, error.feedback)
+        except ValueError:
+            _record(workspace, "rejected", current_request, config, result.attempts)
+            raise
+        else:
+            break
+    emit(observer, "correction", "saving")
+    run = _record(workspace, "validated", current_request, config, result.attempts)
+    chunk = _make_chunk(
+        result.answer, reference_pages, pages, run, projection["problems"]
+    )
+    return _store(
+        workspace, "corrections/pdf", "json", chunk.model_dump_json().encode()
+    ).sha256
 
 
 def load_pdf_correction(workspace: Path, sha256: str) -> PDFCorrectionChunk:

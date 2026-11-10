@@ -151,6 +151,8 @@ doc-translate run own.pdf --workspace work/pdf-book \
 
 準備collectは`--preparation-concurrency 1|2|4`で上限を指定できます（run既定1、PDF／EPUB共通）。例えば`doc-translate resume ./work/book --preparation-concurrency 2`は2を保存し、次のresume未指定時も2です。旧manifestでfieldがなければ1です。設定変更だけで準備を再送せず、group・送信本文／設定・根拠検査・整理順は変えません。翻訳の既定並列数2やPDF補正はこのoptionの対象外です。
 
+PDF補正は別option `--correction-concurrency 1|2|4`で独立所有jobの上限を指定できます。例えば`doc-translate resume ./work/pdf-book --correction-concurrency 4`は4を保存し、次回未指定も4です。run未指定／旧manifestのfield欠落は1、EPUBへの明示指定は1も入力エラーです。最大5所有ページ・許可隣接参照・1800px・coverage訂正／検証は変えず、length／input_limit分割後も同じ上限です。設定変更だけでは成功所有を再送しません。取消・設定／認証／保存失敗では開始済みchildのdrain／保存を待ち、旧採用を保って成功保存分をresumeで回収します。独立jobの並列化は画像を同時に保持／送信する負荷や、停止前の追加利用量を増やすことがあります。通常のcalls／総入力量を減らす機能ではなく、実providerの速度・品質・rate limit／料金を確認した既定値推薦でもありません。既定1のまま、[PDFのoffline比較と再実行](performance.md#pdf補正の制限付き並列issue-61)を参照してください。
+
 並列化は待ち時間を重ねるだけで、通常の独立jobのcalls／総入力・回答や品質を減らしません。ただし失敗を観測した時点で他jobも開始済みのことがあり、逐次実行より停止前の送信・利用量が増え得ます。新規投入を止めて取消・保存／drain終了を待ち、成功保存分はresumeで回収します。同じ実wire＋configの同時missはraw結果を共有しますが、実providerの速度改善・rate limit・意味品質・exactly-once課金は保証しません。既定1のまま、[offline比較と再実行方法](performance.md#準備collectの制限付き並列issue-60)を参照してください。
 
 PDFの`--pages A-B`は1始まり・両端含む所有範囲です。省略時は実PDF全ページが所有対象になります。既定の送信許可も所有範囲内だけで、外側は`--reference-pages A-B`で明示したページだけ参照専用に許可します。補正は所有5ページごとに、許可範囲内の前後各1ページだけをcontextとして使います。離れた参照指定を含むローカル取得範囲は広くなることがありますが、それはproviderへの送信許可を増やしません。参照ページは翻訳対象に追加せず、部分範囲をPDF全文処理完了と表示しません。EPUBは文書全体を対象にし、ページ指定を受け付けません。

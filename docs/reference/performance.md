@@ -1,6 +1,6 @@
 # PDF／EPUBのoffline性能baselineとローカル探索（Issue #54／#55／#56／#57）
 
-[Approved Plan](../plans/pdf-epub-performance.md)のA／B／B2・第1段階のbaseline、第2段階の優先1（renderer関連付け索引）と優先2のpreparation操作内raw record memo／translation操作内catalogを扱います。Issue #55は現在入力のblock／unit／cell／node／target索引で探索を置き換え、schema・request方式・並列数・statusの共有検証経路は変更しません。同revisionのbefore／afterラベルは**再現性のcontrol比較**であり、高速化の証明ではありません。変更前後は別invocationの最初のbeforeラベル3回をprimaryとして固定します。Planにある旧revisionの秒数（特にB2のwarm Python process）は現在の測定に流用しません。preparation attempt探索の変更前後計測はIssue #56節、翻訳attempt-heavyの操作内catalogと前後比較は末尾のIssue #57節で扱います。ID分離・新並列、実provider／OCR／layout／model取得・意味品質・料金・任意規模の保証は本段階の対象外です。
+[Approved Plan](../plans/pdf-epub-performance.md)のA／B／B2・第1段階のbaseline、第2段階の優先1（renderer関連付け索引）と優先2のpreparation操作内raw record memo／translation操作内catalogを扱います。Issue #55は現在入力のblock／unit／cell／node／target索引で探索を置き換え、schema・request方式・並列数・statusの共有検証経路は変更しません。同revisionのbefore／afterラベルは**再現性のcontrol比較**であり、高速化の証明ではありません。変更前後は別invocationの最初のbeforeラベル3回をprimaryとして固定します。Planにある旧revisionの秒数（特にB2のwarm Python process）は現在の測定に流用しません。preparation attempt探索の変更前後計測はIssue #56節、翻訳attempt-heavyの操作内catalogと前後比較は末尾のIssue #57節で扱います。ID分離・新並列、実provider／OCR／layout／model取得・意味品質・料金・任意規模の保証はbaseline段階の対象外です。準備の制限付き並列はIssue #60節、PDF補正の制限付き並列は末尾Issue #61節で別に扱います。
 
 ## 新しい隔離状態からの再実行
 
@@ -446,3 +446,46 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 | 実EPUB | 4 | 2.206551 / 2.205924 / 2.210751 | 2.206551 [2.205924, 2.210751] | .276961 |
 
 証拠は追跡外`work/issue60-worker-accepted-20261110-105305/`。親の所有temp回収補完前の同production比較`work/issue60-worker-final-20261110-104207/`も全18sample成功ですが、上表へ混ぜず保持しています。初回探索の`work/issue60-worker-20261110-103546/`はorganizeにも500ms待ちを入れた別条件で、上表に混ぜていません。Map手順自身によるlocal／cancel／saveの直接再実行は`work/issue60-worker-recovery-final-xy8MH4/`で、3ケースとも旧pointer保持・保存成功1件回収・不足collect4＋organize1だけ追加送信・旧immutable不変、全開始callback終了とcleanup/readbackを照合しました。上記の性能・復旧操作・focused moduleのpreparation／run／resume／render／translation／helper selfcheck計376件成功（skipなし）は、いずれもsignal取消レビュー修正前sourceの記録です。修正後の保証確認や性能値には置換しません。正式全check・Root独立操作・Reviewer gateは別担当で、未承認の実provider評価や既定変更の根拠にはしません。
+
+
+## PDF補正の制限付き並列（Issue #61）
+
+### 固定recipe・再実行・観測境界
+
+run／resumeの`--correction-concurrency {1,2,4}`は独立所有jobの上限です。未指定run／旧manifest欠落は1、resume未指定は保存値、明示overrideは保存します。EPUBへの明示指定は1も入力エラーです。公開`correct_pdf`のlock wrapper・回答／chunk schema・所有5ページ／許可隣接参照・長辺1800px・policy／全domain検証・coverage最大3回答／有限transport retryは変えません。[artifact契約](artifacts.md#pdf補正chunkissue-8)／[usage](usage.md#文書を翻訳する通常利用)にAPI・取消／保存失敗時の旧採用保持・成功回収を記載しています。
+
+repository rootの既存PDF extra付きPython／Node、compiled `ai/dist`と同梱resource全10file hash一致を前提に、既存preparation driverの計測／分布／証拠／cleanupを再利用します。install／sync／build・実provider／model取得をせず、不足時は停止します。未作成のignore済みwork直下を指定し、他のbenchmark/testと非並行・foregroundで実行してください。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/python .pi/skills/verify-project/scripts/preparation_concurrency.py \
+  --feature pdf-correction --evidence work/issue61-correction-new
+```
+
+小さい`pdf_correction_concurrency.py`は既存`test_run.pdf_input/extend_pdf_input/helper`と`test_pdf.conversion/local_models`を接続します。自作61ページ（200×100pt）の所有2–61、追加参照許可なし、全PNG長辺1800pxです。公開runを補正開始前で取消し、実取得済み・補正なしの人工seedを保持します。同じ全byteを各sampleの外側所有TemporaryDirectoryへコピーし、fresh Pythonの公開resumeで**12独立job（各最大5所有ページ・faux待ち500ms）**を処理します。seed共有は保存model絶対pathの差がdraft／request digestへ混入しないためで、生成・validator・保存をfakeにするためではありません。converter／page backendだけを人工化し、実Node helper／公開faux／no-network・人工credentialを使います。実Docling／OCR／layoutの性能ではありません。
+
+対象timerはcorrection `start`→`finished`で、reconciliation、Node process起動、実validator、attempt／chunkと親run manifestの保存を含みます。取得・source組立・下流prepare／translation／renderと独立loadは区間外です。公開resume全体と外側Python wallは別に記録し、対象stage速度をend-to-endやprovider内部計算時間の短縮率と呼びません。warm filesystem・cache flushなし、各1／2／4を通常3回、失敗／診断は通常統計へ混ぜません。秒数閾値はpytestに入れません。
+
+実faux callbackのPID・所有集合と共通monotonic nsのstart/endを跨processで集計し、active<=設定・最終0を確認します。process-local counter、before-send許可数、helper生存数を実activeと呼びません。全実request／config・raw回答・総text／画像bytes・最終chunk／ページ／source順を全9sampleで比較します。各sampleの無変更resumeでは実追加送信0／旧immutable不変をassertします。length／input_limit分割・逆順完了／局所失敗と全体停止・config/auth/storage拒否・attempt／chunk／manifest保存障害は[Mapの別手順とfocused回帰](../../.pi/skills/verify-project/references/feature-map.md#pdf補正の制限付き並列issue-61)で補完します。
+
+証拠はrevision／dirty／scope.diff、source／helper／input hashと条件・unknownを持つmanifest、verification-sources、人工seed、各sampleのcommand／exit／外側wall／stdout／stderr、timeline／requests／comparable／config／immutable-hashes、results／summary／cleanupです。各sample60秒の予算、所有process groupだけSIGINT→45秒drain→必要時SIGKILL／wait。所有TemporaryDirectory／人工credentialだけfinallyで回収し、強制終了時も親はreap後に今回sampleのowned-pathだけ回収します。人工seedとworkspace外の証拠は保持し、cleanup後に全fileをreadbackします。実workspace／既存lock／venv／model／他PIDを変更しません。
+
+### Workerのoffline比較
+
+HEAD `f972b80`＋Issue #61未commit差分、Python 3.14.9／Node v24.22.1／macOS 26.7.1 arm64。測定source／helper全hashは追跡外`work/issue61-worker-performance-final/manifest.json`に固定しています。後のdriver変更は説明metadataの文言／formatだけで、production sourceと測定経路は同じです。各設定3回の通常raw値は次のとおりです。
+
+| 上限 | 対象stage raw秒（3回） | median [min, max] 秒 | c1比 | 実callback peak／終了 |
+| ---: | --- | --- | ---: | --- |
+| 1 | 11.062307 / 10.976064 / 10.933406 | 10.976064 [10.933406, 11.062307] | 1 | 1／0 |
+| 2 | 5.586446 / 5.644813 / 5.556927 | 5.586446 [5.556927, 5.644813] | .508966 | 2／0 |
+| 4 | 2.929407 / 2.992086 / 2.910251 | 2.929407 [2.910251, 2.992086] | .266890 | 4／0 |
+
+c2<=.75／c4<=.55のstage条件を満たしました。全9sampleでcalls **12**、総送信message text **222,995 UTF-8 bytes**、画像 **82枚／decoded PNG 560,552 bytes**（参照の繰返し送信を含む）、全request／config／raw回答・最終sourceの60ページ順が一致しました。各無変更resumeはcompleted・追加送信0・旧immutable不変です。PNG／text情報量・model／thinkingを減らしていません。所有job数は12、worker上限1／2／4で、全snapshot／全PNGを常駐する新しいcacheや永続管理状態はありません。親／helper peak RSS・同時aggregate RSS、物理I/O、実provider内時間・rate limit・品質／料金は**未測定／unknown**です。
+
+最終通常比較より前の試行は成功値へ混ぜていません。`work/issue61-worker-performance/`は最初のsample成功後に親cleanupのmarker fileとdirectoryの区別が不足して終了、`-v2/`は毎回新規取得したdraftのmodel絶対path差による厳密comparable不一致、`-v3/`は補正前取消の期待statusをfailedと誤指定（実際はpartial）して終了しました。原因をhelper側で直し、同一public-run seedを固定した`-v4/`と上記`-final/`は各9sample成功です。`-v4/`の値を上表へ混ぜず、全試行の人工一時物を回収して証拠を保持します。
+
+Map手順自身の別invocationは`work/issue61-worker-recovery-final-CgP8B5/`です。親SIGTERM取消は成功attempt **1**件を回収して不足補正 **11**calls、OS chunk replace障害は成功attempt **2**件を回収して不足 **10**calls、通常局所失敗は成功attempt **11**件を回収して失敗所有だけ **1**callでした。取消／保存故障時はsource／preparation／translation／renderの旧pointerを保持し、全開始callback終了・旧immutable保持・completedへの回復・所有物cleanup／全証拠readbackを照合しました。初回Map操作`work/issue61-worker-recovery-WXR6pN/`はorchestration timeoutで中断され成功ではありません。復帰後に固有seedで所有を確認した残存temp1件だけを回収し、中断記録を保持しています。
+
+### 採否と未確認
+
+採用対象はopt-inのPDF補正制限付き並列、workerのimmutable保存／親manifest・進捗・source採用の責務分離だけです。offline制御遅延の合格を実provider速度・意味品質・rate limit／課金の確認済みや既定値推薦にしません。実AI評価は未承認・未実施のため、**既定1を維持**します。画像縮小・所有単位／model／thinking変更・回答merge・snapshot保存頻度削減・汎用scheduler／新依存／永続cacheは採用しません。Rootの正式全phase・別隔離状態での直接操作・2独立Review・最終承認は別途必要で、Workerの手順成立／数値だけでは全体受入れを宣言しません。
