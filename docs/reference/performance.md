@@ -406,3 +406,43 @@ fresh Correctness reviewは指摘なし、Ponytail reviewの1件をRootが採用
 代表PDF35はrun **3.313561→3.457074秒**／resume **.823617→.858901秒**、同byte固定EPUB20はrun **4.105198→4.286605秒**／resume **.388491→.407141秒**で、全4操作が`max(before×1.10, before＋.05秒)`以内です。修正前の有利な値へ置換していません。raw／median／min/max／上限と全command／exitは`work/issue57-root-correction-checks/performance-comparison.json`、`work/issue57-root-final-after/`、`work/issue57-root-cli-final/`を参照します。全reuseで新request0・旧immutable／seed不変、所有物cleanupと証拠readbackを確認しました。
 
 Rootの修正後正式チェックはcore-only **929 passed／123 skipped**（Docling不在）、PDF正式4ファイル **181 passed**、Ruff check／format・ty・公開import・CLI help・diff-checkすべてexit0／警告なしです。各commandとlogは`work/issue57-root-correction-checks/repository-checks.json`。公開APIのmanual三世代優先・履歴／無関係破損拒否・repair保存失敗からの無送信回収・split部分成功保持／orphan回収は`work/issue57-root-direct-final/`、signed zeroは旧HEAD／最終sourceとも追加request0を`work/issue57-root-signed-zero-final/`で確認しました。最終ReviewerとCode Review gateはこの記録とは別の承認工程です。実provider／実workspace／OCR・意味品質・任意書籍・他OS・remote CIは未確認のままです。
+
+## 準備collectの制限付き並列（Issue #60）
+
+### 測定・再実行・限界
+
+公開`prepare_document(concurrency=1|2|4)`のcollectだけを並列化し、既定1・group／実wire／config／根拠検査を維持します。run／resumeのCLIは`--preparation-concurrency {1,2,4}`、run manifest保存・resume未指定保存値・旧field欠落1です。設定変更だけでは再送しません。[artifact契約](artifacts.md#文書contextglossary準備issue-11)と[利用上の注意](usage.md#文書を翻訳する通常利用)を参照してください。PDF補正並列は別Work Itemです。
+
+再実行はrepository root、既存Python／Node／compiled helperと同梱resource全10file hash一致、人工入力・credential・実Node公開faux／no-networkだけを前提とします。不足時は止め、install／sync／build／provider通信をしません。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+# 未作成のignore済みwork直下。ほかのbenchmark/testと非並行・foreground。
+.venv/bin/python .pi/skills/verify-project/scripts/preparation_concurrency.py \
+  --evidence work/issue60-concurrency-new
+```
+
+専用helperは既存testの自作PDF型source／実EPUB archive reader・extractorと公開save→prepare→loadを使います。EPUBの同一archive byteと、各12個の独立heading＋body groupを固定し、collectだけ各500ms待ち、organizeは遅延なしです。設定1／2／4ごとにfresh Python通常3回、warm filesystem・flushなしで実行します。timerは**公開prepare全体**で、Node helper起動・実validator・attempt／根拠／snapshot／pointer保存を含みます。source生成／saveと別公開loadは区間外で、外側Python process全体wallも各commandへ別記します。秒数閾値をpytestへ追加しません。
+
+期待はstage median(c2/c1)<=.75、c4/c1<=.55。実faux callbackのstart/endをPID付き共通monotonic nsで記録して跨processでactiveを集約します。process-local counter・pre-send許可・helper生存数を実activeと呼びません。上限以下・最終0、calls13（collect12＋organize1）、総送信text bytes・全実request／config・raw回答・collections／runsのgroup対応が同じで、organizeは全collect保存後に一度だけです。別の無変更prepareでは追加送信0・旧immutable不変を検査します。
+
+証拠はmanifest（版／dirty／diff・source／input／helper hash・条件／unknown）、保存したverification-sources、各caseのcommand／exit／stdout／stderr、timeline／requests／comparable／immutable-hashes、results／summary／cleanupです。失敗は途中証拠を残して停止し、成功統計へ混ぜません。所有child groupだけ60秒でSIGINT→45秒drain→必要時SIGKILL／wait、各所有TemporaryDirectory／人工credentialをfinallyで削除し、childの強制終了時も親がreap後に今回の新規sample内の所有tempだけを回収します。証拠は残して全参照をreadbackします。既存workspace／lock／venv／model／他PIDは操作しません。
+
+[既存Skill](../../.pi/skills/verify-project/SKILL.md#準備collectの制限付き並列issue-60)／[Mapの対応節](../../.pi/skills/verify-project/references/feature-map.md#準備collectの制限付き並列issue-60)に逆順、同時missのraw成功／失敗共有・binding／usage一度、局所失敗／Event取消／OS replace保存例外→旧pointer保持・成功回収の直接操作とfocused回帰をまとめています。これらの手順成立だけでRootの別invocation直接受入れ、正式全phaseやReviewer gateを代用しません。
+
+この比較は制御遅延で待ちを重ねられることの確認であり、実providerの速度・rate limit・意味品質／料金は未確認です。失敗時は他jobも開始済みのため、逐次より停止前の利用量が増え得ます。共有はoperation内rawだけで、永続cache／全履歴snapshot常駐は追加しません。物理I/O・同時aggregate RSSはunknown、実課金のexactly-once保証もありません。既定は1を維持します。
+
+### Workerの通常比較（signal取消レビュー修正前）
+
+以下は公開prepare単体のSIGINT／SIGTERM取消レビュー修正**前**の値です。修正後sourceの成功・性能根拠には流用せず、Rootが同helperの18sampleと必要な正式／直接確認を別証拠へ再実行します。HEAD `30baa7b`＋当時のIssue #60未commit差分、Python 3.14.9／Node v24.22.1／macOS arm64。測定時sourceとhelperの全hashは証拠manifestに固定しています。PDF型・実EPUBの全18sampleで同一calls13、総送信message text **20,289 UTF-8 bytes**（画像0）、実request／config・raw回答・group順が一致しました。各設定の実callback peakは毎回1／2／4、最終active0、無変更prepareの新規送信0・旧immutable不変です。
+
+| 入力 | 上限 | 通常raw秒（3回） | median [min, max] 秒 | c1比 |
+| --- | ---: | --- | --- | ---: |
+| PDF型 | 1 | 8.164316 / 8.000252 / 8.034608 | 8.034608 [8.000252, 8.164316] | 1 |
+| PDF型 | 2 | 4.117016 / 4.068510 / 4.059467 | 4.068510 [4.059467, 4.117016] | .506373 |
+| PDF型 | 4 | 2.214852 / 2.238591 / 2.213771 | 2.214852 [2.213771, 2.238591] | .275664 |
+| 実EPUB | 1 | 7.967004 / 7.929837 / 7.986748 | 7.967004 [7.929837, 7.986748] | 1 |
+| 実EPUB | 2 | 4.049606 / 4.091509 / 4.045799 | 4.049606 [4.045799, 4.091509] | .508297 |
+| 実EPUB | 4 | 2.206551 / 2.205924 / 2.210751 | 2.206551 [2.205924, 2.210751] | .276961 |
+
+証拠は追跡外`work/issue60-worker-accepted-20261110-105305/`。親の所有temp回収補完前の同production比較`work/issue60-worker-final-20261110-104207/`も全18sample成功ですが、上表へ混ぜず保持しています。初回探索の`work/issue60-worker-20261110-103546/`はorganizeにも500ms待ちを入れた別条件で、上表に混ぜていません。Map手順自身によるlocal／cancel／saveの直接再実行は`work/issue60-worker-recovery-final-xy8MH4/`で、3ケースとも旧pointer保持・保存成功1件回収・不足collect4＋organize1だけ追加送信・旧immutable不変、全開始callback終了とcleanup/readbackを照合しました。上記の性能・復旧操作・focused moduleのpreparation／run／resume／render／translation／helper selfcheck計376件成功（skipなし）は、いずれもsignal取消レビュー修正前sourceの記録です。修正後の保証確認や性能値には置換しません。正式全check・Root独立操作・Reviewer gateは別担当で、未承認の実provider評価や既定変更の根拠にはしません。

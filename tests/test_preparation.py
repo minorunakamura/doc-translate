@@ -1625,3 +1625,439 @@ def test_preparation_v2_reuses_identical_wire_with_distinct_snapshot_bindings(tm
         collection["candidates"][0]["evidence"][0]["unit_id"]
         for collection in evidence["collections"]
     ] == ["unit-2", "unit-4", "unit-6", "unit-8"]
+
+
+def parallel_source(tmp_path, source_format="pdf", *, size=5, same=False):
+    """Independent self-authored sections, through the real EPUB reader when selected."""
+    titles = ["Same" if same else f"Section group{i}" for i in range(size)]
+    if source_format == "epub":
+        from test_epub import make_epub
+        from test_epub_source import extract
+
+        content = "".join(f"<h1>{title}</h1><p>queue queue.</p>" for title in titles)
+        return extract(
+            make_epub(
+                tmp_path,
+                extra={
+                    "OPS/text/ch.xhtml": f'<html xmlns="http://www.w3.org/1999/xhtml"><body>{content}</body></html>'.encode()
+                },
+            )
+        )
+    from test_units import pdf_snapshot
+
+    return pdf_snapshot(
+        [
+            {
+                "block_id": f"block-{i}-{kind}",
+                "kind": kind,
+                "text": text,
+                **({"structure": {"level": 1}} if kind == "heading" else {}),
+            }
+            for i, title in enumerate(titles)
+            for kind, text in [("heading", title), ("body", "queue queue.")]
+        ]
+    )
+
+
+def timeline_events(path):
+    return sorted(
+        [json.loads(line) for line in path.read_text().splitlines()],
+        key=lambda event: int(event["ns"]),
+    )
+
+
+@pytest.mark.parametrize("source_format", ["pdf", "epub"])
+def test_preparation_parallel_reverse_completion_preserves_group_and_run_order(
+    tmp_path, source_format
+):
+    import threading
+
+    snapshot = parallel_source(tmp_path, source_format, size=4)
+    workspace = tmp_path / "workspace"
+    save_source_snapshot(workspace, snapshot)
+    answers = id_answers(snapshot)
+    for i, answer in enumerate(answers["collect"]):
+        answer["context"] = f"Section {i}"
+    timeline = tmp_path / "timeline.jsonl"
+    answers["observation"] = {
+        "delay_ms": [900, 600, 300, 0],
+        "timeline": str(timeline),
+    }
+    barrier = threading.Barrier(4, timeout=10)
+
+    def before_send(_config, request, _preflight):
+        if request.context["phase"] == "collect":
+            barrier.wait()
+
+    digest = run(
+        tmp_path,
+        workspace,
+        [],
+        concurrency=4,
+        answers_override=answers,
+        before_send=before_send,
+    )
+    adopted = load_preparation(workspace, digest)
+    evidence = json.loads(
+        (
+            workspace / "preparation/evidence" / f"{adopted.evidence_sha256}.json"
+        ).read_text()
+    )
+    assert [answer["context"] for answer in evidence["collections"]] == [
+        f"Section {i}" for i in range(4)
+    ]
+    records = [
+        json.loads((workspace / "attempts/preparation" / f"{run_id}.json").read_text())
+        for run_id in adopted.runs
+    ]
+    assert [
+        json.loads(record["request"]["text"])[0]["source_text"]
+        for record in records[:-1]
+    ] == [f"Section group{i}" for i in range(4)]
+    assert [item["context"] for item in json.loads(records[-1]["request"]["text"])] == [
+        f"Section {i}" for i in range(4)
+    ]
+    events = timeline_events(timeline)
+    assert [
+        e["section"] for e in events if e["phase"] == "collect" and e["event"] == "end"
+    ] == [3, 2, 1, 0]
+    assert [e["event"] for e in events if e["phase"] == "organize"] == ["start", "end"]
+    assert events[-2]["phase"] == "organize"
+    active = peak = 0
+    for event in events:
+        active += 1 if event["event"] == "start" else -1
+        peak = max(peak, active)
+    assert active == 0 and 1 < peak <= 4
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_preparation_parallel_same_wire_miss_shares_raw_success_or_failure(
+    tmp_path, monkeypatch, failed
+):
+    import threading
+
+    from doc_translate import preparation
+    from doc_translate.inference import InferenceError
+    from doc_translate.render import _usage
+
+    snapshot = parallel_source(tmp_path, size=4, same=True)
+    workspace = tmp_path / "workspace"
+    save_source_snapshot(workspace, snapshot)
+    answers = id_answers(snapshot)
+    answers["observation"] = {"delay_ms": 100, "fail_sections": [1] if failed else []}
+    original = preparation._AttemptCatalog.flight
+    barrier = threading.Barrier(4, timeout=10)
+    flights = []
+
+    def flight(self, request, config):
+        if request.context["phase"] == "collect":
+            barrier.wait()
+        result = original(self, request, config)
+        flights.append(result[0])
+        return result
+
+    monkeypatch.setattr(preparation._AttemptCatalog, "flight", flight)
+    if failed:
+        with pytest.raises(InferenceError):
+            run(tmp_path, workspace, [], answers_override=answers, concurrency=4)
+        assert not (workspace / "preparation-snapshot.json").exists()
+    else:
+        digest = run(tmp_path, workspace, [], answers_override=answers, concurrency=4)
+        adopted = load_preparation(workspace, digest)
+        assert adopted.runs[1] == adopted.runs[2] == adopted.runs[3]
+        evidence = json.loads(
+            (
+                workspace / "preparation/evidence" / f"{adopted.evidence_sha256}.json"
+            ).read_text()
+        )
+        assert [
+            answer["candidates"][0]["evidence"][0]["unit_id"]
+            for answer in evidence["collections"]
+        ] == [f"unit-{i}" for i in (2, 4, 6, 8)]
+    assert all(future.done() for future in flights)
+    requests = [
+        json.loads(json.loads(line)["messages"][1]["content"][0]["text"])
+        for line in (tmp_path / "requests.jsonl").read_text().splitlines()
+    ]
+    assert sum(r["context"]["phase"] == "collect" for r in requests) == 2
+    assert sum(r["context"]["phase"] == "organize" for r in requests) == (
+        0 if failed else 1
+    )
+    assert len(_usage(workspace)["stages"]["preparation"]) == len(requests)
+
+
+@pytest.mark.parametrize("failure", ["local", "cancel", "save"])
+def test_preparation_parallel_stop_drains_and_recovers_saved_success(
+    tmp_path, monkeypatch, failure
+):
+    import os
+    import threading
+
+    from doc_translate import preparation
+    from doc_translate.inference import InferenceError
+
+    flights = []
+    original_flight = preparation._AttemptCatalog.flight
+
+    def flight(self, request, config):
+        result = original_flight(self, request, config)
+        flights.append(result[0])
+        return result
+
+    monkeypatch.setattr(preparation._AttemptCatalog, "flight", flight)
+    snapshot = parallel_source(tmp_path)
+    workspace = tmp_path / "workspace"
+    save_source_snapshot(workspace, snapshot)
+    answers = id_answers(snapshot)
+    old = run(tmp_path, workspace, [], answers_override=answers)
+    pointer = (workspace / "preparation-snapshot.json").read_bytes()
+    config = CONFIG.model_copy(update={"options": GenerationOptions(temperature=0.2)})
+    cancelled = threading.Event()
+    answers["observation"] = {
+        "delay_ms": [0, 800, 0, 0, 0],
+        "fail_sections": [2] if failure == "local" else [],
+        "timeline": str(tmp_path / "timeline.jsonl"),
+    }
+    replace = os.replace
+
+    def fail_replace(src, dst):
+        if failure == "save" and Path(dst).parent == workspace / "attempts/preparation":
+            value = json.loads(Path(src).read_bytes())
+            if "Section group2" in value["request"]["text"]:
+                raise OSError("artificial immutable save failure")
+        return replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+
+    def observer(event):
+        if failure == "cancel" and event.kind == "saved":
+            cancelled.set()
+
+    with pytest.raises((InferenceError, OSError)):
+        run(
+            tmp_path,
+            workspace,
+            [],
+            config=config,
+            concurrency=2,
+            answers_override=answers,
+            cancel=cancelled,
+            observer=observer,
+        )
+    assert (workspace / "preparation-snapshot.json").read_bytes() == pointer
+    assert all(future.done() for future in flights)
+    assert load_preparation(workspace, old)
+    immutable = {
+        path: path.read_bytes()
+        for path in workspace.rglob("*.json")
+        if path.parent.name not in {"workspace"}
+    }
+    events = timeline_events(tmp_path / "timeline.jsonl")
+    assert all(event["phase"] == "collect" for event in events)
+    assert {e["section"] for e in events} <= {0, 1, 2}
+    assert {(e["pid"], e["section"]) for e in events if e["event"] == "start"} == {
+        (e["pid"], e["section"]) for e in events if e["event"] == "end"
+    }
+    successful = [
+        json.loads(p.read_text())
+        for p in (workspace / "attempts/preparation").glob("*.json")
+        if json.loads(p.read_text())["config"] == config.model_dump(mode="json")
+        and json.loads(p.read_text())["status"] == "validated"
+    ]
+    assert successful
+    prior_count = len((tmp_path / "requests.jsonl").read_text().splitlines())
+    monkeypatch.setattr(os, "replace", replace)
+    answers.pop("observation")
+    recovered = run(
+        tmp_path, workspace, [], config=config, concurrency=2, answers_override=answers
+    )
+    assert (
+        load_preparation(workspace, recovered).translation_inputs_sha256
+        == load_preparation(workspace, old).translation_inputs_sha256
+    )
+    assert all(path.read_bytes() == data for path, data in immutable.items())
+    assert len(
+        (tmp_path / "requests.jsonl").read_text().splitlines()
+    ) - prior_count == 6 - len(successful)
+
+
+@pytest.mark.parametrize("concurrency", [0, 3, 8, True, "2"])
+def test_preparation_rejects_invalid_concurrency_before_sending(tmp_path, concurrency):
+    workspace, candidates = source(tmp_path)
+    with pytest.raises(ValueError, match="concurrency"):
+        run(tmp_path, workspace, candidates, concurrency=concurrency)
+    assert not (tmp_path / "requests.jsonl").exists()
+
+
+def _preparation_signal_child(directory, concurrency):
+    """Subprocess entry: keep real generation, validation and saving under signal."""
+    import os
+    import signal
+    from contextlib import nullcontext
+
+    from doc_translate.inference import InferenceError
+    from doc_translate.run import _cancellation
+
+    owned = Path(directory)
+    workspace = owned / "workspace"
+    snapshot = parallel_source(owned, size=5)
+    save_source_snapshot(workspace, snapshot)
+    answers = id_answers(snapshot)
+
+    def previous_handler(_signum, _frame):
+        raise AssertionError("prepare did not intercept the parent signal")
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, previous_handler)
+    old = run(owned, workspace, [], answers_override=answers)
+    assert all(
+        signal.getsignal(signum) is previous_handler
+        for signum in (signal.SIGINT, signal.SIGTERM)
+    )
+    pointer = (workspace / "preparation-snapshot.json").read_bytes()
+    immutable = {
+        path: path.read_bytes()
+        for directory in ("snapshots", "attempts", "preparation")
+        for path in (workspace / directory).rglob("*.json")
+    }
+    config = CONFIG.model_copy(update={"options": GenerationOptions(temperature=0.2)})
+    timeline = owned / "timeline.jsonl"
+    answers["observation"] = {"delay_ms": 1500, "timeline": str(timeline)}
+    # The parallel case also checks run/resume's caller-owned Event and handlers.
+    with _cancellation() if concurrency == 4 else nullcontext() as cancelled:
+        handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+        try:
+            run(
+                owned,
+                workspace,
+                [],
+                config=config,
+                cancel=cancelled,
+                answers_override=answers,
+                **({"concurrency": concurrency} if concurrency != 1 else {}),
+            )
+        except InferenceError as error:
+            assert error.code == "cancelled"
+        else:
+            raise AssertionError("parent signal did not cancel preparation")
+        assert all(signal.getsignal(s) is handler for s, handler in handlers.items())
+        if cancelled is not None:
+            assert cancelled.is_set()
+    assert all(
+        signal.getsignal(signum) is previous_handler
+        for signum in (signal.SIGINT, signal.SIGTERM)
+    )
+    assert (workspace / "preparation-snapshot.json").read_bytes() == pointer
+    assert all(path.read_bytes() == data for path, data in immutable.items())
+    assert load_preparation(workspace, old)
+    attempts = [
+        json.loads(path.read_text())
+        for path in (workspace / "attempts/preparation").glob("*.json")
+        if path not in immutable
+    ]
+    assert len(attempts) == concurrency
+    assert all(
+        record["status"] == "rejected"
+        and record["request"]["context"]["phase"] == "collect"
+        and len(record["attempts"]) == 1
+        and record["attempts"][0]["code"] == "cancelled"
+        for record in attempts
+    )
+    events = timeline_events(timeline)
+    assert len([e for e in events if e["event"] == "start"]) == concurrency
+    assert {(e["pid"], e["section"]) for e in events if e["event"] == "start"} == {
+        (e["pid"], e["section"]) for e in events if e["event"] == "end"
+    }
+    assert all(e["phase"] == "collect" for e in events)
+    for pid in {e["pid"] for e in events}:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    with pytest.raises(ChildProcessError):
+        os.waitpid(-1, os.WNOHANG)
+    print(json.dumps({"error": "cancelled", "saved_attempts": len(attempts)}))
+
+
+@pytest.mark.parametrize(
+    "concurrency,termination", [(1, "SIGTERM"), (4, "SIGTERM"), (4, "SIGINT")]
+)
+def test_preparation_parent_signal_drains_and_restores_handlers(
+    tmp_path, concurrency, termination
+):
+    import os
+    import signal
+    import subprocess
+    import sys
+    import tempfile
+    import time
+
+    with tempfile.TemporaryDirectory(
+        prefix="prepare-signal-", dir=tmp_path
+    ) as temporary:
+        owned = Path(temporary)
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from test_preparation import _preparation_signal_child; "
+                    f"_preparation_signal_child({temporary!r}, {concurrency})"
+                ),
+            ],
+            cwd=ROOT,
+            env={**os.environ, "PYTHONPATH": str(ROOT / "tests")},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            timeline = owned / "timeline.jsonl"
+            deadline = time.monotonic() + 20
+            while True:
+                assert process.poll() is None, process.communicate()
+                if timeline.exists():
+                    events = timeline_events(timeline)
+                    if sum(e["event"] == "start" for e in events) == concurrency:
+                        break
+                assert time.monotonic() < deadline, "real faux callbacks did not start"
+                time.sleep(0.01)
+            # Do not signal the group: only the API parent may cancel its helpers.
+            process.send_signal(getattr(signal, termination))
+            stdout, stderr = process.communicate(timeout=45)
+            assert process.returncode == 0, (stdout, stderr)
+            assert json.loads(stdout) == {
+                "error": "cancelled",
+                "saved_attempts": concurrency,
+            }
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGINT)
+            except ProcessLookupError:
+                pass
+            try:
+                process.communicate(timeout=45)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+            finally:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+
+def test_preparation_non_main_thread_preserves_caller_handlers(tmp_path):
+    import signal
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    workspace, candidates = source(tmp_path)
+    handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    cancelled = threading.Event()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        digest = executor.submit(
+            run, tmp_path, workspace, candidates, cancel=cancelled, concurrency=4
+        ).result(timeout=30)
+    assert load_preparation(workspace, digest)
+    assert not cancelled.is_set()
+    assert all(signal.getsignal(s) is handler for s, handler in handlers.items())

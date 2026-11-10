@@ -2054,3 +2054,73 @@ def test_pdf_progress_does_not_publish_success_before_run_save(
     assert not any(
         e.succeeded or e.kind == "done" for e in events if e.stage == "correction"
     )
+
+
+@pytest.mark.parametrize("concurrency", [1, 2, 4])
+def test_run_resume_persists_preparation_concurrency_and_legacy_default(
+    tmp_path, capsys, concurrency
+):
+    source = make_epub(tmp_path)
+    workspace = tmp_path / "new"
+    command = helper(tmp_path)
+    main(
+        [*run_args(source, workspace), "--preparation-concurrency", str(concurrency)],
+        process_command=command,
+    )
+    assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
+    path = workspace / "run.json"
+    assert json.loads(path.read_text())["preparation_concurrency"] == concurrency
+    saved = (tmp_path / "requests.jsonl").read_bytes()
+    for flags, expected in [([], concurrency), (["--preparation-concurrency", "4"], 4)]:
+        main(
+            ["resume", str(workspace), "--json", "--events-json", *flags],
+            process_command=command,
+        )
+        assert (
+            json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
+        )
+        assert json.loads(path.read_text())["preparation_concurrency"] == expected
+        assert (tmp_path / "requests.jsonl").read_bytes() == saved
+    legacy = json.loads(path.read_text())
+    legacy.pop("preparation_concurrency")
+    path.write_text(json.dumps(legacy))
+    main(["resume", str(workspace), "--json", "--events-json"], process_command=command)
+    assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
+    assert json.loads(path.read_text())["preparation_concurrency"] == 1
+    assert (tmp_path / "requests.jsonl").read_bytes() == saved
+
+
+@pytest.mark.parametrize("operation", ["run", "resume"])
+@pytest.mark.parametrize("value", ["0", "3", "8", "bad"])
+def test_run_resume_rejects_invalid_preparation_concurrency(tmp_path, operation, value):
+    workspace = tmp_path / "workspace"
+    args = (
+        run_args(tmp_path / "artificial.epub", workspace)
+        if operation == "run"
+        else ["resume", str(workspace)]
+    )
+    with pytest.raises(SystemExit) as error:
+        main([*args, "--preparation-concurrency", value])
+    assert error.value.code == 2
+    assert not workspace.exists()
+
+
+@pytest.mark.parametrize("value", [0, 3, 8, True, "2"])
+def test_run_resume_api_rejects_preparation_concurrency_before_workspace_change(
+    tmp_path, value
+):
+    from test_preparation import CONFIG
+
+    from doc_translate.run import resume_document, run_document
+
+    workspace = tmp_path / "workspace"
+    with pytest.raises(ValueError, match="concurrency"):
+        run_document(
+            source=tmp_path / "artificial.epub",
+            workspace=workspace,
+            translation=CONFIG,
+            preparation_concurrency=value,
+        )
+    with pytest.raises(ValueError, match="concurrency"):
+        resume_document(workspace=workspace, preparation_concurrency=value)
+    assert not workspace.exists()

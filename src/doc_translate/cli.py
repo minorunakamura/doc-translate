@@ -215,6 +215,12 @@ def main(
     )
     for command in (run, resume):
         command.add_argument(
+            "--preparation-concurrency",
+            type=int,
+            choices=(1, 2, 4),
+            help="Maximum parallel preparation collects (run: 1; resume: saved value).",
+        )
+        command.add_argument(
             "--events-json",
             action="store_true",
             help="Emit only pre-send JSON notices on stderr, not a full event stream.",
@@ -290,6 +296,7 @@ def main(
                 if args.operation == "resume":
                     result = resume_document(
                         workspace=args.workspace,
+                        preparation_concurrency=args.preparation_concurrency,
                         translation=selection("translation"),
                         correction=selection("correction"),
                         shared=shared,
@@ -305,6 +312,9 @@ def main(
                 else:
                     result = run_document(
                         source=args.input,
+                        preparation_concurrency=args.preparation_concurrency
+                        if args.preparation_concurrency is not None
+                        else 1,
                         workspace=args.workspace,
                         translation=resolve_config(
                             stage=selection("translation"), shared=shared

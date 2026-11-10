@@ -149,6 +149,10 @@ doc-translate run own.pdf --workspace work/pdf-book \
 
 各設定fieldの優先順位は`--correction-*`／`--translation-*` → 共通`--provider/--model/--thinking` → `PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL`です。準備は翻訳設定を使い、EPUBでは補正設定を使いません。不足・未知model・非対応thinking／画像能力は送信前に停止します。providerはOpenAI固定ではありません。ChatGPTサブスクリプションOAuthでの実認証・小範囲推論を確認済みですが、任意account／modelの利用権や意味品質を保証しません。
 
+準備collectは`--preparation-concurrency 1|2|4`で上限を指定できます（run既定1、PDF／EPUB共通）。例えば`doc-translate resume ./work/book --preparation-concurrency 2`は2を保存し、次のresume未指定時も2です。旧manifestでfieldがなければ1です。設定変更だけで準備を再送せず、group・送信本文／設定・根拠検査・整理順は変えません。翻訳の既定並列数2やPDF補正はこのoptionの対象外です。
+
+並列化は待ち時間を重ねるだけで、通常の独立jobのcalls／総入力・回答や品質を減らしません。ただし失敗を観測した時点で他jobも開始済みのことがあり、逐次実行より停止前の送信・利用量が増え得ます。新規投入を止めて取消・保存／drain終了を待ち、成功保存分はresumeで回収します。同じ実wire＋configの同時missはraw結果を共有しますが、実providerの速度改善・rate limit・意味品質・exactly-once課金は保証しません。既定1のまま、[offline比較と再実行方法](performance.md#準備collectの制限付き並列issue-60)を参照してください。
+
 PDFの`--pages A-B`は1始まり・両端含む所有範囲です。省略時は実PDF全ページが所有対象になります。既定の送信許可も所有範囲内だけで、外側は`--reference-pages A-B`で明示したページだけ参照専用に許可します。補正は所有5ページごとに、許可範囲内の前後各1ページだけをcontextとして使います。離れた参照指定を含むローカル取得範囲は広くなることがありますが、それはproviderへの送信許可を増やしません。参照ページは翻訳対象に追加せず、部分範囲をPDF全文処理完了と表示しません。EPUBは文書全体を対象にし、ページ指定を受け付けません。
 
 PDF補正では全所有ページの結果と根拠、見える原語本文・見出し・構造の全文を要求します。画像で確認した白紙にも理由・根拠を要求し、空抽出だけで白紙にしません。所有ページ結果の欠落**だけ**は、不足ページと固定理由を返して初回込み最大3回generate（訂正最大2回）します。毎回同じ範囲・画像で全chunkを再検証し、最後の完全応答だけを採用します。上限では所有chunk全体が失敗し、schema／別domain／認証・通信・保存・timeout・取消等にはこの訂正を追加しません。ページ内全文の網羅性や意味品質の保証ではありません。
