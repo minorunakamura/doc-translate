@@ -48,9 +48,11 @@ WORKSPACE/
   ...                             # 既存のdraft／attempt／snapshot／render契約
 ```
 
-`run.json`は`schema_version: 1/document/source_name/owned_pages/reference_pages/correction/translation/preparation_concurrency/policy/user_terms/corrected_pages/failed_pages/not_processed_pages/chunk_sha256s/artifacts_path/error/error_code`です。`document`は`SourceDocument`、段階設定は既存`GenerationConfig`、`policy`は既存`StylePolicy`です。EPUBの`owned_pages`／`correction`はnull、ページ集合は空です。PDF全体を指定したときの`owned_pages`は取得前null、取得後に実ページ番号を固定します。明示所有範囲は取得前から保持します。参照指定と補正済み／失敗／未処理ページ、採用chunk digestは区別し、進行に応じatomicに更新します。credential・raw環境・秘密値・raw例外は保存しません。`error_code`は観測できた既存推論分類で、分類未観測時はnull、`error`は非秘密の工程失敗案内です。resume／途中artifact復旧の検証規則は次節を参照してください。
+`run.json`は`schema_version: 1/document/source_name/owned_pages/reference_pages/correction/translation/preparation_concurrency/correction_concurrency/policy/user_terms/corrected_pages/failed_pages/not_processed_pages/chunk_sha256s/artifacts_path/error/error_code`です。`document`は`SourceDocument`、段階設定は既存`GenerationConfig`、`policy`は既存`StylePolicy`です。EPUBの`owned_pages`／`correction`はnull、ページ集合は空です。PDF全体を指定したときの`owned_pages`は取得前null、取得後に実ページ番号を固定します。明示所有範囲は取得前から保持します。参照指定と補正済み／失敗／未処理ページ、採用chunk digestは区別し、進行に応じatomicに更新します。credential・raw環境・秘密値・raw例外は保存しません。`error_code`は観測できた既存推論分類で、分類未観測時はnull、`error`は非秘密の工程失敗案内です。resume／途中artifact復旧の検証規則は次節を参照してください。
 
 準備collectの上限は`run_document(preparation_concurrency=1)`／`resume_document(preparation_concurrency=None)`、CLI `--preparation-concurrency {1,2,4}`です。run manifestの`preparation_concurrency`へ保存し、resume未指定時は保存値を継承、旧manifestの欠落は1です。明示overrideは保存されます。公開APIの不正値はworkspace作成／更新・送信前に拒否します。設定は送信request／GenerationConfigに入らず、変更だけでは既存回答を無効化しません。render／saved statusのmanifest読込みも旧field欠落を許容します。
+
+PDF補正の上限は`run_document(correction_concurrency=None)`／`resume_document(correction_concurrency=None)`、CLI `--correction-concurrency {1,2,4}`です。run未指定の実効値1を`run.json.correction_concurrency`へ保存し、resume未指定は保存値、旧field欠落は1、明示overrideは保存します。APIのbool／floatを含む不正値はworkspace作成／更新前に拒否します。EPUBは明示1もrun／resumeの入力エラーです（未指定は従来どおり動作）。並列数は実request／config・候補世代のhashへ入れず、変更だけで再送や候補待ちを起こしません。既存のrender／saved status／review／reviseも同じRunManifestの旧field互換で読みます。
 
 CLIの送信前表示は新しいpreflightを重ねず、既存推論の**preflight→generate境界**を使います。`generate`と各stage公開APIに任意の`before_send: BeforeSend | None = None`を追加し、`BeforeSend = Callable[[GenerationConfig, GenerationInput, Preflight], None]`です。検証済みpreflightと画像を確認した後、実際のgenerate recordを送る直前に毎回（retryを含む）呼びます。CLIのrun／resumeは`--events-json`時にstderrへ入力名／hash、意図範囲、実requestの送信範囲・内容種別（本文・画像payloadそのものは含めない）、段階provider／model／thinking、実`Preflight.auth.source/type`をflushします（reviewも`--events-json`時だけ従来noticeを出力）。原本fileや画像は準備／翻訳へ送らず、provider／model／認証fallbackやproductionのfake環境flagはありません。`cli.main(argv=None, *, process_command=None)`の明示process指定は既存adapterと同じ外部processテストseamだけです。productionは検証済み導入済みruntimeを使います。
 
@@ -82,7 +84,7 @@ reviewは`review_validate`を`_inputs`・範囲照合・準備／過去review再
 
 ## 再開（Issue #15）
 
-公開CLIは`doc-translate resume DIR`、Python入口は`doc_translate.run.resume_document(*, workspace, translation=None, preparation_concurrency=None, correction=None, shared=None, policy=None, artifacts_path=None, user_terms=None, process_command=None, before_send=None, observer=None)`です。保存済み`RunManifest`を既定にし、CLIの明示stage設定 > 明示共通設定 > 保存値の順で解決します。resumeにPI環境の設定fallback・新たなページ許可optionはありません。明示変更は`run.json`へatomic保存し、旧不変artifactを保持します。
+公開CLIは`doc-translate resume DIR`、Python入口は`doc_translate.run.resume_document(*, workspace, translation=None, preparation_concurrency=None, correction_concurrency=None, correction=None, shared=None, policy=None, artifacts_path=None, user_terms=None, process_command=None, before_send=None, observer=None)`です。保存済み`RunManifest`を既定にし、CLIの明示stage設定 > 明示共通設定 > 保存値の順で解決します。resumeにPI環境の設定fallback・新たなページ許可optionはありません。明示変更は`run.json`へatomic保存し、旧不変artifactを保持します。
 
 - `artifacts_path`はPDF再取得時だけ必要な非秘密local path（旧manifestでは省略／null可）。元INPUT名は表示・book名用で、再開はworkspace内の原本hash／pathを検査します。
 - EPUBは保存原本と現行reader／extractorの入力から原文を再構築し、採用済みsourceとの対応を検査します。PDF依存は読み込みません。
@@ -588,6 +590,10 @@ WORKSPACE/
 chunkは`schema_version/draft_sha256/owned_pages/reference_pages/blocks/retained_blocks/exclusions/uncertainties/page_images/run`を持ちます。`page_images`は明示許可した所有・参照ページだけ、`run`はattempt記録のartifact／hashです。参照ページの本文は採用しません。
 
 既存`workspace_lock`を自分で取得し、既存のhash保存・`_atomic_write`（一時file／flush／fsync／atomic replace）を再利用します。外側から同じ非再入lockを取得しません。各generateが返した全attempt・raw回答・観測usageと実requestを、次のgenerateより前／chunk保存より前にimmutable保存します。過去の呼出しのattemptを累積再保存しないため、失敗分もusageに残り、二重計上しません。不明usageを0にしません。`status=validated`は回答のschema／domain検証までで、後続chunkの保存成功を意味しません。schema／domain不正時は`status=rejected`を残し、その回答からchunkを作りません。保存OSエラーは伝播し、追加送信せず、既に保存できたattemptと旧chunkは削除しません。generate内部attemptの逐次永続化、応答喪失やdisk自体に書けない場合の記録保証はありません。
+
+run／resumeでは親がOS workflow lockを保持し、公開`correct_pdf`のlock wrapperではなく同じ処理の内部coreを独立所有jobへ渡します。workerはimmutable attempt／chunkだけ、親はmanifestと保存後集計・source採用だけを更新します。thread-local貸出契約は不変で、公開`correct_pdf`を外部から並列呼出しするAPIへ変更したものではありません。最大5所有ページ・許可済み隣接参照・1800px・policy／schema／全domain検査を維持し、length／input_limit分割後もactiveは設定以下です。成功所有は再投入せず、chunk digest列は最小所有ページ順、corrected／failedページ列は昇順へ戻します。空／部分coverage回答をmergeしません。
+
+局所的な補正拒否はfailed ownershipとして他jobを続けます。取消、既知の設定／認証／storageエラー、OS保存例外では新規投入／新しい送信許可を止め、開始済みchildへ取消を伝えてdrain／回収します。全体停止ではsource／preparation／translation／renderの旧pointerを維持し、manifestの保存後進捗だけを公開します。親manifestの保存例外では進捗成功を通知せず、diskに残った旧manifestから次回回収します。各generateが返る前の応答や、保存自体が失敗したraw／usageを永続化できる保証はありません。保存済みの成功attempt／chunk・旧raw／usage／immutableは保持し、resumeで実入力・hash・raw・domainを再検証して不足だけを送ります。停止観測より前に許可／開始済みだった競合送信をゼロとは保証しません。
 
 全evidence・table・図所属等のdomain検証の**末尾**で所有ページの網羅性を検査します。不足だけなら専用の`ValueError` subclassで識別し、`validation_feedback`に`code: "owned_page_coverage_incomplete"`、昇順・重複なしの`missing_pages`、固定`reason: "Owned page result coverage is incomplete; blank pages need explicit evidence/reason"`を記録します（旧記録のfield欠如は許容）。contextへ固定指示`coverage_correction`と未信頼dataの`correction_feedback`を加えたrequestで、初回込み最大3回generateします。毎回baseから組み立てるためfeedbackは累積せず、前回答本文や任意の例外文は指示に貼り戻しません。policy・所有／参照・投影・画像は不変で、毎回全chunkを返させ全検証を行い、成功した最終回答だけを採用します。部分採用・回答mergeはしません。
 

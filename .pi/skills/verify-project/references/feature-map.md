@@ -959,3 +959,112 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 ```
 
 証拠はrevision／dirty／diff、manifestのsource・input・helper hash／条件／unknown、各command／exit／raw／期待観測、cleanup。helperの失敗時も途中command／stdout／stderr・resultsを保持し、再試行は別directoryにする。失敗runを成功に置換しない。cleanup後に全file参照を実readbackする。通常正式phase・Rootの別invocation／workspaceでの直接API・CLI確認とReviewer gateは別。実workspace／lock／既存model／venvを触らず、所有しないPIDを止めない。再利用はproject trust→新セッションか`/reload`→`/skill:verify-project preparation concurrency`またはSkill実ファイルread。
+
+## PDF補正の制限付き並列（Issue #61）
+
+入口は公開CLI `run/resume --correction-concurrency 1|2|4`と公開run／resume API→`load_pdf_correction`／source組立。run未指定1、resume未指定保存値／旧欠落1、EPUB明示1も入力エラーで、並列数変更だけでは成功分を再送しない。既存PDF extra付きPython／pytest／Node／compiled helperと同梱resource全10file hash一致を前提に、自作converter入力／公開page backendだけを置換する。実generate／validator／saveと実Node公開faux／no-networkを使う。実provider・OCR／layout・意味品質・rate limit／課金・他OS／remote CIは対象外。不足時は停止し、install／sync／build／model取得をしない。
+
+### 同一seedの12job制御遅延
+
+repository root、未作成のignore済みwork直下、ほかのbenchmark/testと非並行・foregroundで実行する。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/doc-translate run --help
+.venv/bin/doc-translate resume --help
+.venv/bin/python .pi/skills/verify-project/scripts/preparation_concurrency.py \
+  --feature pdf-correction --evidence work/issue61-correction-new
+```
+
+既存preparation driverの分布／invoke／停止予算／証拠／cleanupを再利用し、専用の小さいsample helperだけを追加した。`test_run.pdf_input/extend_pdf_input/helper`と`test_pdf.conversion/local_models`で61自作ページ（200×100pt、長辺1800px）、所有2–61／参照追加なしを作る。公開runを補正開始前で取消して取得済みseedを保持し、各sampleの外側所有TemporaryDirectoryへ同じ全byteをコピーする（保存modelの絶対pathの差までrequest digestへ混入させない）。実model／利用者workspaceは不要。各fresh Pythonで公開resumeを操作し、最大5所有ページの12独立jobだけ各500ms待つ。timerはcorrection start→finishedのstage全体で、reconcile・Node起動・実検証・attempt／chunk／run manifest保存を含む。取得／source組立／下流／独立loadは区間外、公開resume全体と外側Python wallは別記する。
+
+期待：median(c2/c1)<=.75、c4/c1<=.55、実callback start/end（共通monotonic ns＋PID＋所有集合）の跨process集計でactive<=設定／最終0。calls12、所有非重複・全60ページ、全実input／config／raw回答・総text／画像bytes・chunk／ページ／source順が同じ。無変更resumeの追加送信0／旧immutable不変。長辺・scope／品質検査を削らない。raw／median／min/max・比は`summary.json`、command／exit／外側wallは各sampleの`command.json`、`timeline.jsonl/requests.jsonl/comparable.json/immutable-hashes.json/config.json`と`results.json`を直接照合する。callbackのactiveをprovider内部実行数／process-local counter／helper生存数と混同しない。
+
+各sample60秒→所有groupだけSIGINT→45秒drain→必要時SIGKILL／wait。各所有TemporaryDirectory／人工credentialだけfinally削除し、強制終了でも親はreap後に`owned-path.txt`で今回sampleが作ったtempだけ回収する。seedは人工入力の証拠として保持し、実model／credentialは保持しない。manifestの版／dirty／diff・source／input／helper hash／unknown、verification-sources、全command／exit・期待／観測・cleanupをworkspace外へ残し、cleanup後に全fileをreadbackする。失敗値を成功統計へ混ぜず、再実行は新directoryにする。詳細は[性能reference](../../../../docs/reference/performance.md#pdf補正の制限付き並列issue-61)。
+
+### 取消／保存障害／局所失敗からの成功回収
+
+以下は性能値と別のinvocationで実際の公開APIを操作する。旧completedを作り、補正configだけ変更して、最初の成功保存後の親SIGTERM取消／OS chunk replace障害／局所的なfaux回答拒否を観測する。取消・保存故障時の旧pointer、全開始callback終了、成功attempt回収・不足だけの追加送信、全旧immutableを照合する。generate／validator／saveはfakeにしない。新しいEVIDENCEで次を実行する。
+
+```sh
+EVIDENCE=$(mktemp -d "$PWD/work/issue61-recovery-XXXXXX")
+export EVIDENCE
+PYTHONPATH=.pi/skills/verify-project/scripts .venv/bin/python - <<'PY'
+import json, os, shutil, signal, subprocess, tempfile
+from pathlib import Path
+from unittest.mock import patch
+from pdf_correction_concurrency import seed
+from performance_baseline import immutable
+from doc_translate.ai_runtime import _resources
+from test_run import helper, pdf_timeline
+from doc_translate.inference import GenerationConfig, GenerationOptions
+from doc_translate.run import resume_document
+
+evidence = Path(os.environ['EVIDENCE'])
+import hashlib
+build = {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in Path('ai/dist').iterdir() if p.is_file()}
+assert len(build)==10 and build=={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (_resources()/'dist').iterdir() if p.is_file()}
+(evidence/'conditions.json').write_text(json.dumps({'helper_hashes':build, 'command':'Feature Map Issue #61 recovery inline Python', 'network':'real Node/faux/no-network; artificial credential', 'unknown':'provider/OCR/quality/RSS/physical IO'},indent=2))
+for name, command in [('revision.txt',['git','rev-parse','HEAD']), ('dirty.txt',['git','status','--short']), ('scope.diff',['git','diff'])]:
+    (evidence / name).write_bytes(subprocess.check_output(command))
+seed(evidence)
+observed = []
+try:
+    for fault in ('cancel','save','local'):
+        with tempfile.TemporaryDirectory(prefix='issue61-recovery-owned-') as temporary:
+            owned = Path(temporary)
+            (evidence/(fault+'-owned-path.txt')).write_text(str(owned))
+            workspace = owned / 'workspace'
+            shutil.copytree(evidence / 'seed', workspace)
+            assert resume_document(workspace=workspace, process_command=helper(owned))['processing']['status'] == 'completed'
+            pointers = {p:(workspace/p).read_bytes() for p in ('source-snapshot.json','preparation-snapshot.json','translation-snapshot.json','render.json')}
+            config = GenerationConfig(provider='faux', model='vision', thinking='off', options=GenerationOptions(temperature=.2))
+            timeline = evidence / (fault + '-timeline.jsonl')
+            command = helper(owned, correction_timeline=str(timeline), correction_delays={2:1,7:1000}, **({'correction_fail_page':12} if fault=='local' else {}))
+            replace = os.replace
+            def save(src, dst):
+                if fault=='save' and Path(dst).parent==workspace/'corrections/pdf' and json.loads(Path(src).read_bytes())['owned_pages'][0]==12:
+                    raise OSError('artificial chunk save failure')
+                return replace(src,dst)
+            def observe(event):
+                if fault=='cancel' and event.stage=='correction' and event.kind=='adopted' and event.succeeded==5:
+                    os.kill(os.getpid(),signal.SIGTERM)
+            failure = None
+            try:
+                with patch('os.replace',save):
+                    result = resume_document(workspace=workspace, correction=config, correction_concurrency=2, process_command=command, observer=observe)
+                assert fault!='save' and result['processing']['status']=='partial'
+            except OSError:
+                assert fault=='save'
+                failure='OSError'
+            if fault!='local':
+                assert all((workspace/p).read_bytes()==data for p,data in pointers.items())
+            events, peak = pdf_timeline(timeline,2)
+            if fault!='local': assert {e['owned_pages'][0] for e in events}<={2,7,12}
+            successes = [json.loads(p.read_bytes()) for p in (workspace/'attempts/pdf-correction').glob('*.json') if json.loads(p.read_bytes())['config']==config.model_dump(mode='json') and json.loads(p.read_bytes())['status']=='validated']
+            assert successes
+            old = immutable(workspace)
+            log = owned/'requests.jsonl'
+            prior = len(log.read_text().splitlines())
+            assert resume_document(workspace=workspace, process_command=helper(owned))['processing']['status']=='completed'
+            added = [json.loads(json.loads(line)['messages'][1]['content'][0]['text']) for line in log.read_text().splitlines()[prior:]]
+            corrections = [item for item in added if 'owned_pages' in item['context']]
+            assert len(corrections)==12-len(successes) and immutable(workspace).items()>=old.items()
+            (evidence/(fault+'-requests.jsonl')).write_bytes(log.read_bytes())
+            (evidence/(fault+'-immutable.json')).write_text(json.dumps(old,indent=2))
+            observed.append({'fault':fault, 'exception':failure, 'saved_successes':len(successes), 'recovery_correction_calls':len(corrections), 'peak':peak, 'expected':'old adoption on stop, drain, success recovery and immutable retention', 'observed':'matched'})
+            (evidence/'observations.json').write_text(json.dumps(observed,indent=2))
+        assert not owned.exists()
+finally:
+    (evidence/'observations.json').write_text(json.dumps(observed,indent=2))
+    (evidence/'cleanup.txt').write_text('owned external TemporaryDirectories removed; synchronous children drained/reaped; artificial seed/evidence retained\n')
+    for path in evidence.rglob('*'):
+        if path.is_file(): path.read_bytes()
+assert len(observed)==3
+print(evidence,'three public recovery cases matched; cleanup/readback complete')
+PY
+```
+
+逆順／lengthとinput_limit分割後のactive、run／resume保存優先・override／旧field・EPUB明示1拒否、attempt／chunk／manifest保存例外・config/auth/storage拒否後のdrainは`pytest tests/test_run.py -k correction_concurrency`、代表単独は`pytest 'tests/test_run.py::test_pdf_correction_concurrency_split_reverse_order_and_resume[None-4]'`で補完する。既存`test_pdf_correction`の公開lock／domain／coverage／有限transport retryと、runのorphan・partial／candidate保護・保存後progress、resume／pdf_sourceもmoduleで再実行する。性能秒閾値はpytestへ入れない。
+
+手順成立は通常正式phase／Rootの別workspace直接確認／2独立Reviewの代用ではない。実provider速度・品質・rate limit／課金、実OCR・layout、親／helper RSS・同時aggregate RSS・物理I/Oは未測定。既定1を維持し、既存workspace／lock／venv／model／所有しないPIDを操作しない。project trust後、新セッションか`/reload`、`/skill:verify-project PDF correction concurrency`またはSkill実ファイルreadで再利用する。

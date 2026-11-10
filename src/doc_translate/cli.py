@@ -215,6 +215,12 @@ def main(
     )
     for command in (run, resume):
         command.add_argument(
+            "--correction-concurrency",
+            type=int,
+            choices=(1, 2, 4),
+            help="Maximum parallel PDF correction jobs (run: 1; resume: saved value); not for EPUB.",
+        )
+        command.add_argument(
             "--preparation-concurrency",
             type=int,
             choices=(1, 2, 4),
@@ -297,6 +303,7 @@ def main(
                     result = resume_document(
                         workspace=args.workspace,
                         preparation_concurrency=args.preparation_concurrency,
+                        correction_concurrency=args.correction_concurrency,
                         translation=selection("translation"),
                         correction=selection("correction"),
                         shared=shared,
@@ -312,6 +319,7 @@ def main(
                 else:
                     result = run_document(
                         source=args.input,
+                        correction_concurrency=args.correction_concurrency,
                         preparation_concurrency=args.preparation_concurrency
                         if args.preparation_concurrency is not None
                         else 1,

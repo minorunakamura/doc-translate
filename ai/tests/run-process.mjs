@@ -43,111 +43,131 @@ faux.setResponses([
       `${JSON.stringify({ ...context, selection: { provider: model.provider, model: model.id }, options })}\n`,
     );
     const input = JSON.parse(context.messages[1].content[0].text);
-    if (settings.delay_phase === input.context.phase) {
-      await new Promise((resolve) => setTimeout(resolve, settings.delay_ms));
+    const owned = input.context.owned_pages;
+    async function observe(event) {
+      if (owned && settings.correction_timeline) {
+        await appendFile(
+          settings.correction_timeline,
+          `${JSON.stringify({ event, ns: process.hrtime.bigint().toString(), pid: process.pid, owned_pages: owned })}\n`,
+        );
+      }
     }
-    const answer =
-      input.context.phase === "review"
-        ? { findings: settings.review_findings ?? [] }
-        : input.context.owned_pages
-          ? {
-              schema_version: 1,
-              draft_sha256: input.context.draft_sha256,
-              owned_pages: input.context.owned_pages,
-              blocks:
-                settings.correction_blocks ??
-                input.context.owned_pages
-                  .filter(
-                    (page) =>
-                      !settings.correction_omit_pages?.includes(page) ||
-                      (input.context.correction_feedback &&
-                        settings.correction_coverage_failure !== "always"),
-                  )
-                  .map((page) => ({
-                    block_id: `page-${page}`,
-                    kind: "body",
-                    text: `Page ${page} source.`,
-                    evidence: [
-                      {
-                        page,
-                        ref: null,
-                        position: "center",
-                        reason: "Synthetic visible paragraph.",
-                      },
-                    ],
-                  })),
-              exclusions: settings.correction_exclusions ?? [],
-              uncertainties: [],
-            }
-          : input.context.phase === "collect"
+    await observe("start");
+    try {
+      if (owned) {
+        const delay =
+          settings.correction_delays?.[owned[0]] ??
+          settings.correction_delay_ms;
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+      if (settings.delay_phase === input.context.phase) {
+        await new Promise((resolve) => setTimeout(resolve, settings.delay_ms));
+      }
+      const answer =
+        input.context.phase === "review"
+          ? { findings: settings.review_findings ?? [] }
+          : input.context.owned_pages
             ? {
-                context: "Artificial section.",
-                candidates: settings.candidate
-                  ? [
-                      {
-                        term: "Original",
-                        translation: "自動",
-                        evidence: [
-                          {
-                            unit_id:
-                              input.context.wire_version === 2
-                                ? "request-unit-1"
-                                : "unit-1",
-                            quote: "Original",
-                          },
-                        ],
-                      },
-                    ]
-                  : [],
+                schema_version: 1,
+                draft_sha256: input.context.draft_sha256,
+                owned_pages: input.context.owned_pages,
+                blocks:
+                  settings.correction_blocks ??
+                  input.context.owned_pages
+                    .filter(
+                      (page) =>
+                        !settings.correction_omit_pages?.includes(page) ||
+                        (input.context.correction_feedback &&
+                          settings.correction_coverage_failure !== "always"),
+                    )
+                    .map((page) => ({
+                      block_id: `page-${page}`,
+                      kind: "body",
+                      text: `Page ${page} source.`,
+                      evidence: [
+                        {
+                          page,
+                          ref: null,
+                          position: "center",
+                          reason: "Synthetic visible paragraph.",
+                        },
+                      ],
+                    })),
+                exclusions: settings.correction_exclusions ?? [],
+                uncertainties: [],
               }
-            : input.context.phase === "organize"
+            : input.context.phase === "collect"
               ? {
-                  context: "Artificial document.",
-                  terms: settings.candidate ? { Original: "自動" } : {},
+                  context: "Artificial section.",
+                  candidates: settings.candidate
+                    ? [
+                        {
+                          term: "Original",
+                          translation: "自動",
+                          evidence: [
+                            {
+                              unit_id:
+                                input.context.wire_version === 2
+                                  ? "request-unit-1"
+                                  : "unit-1",
+                              quote: "Original",
+                            },
+                          ],
+                        },
+                      ]
+                    : [],
                 }
-              : {
-                  translations: JSON.parse(input.text).map((unit) => ({
-                    unit_id: unit.unit_id,
-                    text: `訳:${
-                      settings.marker_failure &&
-                      (
-                        settings.marker_failure === "always" ||
-                          !input.context.translation_feedback
-                      )
-                        ? unit.source_text.replace(/⟦(?:=|\/)?[0-9]+⟧/u, "")
-                        : unit.source_text
-                    }`,
-                    uncertainties: settings.attention
-                      ? [
-                          {
-                            reason: "Artificial ambiguity.",
-                            origin: "undetermined",
-                          },
-                        ]
-                      : [],
-                  })),
-                };
-    const message = fauxAssistantMessage(
-      JSON.stringify(answer),
-      input.context.owned_pages?.includes(settings.correction_fail_page) ||
-        (settings.fail_stage === "review" &&
-          input.context.phase === "review") ||
-        (settings.fail_stage === "prepare" &&
-          ["collect", "organize"].includes(input.context.phase)) ||
-        (settings.fail_stage === "translation" &&
-          !input.context.phase &&
-          !input.context.owned_pages)
-        ? {
-            stopReason: "error",
-            errorMessage: "artificial permanent correction failure",
-          }
-        : input.context.owned_pages?.length > settings.correction_length_above
-          ? { stopReason: "length" }
-          : {},
-    );
-    message.provider = model.provider;
-    message.model = model.id;
-    return message;
+              : input.context.phase === "organize"
+                ? {
+                    context: "Artificial document.",
+                    terms: settings.candidate ? { Original: "自動" } : {},
+                  }
+                : {
+                    translations: JSON.parse(input.text).map((unit) => ({
+                      unit_id: unit.unit_id,
+                      text: `訳:${
+                        settings.marker_failure &&
+                        (
+                          settings.marker_failure === "always" ||
+                            !input.context.translation_feedback
+                        )
+                          ? unit.source_text.replace(/⟦(?:=|\/)?[0-9]+⟧/u, "")
+                          : unit.source_text
+                      }`,
+                      uncertainties: settings.attention
+                        ? [
+                            {
+                              reason: "Artificial ambiguity.",
+                              origin: "undetermined",
+                            },
+                          ]
+                        : [],
+                    })),
+                  };
+      const message = fauxAssistantMessage(
+        JSON.stringify(answer),
+        input.context.owned_pages?.includes(settings.correction_fail_page) ||
+          (settings.fail_stage === "review" &&
+            input.context.phase === "review") ||
+          (settings.fail_stage === "prepare" &&
+            ["collect", "organize"].includes(input.context.phase)) ||
+          (settings.fail_stage === "translation" &&
+            !input.context.phase &&
+            !input.context.owned_pages)
+          ? {
+              stopReason: "error",
+              errorMessage: "artificial permanent correction failure",
+            }
+          : input.context.owned_pages?.length > settings.correction_length_above
+            ? { stopReason: "length" }
+            : {},
+      );
+      message.provider = model.provider;
+      message.model = model.id;
+      return message;
+    } finally {
+      await observe("end");
+    }
   },
 ]);
 models.setProvider(faux.provider);

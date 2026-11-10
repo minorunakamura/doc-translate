@@ -311,6 +311,10 @@ splitのv2実requestには順序付きsplit_inputs（非splitはnull、splitは�
 
 準備のraw memo・in-flightもoperation内だけのthread-safeな共有とする。同じ実wire request＋configの競合missはraw成功／失敗をFutureで共有し、利用箇所ごとに現在groupへのbinding・引用根拠を検証する。同じrecordを複数groupのrunsが参照しても実attempt／usageは一度だけである。失敗／取消／保存例外ではFutureを完結させ、新規job投入・新しい送信許可を止め、開始済みchildへ取消を伝播してdrain／回収する。旧採用pointerを保ち、保存済み成功は後のresumeで厳密再検証して回収する。競合時に既に開始／許可した送信までゼロにはできない。
 
+PDF補正は公開`correct_pdf`のworkspace lock wrapperを保持し、同処理の内部coreだけをrun親のOS workflow lock下でworkerへ渡す。thread-localのlock貸出は広げない。各workerは最大5所有ページの独立jobのimmutable attempt／chunk保存だけを担当し、親だけがrun manifest・保存後の進捗・source採用を更新する。length／input_limitの二分leafも同じactive上限内で投入し、成功所有は再投入しない。chunk列は最小所有ページ順、ページ列は昇順として完了順の差を正本へ混ぜない。所有scopeが異なるため同一requestの重複job自体を作らず、別scopeをin-flight共有しない。各generateの全attempt保存→同jobの次のcoverage訂正という順序、最大3回答・全domain検証は変えない。
+
+通常の局所失敗は他所有jobを続けるが、取消・既知の設定／認証／保存失敗では新規投入と新しい送信許可を止め、開始済みchildを取消・drain／回収する。全体停止時はsource以降を採用せず旧pointerを保つ。完了済みchunkや、attempt保存後chunk／manifest保存前の成功はresumeで厳密に回収する。理由は、単純なThreadPoolとlock再入では安全なwriter責務と途中成功の復旧を両立できないためである。
+
 ### 基点付き修正
 
 `revise DIR --source FILE --reason TEXT`は全SourceSnapshot置換、`--translations FILE`は指定unitの訳文patchで、いずれも現在のsource／translation hashを基点とするCASである。古い基点・未知ID・不正schema／構造・根拠・assets・参照を採用前に拒否し、理由・旧版・元回答を保持する。操作自体はオフラインで、Node・認証・PDF model・推論を要求せず、訳文を自動更新しない。後のresumeで準備・unit・翻訳・QA／出力を更新する。訳文patchは現在の原文・準備・設定に対応する訳文に限る。具体的なfieldと保存pathは[artifact契約](../reference/artifacts.md#基点付き修正pdf補正候補採用issue-16)を正本とする。
@@ -336,7 +340,7 @@ splitのv2実requestには順序付きsplit_inputs（非splitはnull、splitは�
 
 ## 15. retry・concurrency・入力上限
 
-準備の公開`prepare_document(concurrency=1)`、run／resumeの`preparation_concurrency`とCLI `--preparation-concurrency`は1・2・4だけを許す。run既定は1、resume未指定はrun manifest保存値、旧field欠落は1とする。並列数は実request／configや固定入力hashに加えず、変更だけで再送しない。offline制御遅延の比較は実providerの速度・rate limit・意味品質を保証しないため、既定1を変更しない。PDF補正の並列設定は別Work Itemである。
+準備の公開`prepare_document(concurrency=1)`、run／resumeの`preparation_concurrency`とCLI `--preparation-concurrency`は1・2・4だけを許す。run既定は1、resume未指定はrun manifest保存値、旧field欠落は1とする。並列数は実request／configや固定入力hashに加えず、変更だけで再送しない。offline制御遅延の比較は実providerの速度・rate limit・意味品質を保証しないため、既定1を変更しない。PDF補正のrun／resume設定`correction_concurrency`とCLI `--correction-concurrency`も1・2・4（実効既定1／保存値継承／旧欠落1）とし、EPUBへの明示指定は1も入力エラーにする。
 
 翻訳は既存の12,000文字chunk算法・concurrency既定2を維持する。同一wireのin-flight共有は新しいschedulerや並列設定を追加せず、親の部分snapshot確定とchild取消／drainを変えない。
 

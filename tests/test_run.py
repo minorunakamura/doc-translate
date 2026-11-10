@@ -11,7 +11,7 @@ import pytest
 from test_epub import make_epub
 
 from doc_translate.cli import main
-from doc_translate.snapshot import load_source_snapshot
+from doc_translate.snapshot import PDFLocation, load_source_snapshot
 
 pytest_plugins = ["test_pdf"]
 
@@ -130,8 +130,8 @@ def test_run_announces_actual_auth_and_scope_before_provider_receives_data(
     assert summary["processing"]["status"] == "completed"
 
 
-@pytest.fixture
-def pdf_input(tmp_path, conversion, monkeypatch):
+def extend_pdf_input(conversion, last_page):
+    """Extend the self-authored converter input, retaining the 1800px backend."""
     from docling_core.types.doc import (
         BoundingBox,
         DocItemLabel,
@@ -141,7 +141,7 @@ def pdf_input(tmp_path, conversion, monkeypatch):
     )
     from PIL import Image
 
-    for page in range(2, 10):
+    for page in range(max(conversion.document.pages) + 1, last_page + 1):
         conversion.document.add_page(
             page_no=page,
             size=Size(width=200, height=100),
@@ -158,7 +158,12 @@ def pdf_input(tmp_path, conversion, monkeypatch):
                 bbox=BoundingBox(l=10, t=80, r=100, b=60, coord_origin="BOTTOMLEFT"),
             ),
         )
-    conversion.input.page_count = 9
+    conversion.input.page_count = last_page
+
+
+@pytest.fixture
+def pdf_input(tmp_path, conversion, monkeypatch):
+    extend_pdf_input(conversion, 9)
     from copy import copy
 
     from docling.document_converter import DocumentConverter
@@ -2124,3 +2129,404 @@ def test_run_resume_api_rejects_preparation_concurrency_before_workspace_change(
     with pytest.raises(ValueError, match="concurrency"):
         resume_document(workspace=workspace, preparation_concurrency=value)
     assert not workspace.exists()
+
+
+def pdf_timeline(path, concurrency):
+    events = sorted(
+        [json.loads(line) for line in path.read_text().splitlines()],
+        key=lambda event: int(event["ns"]),
+    )
+    active = peak = 0
+    for event in events:
+        active += 1 if event["event"] == "start" else -1
+        assert 0 <= active <= concurrency
+        peak = max(peak, active)
+    assert active == 0
+    assert {
+        (e["pid"], tuple(e["owned_pages"])) for e in events if e["event"] == "start"
+    } == {(e["pid"], tuple(e["owned_pages"])) for e in events if e["event"] == "end"}
+    return events, peak
+
+
+@pytest.mark.parametrize("concurrency", [1, 2, 4])
+@pytest.mark.parametrize("limit", [None, "length", "input_limit"])
+def test_pdf_correction_concurrency_split_reverse_order_and_resume(
+    tmp_path, pdf_input, conversion, local_models, capsys, concurrency, limit
+):
+    from doc_translate.pdf_correction import load_pdf_correction
+
+    extend_pdf_input(conversion, 21)
+    workspace = tmp_path / "new"
+    timeline = tmp_path / "timeline.jsonl"
+    settings = {
+        "correction_timeline": str(timeline),
+        "correction_delays": {2: 300, 7: 200, 12: 100, 17: 1},
+        **({"correction_length_above": 2} if limit == "length" else {}),
+        **({"image_limit": 4} if limit == "input_limit" else {}),
+    }
+    command = helper(tmp_path, **settings)
+    args = [
+        *run_args(pdf_input, workspace),
+        "--pages",
+        "2-21",
+        "--artifacts-path",
+        str(local_models),
+        "--correction-model",
+        "vision",
+        "--correction-concurrency",
+        str(concurrency),
+    ]
+    main(args, process_command=command)
+    assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
+    events, peak = pdf_timeline(timeline, concurrency)
+    assert peak >= 1
+    if concurrency == 4 and limit is None:
+        assert next(e for e in events if e["event"] == "end")["owned_pages"][0] != 2
+    manifest = json.loads((workspace / "run.json").read_text())
+    assert manifest["correction_concurrency"] == concurrency
+    chunks = [
+        load_pdf_correction(workspace, digest) for digest in manifest["chunk_sha256s"]
+    ]
+    owned = [page for chunk in chunks for page in chunk.owned_pages]
+    assert owned == list(range(2, 22))
+    assert all(
+        len(chunk.owned_pages)
+        <= (2 if limit == "length" else 5 if limit is None else 3)
+        for chunk in chunks
+    )
+    source_pages = []
+    for block in load_source_snapshot(workspace).blocks:
+        for location in block.locations:
+            assert isinstance(location, PDFLocation)
+            source_pages.append(location.page)
+    assert source_pages == owned
+    old = {
+        p: p.read_bytes()
+        for directory in ("originals", "drafts", "corrections", "attempts", "snapshots")
+        for p in (workspace / directory).rglob("*")
+        if p.is_file()
+    }
+    sent = (tmp_path / "requests.jsonl").read_bytes()
+    for flags, expected in [([], concurrency), (["--correction-concurrency", "4"], 4)]:
+        main(
+            ["resume", str(workspace), "--json", "--events-json", *flags],
+            process_command=command,
+        )
+        assert (
+            json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
+        )
+        assert (
+            json.loads((workspace / "run.json").read_text())["correction_concurrency"]
+            == expected
+        )
+    legacy = json.loads((workspace / "run.json").read_text())
+    legacy.pop("correction_concurrency")
+    (workspace / "run.json").write_text(json.dumps(legacy))
+    main(["resume", str(workspace), "--json", "--events-json"], process_command=command)
+    assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
+    assert (
+        json.loads((workspace / "run.json").read_text())["correction_concurrency"] == 1
+    )
+    assert (tmp_path / "requests.jsonl").read_bytes() == sent
+    assert all(p.read_bytes() == data for p, data in old.items())
+
+
+@pytest.mark.parametrize("value", [0, 3, 8, True, 2.0, "2"])
+def test_run_resume_api_rejects_correction_concurrency_before_workspace_change(
+    tmp_path, value
+):
+    from test_preparation import CONFIG
+
+    from doc_translate.run import resume_document, run_document
+
+    workspace = tmp_path / "workspace"
+    with pytest.raises(ValueError, match="concurrency"):
+        run_document(
+            source=tmp_path / "input.pdf",
+            workspace=workspace,
+            translation=CONFIG,
+            correction_concurrency=value,
+        )
+    with pytest.raises(ValueError, match="concurrency"):
+        resume_document(workspace=workspace, correction_concurrency=value)
+    assert not workspace.exists()
+
+
+@pytest.mark.parametrize("value", [1, 2, 4])
+def test_epub_rejects_explicit_correction_concurrency_on_run_and_resume(
+    tmp_path, capsys, value
+):
+    source = make_epub(tmp_path)
+    workspace = tmp_path / "workspace"
+    with pytest.raises(SystemExit) as failure:
+        main([*run_args(source, workspace), "--correction-concurrency", str(value)])
+    assert failure.value.code == 2 and not workspace.exists()
+    main(run_args(source, workspace), process_command=helper(tmp_path))
+    capsys.readouterr()
+    before = {p: p.read_bytes() for p in workspace.rglob("*") if p.is_file()}
+    with pytest.raises(SystemExit) as failure:
+        main(["resume", str(workspace), "--correction-concurrency", str(value)])
+    assert failure.value.code == 2
+    assert all(p.read_bytes() == data for p, data in before.items())
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "cancel",
+        "attempt",
+        "chunk",
+        "manifest",
+        "local",
+        "unknown_model",
+        "auth_failed",
+        "auth_unavailable",
+        "storage_failed",
+        "auth_failed_save_pending",
+    ],
+)
+def test_pdf_correction_concurrency_stop_drain_and_saved_success_recovery(
+    tmp_path, pdf_input, conversion, local_models, capsys, monkeypatch, fault
+):
+    import signal
+    import threading
+
+    from doc_translate.inference import (
+        GenerationConfig,
+        GenerationOptions,
+        InferenceError,
+    )
+    from doc_translate.run import resume_document
+
+    extend_pdf_input(conversion, 21)
+    workspace = tmp_path / "workspace"
+    command = helper(tmp_path)
+    main(
+        [
+            *run_args(pdf_input, workspace),
+            "--pages",
+            "2-21",
+            "--artifacts-path",
+            str(local_models),
+            "--correction-model",
+            "vision",
+        ],
+        process_command=command,
+    )
+    capsys.readouterr()
+    pointers = {
+        p: (workspace / p).read_bytes()
+        for p in (
+            "source-snapshot.json",
+            "preparation-snapshot.json",
+            "translation-snapshot.json",
+            "render.json",
+        )
+    }
+    old = {
+        p: p.read_bytes()
+        for directory in ("originals", "drafts", "corrections", "attempts", "snapshots")
+        for p in (workspace / directory).rglob("*")
+        if p.is_file()
+    }
+    config = GenerationConfig(
+        provider="faux",
+        model="vision",
+        thinking="off",
+        options=GenerationOptions(temperature=0.2),
+    )
+    timeline = tmp_path / "timeline.jsonl"
+    command = helper(
+        tmp_path,
+        correction_timeline=str(timeline),
+        correction_delays={2: 1, 7: 1000, 12: 1, 17: 1},
+        **({"correction_fail_page": 12} if fault == "local" else {}),
+    )
+    replace = os.replace
+    hold_rejected_save = fault == "auth_failed_save_pending"
+    error_code = "auth_failed" if hold_rejected_save else fault
+    save_entered = threading.Event()
+    release_save = threading.Event()
+    other_job_published = threading.Event()
+    page17_permitted = threading.Event()
+    gate_observations = {}
+
+    def fail_replace(src, dst):
+        path = Path(dst)
+        if hold_rejected_save and path.parent == workspace / "attempts/pdf-correction":
+            record = json.loads(Path(src).read_bytes())
+            if record["request"]["context"]["owned_pages"][0] == 12:
+                assert record["status"] == "rejected"
+                save_entered.set()
+                gate_observations["save_timed_out"] = not release_save.wait(timeout=15)
+        if (
+            fault == "attempt"
+            and path.parent == workspace / "attempts/pdf-correction"
+            and json.loads(Path(src).read_bytes())["request"]["context"]["owned_pages"][
+                0
+            ]
+            == 12
+        ):
+            raise OSError("artificial PDF attempt failure")
+        if (
+            fault == "chunk"
+            and path.parent == workspace / "corrections/pdf"
+            and json.loads(Path(src).read_bytes())["owned_pages"][0] == 12
+        ):
+            raise OSError("artificial PDF chunk failure")
+        if fault == "manifest" and path == workspace / "run.json":
+            record = json.loads(Path(src).read_bytes())
+            if record["correction"] == config.model_dump(mode="json") and record[
+                "corrected_pages"
+            ] == list(range(2, 7)):
+                raise OSError("artificial PDF manifest failure")
+        result = replace(src, dst)
+        if hold_rejected_save and path == workspace / "run.json":
+            record = json.loads(path.read_bytes())
+            if 7 in record["corrected_pages"] or 7 in record["failed_pages"]:
+                other_job_published.set()
+        return result
+
+    def observe(event):
+        if (
+            fault == "cancel"
+            and event.stage == "correction"
+            and event.kind == "adopted"
+            and event.succeeded == 5
+        ):
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    def deny_send(config, request, preflight):
+        first_page = request.context.get("owned_pages", [0])[0]
+        if first_page == 17:
+            page17_permitted.set()
+        if (
+            error_code
+            in {"unknown_model", "auth_failed", "auth_unavailable", "storage_failed"}
+            and first_page == 12
+        ):
+            raise InferenceError(error_code, [])
+
+    def release_after_other_job():
+        try:
+            gate_observations["save_entered"] = save_entered.wait(timeout=10)
+            if gate_observations["save_entered"]:
+                gate_observations["other_job_published"] = other_job_published.wait(
+                    timeout=10
+                )
+                if gate_observations["other_job_published"]:
+                    gate_observations["page17_permitted"] = page17_permitted.wait(
+                        timeout=1
+                    )
+        finally:
+            release_save.set()
+
+    controller = (
+        threading.Thread(target=release_after_other_job) if hold_rejected_save else None
+    )
+    monkeypatch.setattr(os, "replace", fail_replace)
+    if controller is not None:
+        controller.start()
+    try:
+        if fault in {"attempt", "chunk", "manifest"}:
+            with pytest.raises(OSError, match="artificial PDF"):
+                resume_document(
+                    workspace=workspace,
+                    correction=config,
+                    correction_concurrency=2,
+                    process_command=command,
+                    observer=observe,
+                    before_send=deny_send,
+                )
+        else:
+            result = resume_document(
+                workspace=workspace,
+                correction=config,
+                correction_concurrency=2,
+                process_command=command,
+                observer=observe,
+                before_send=deny_send,
+            )
+            assert result["processing"]["status"] == "partial"
+    finally:
+        release_save.set()
+        if controller is not None:
+            controller.join(timeout=12)
+            assert not controller.is_alive()
+    if hold_rejected_save:
+        assert gate_observations == {
+            "save_entered": True,
+            "other_job_published": True,
+            "page17_permitted": False,
+            "save_timed_out": False,
+        }
+        assert not page17_permitted.is_set()
+        records = [
+            json.loads(path.read_bytes())
+            for path in (workspace / "attempts/pdf-correction").glob("*.json")
+        ]
+        assert any(
+            record["status"] == "rejected"
+            and record["config"] == config.model_dump(mode="json")
+            and record["request"]["context"]["owned_pages"][0] == 12
+            and any(attempt["code"] == "auth_failed" for attempt in record["attempts"])
+            for record in records
+        )
+    if error_code in {
+        "unknown_model",
+        "auth_failed",
+        "auth_unavailable",
+        "storage_failed",
+    }:
+        assert (
+            json.loads((workspace / "run.json").read_bytes())["error_code"]
+            == error_code
+        )
+    if fault != "local":
+        assert all((workspace / p).read_bytes() == data for p, data in pointers.items())
+    assert all(p.read_bytes() == data for p, data in old.items())
+    events, _ = pdf_timeline(timeline, 2)
+    if fault != "local":
+        assert {e["owned_pages"][0] for e in events} <= {2, 7, 12}
+    else:
+        assert {e["owned_pages"][0] for e in events} == {2, 7, 12, 17}
+    successes = [
+        json.loads(p.read_bytes())
+        for p in (workspace / "attempts/pdf-correction").glob("*.json")
+        if json.loads(p.read_bytes())["config"] == config.model_dump(mode="json")
+        and json.loads(p.read_bytes())["status"] == "validated"
+    ]
+    assert successes
+    saved = {
+        p: p.read_bytes()
+        for directory in ("originals", "drafts", "corrections", "attempts", "snapshots")
+        for p in (workspace / directory).rglob("*")
+        if p.is_file()
+    }
+    monkeypatch.setattr(os, "replace", replace)
+    log = tmp_path / "requests.jsonl"
+    prior = len(log.read_text().splitlines())
+    command = helper(tmp_path)
+    result = resume_document(workspace=workspace, process_command=command)
+    assert result["processing"]["status"] == "completed"
+    added = [
+        json.loads(json.loads(line)["messages"][1]["content"][0]["text"])
+        for line in log.read_text().splitlines()[prior:]
+    ]
+    corrections = [item for item in added if "owned_pages" in item["context"]]
+    assert len(corrections) == 4 - len(successes)
+    assert all(p.read_bytes() == data for p, data in saved.items())
+
+
+@pytest.mark.parametrize("operation", ["run", "resume"])
+@pytest.mark.parametrize("value", ["0", "3", "8", "bad"])
+def test_cli_rejects_invalid_correction_concurrency(tmp_path, operation, value):
+    workspace = tmp_path / "workspace"
+    arguments = (
+        run_args(tmp_path / "input.pdf", workspace)
+        if operation == "run"
+        else ["resume", str(workspace)]
+    )
+    with pytest.raises(SystemExit) as failure:
+        main([*arguments, "--correction-concurrency", value])
+    assert failure.value.code == 2 and not workspace.exists()

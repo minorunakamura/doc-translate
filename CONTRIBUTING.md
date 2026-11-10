@@ -381,6 +381,12 @@ Issue #60は準備collectだけの制限付き並列（API `concurrency`／CLI `
 
 [並列の性能reference](docs/reference/performance.md#準備collectの制限付き並列issue-60)と[Skill／Map](.pi/skills/verify-project/references/feature-map.md#準備collectの制限付き並列issue-60)に12job×500msの通常3回、実跨process timeline／active、逆順・同時miss、失敗／取消／保存障害→回収の操作を集約します。秒数閾値はpytestに入れません。Workerはfocused・専用helper手順の実操作／証拠／cleanupを担当し、Rootが別workspaceで直接受入れと正式core全pytest／CLIhelp、PDF4ファイル／ty／公開import、全Ruff、Node Biome／oxlint／全Vitestを行います。Node変更はtest fixtureだけで、production／依存／同梱resourceが不変なら無断build／sync／wheel再導入を追加しません。正式Plan・他Work Item・progress文書は変更しません。
 
+### PDF補正の制限付き並列（Issue #61）
+
+非TDDで公開`correct_pdf`のlock wrapperを保ち、run親OS lock下の内部coreだけを独立所有jobへ渡します。`--correction-concurrency 1|2|4`のAPI／manifest／resume継承・旧欠落1・EPUB明示1拒否、分割後active、逆順のchunk／source順、局所失敗と全体停止、取消／保存失敗→旧pointer保持・成功回収は`pytest tests/test_run.py -k correction_concurrency`です。代表fixture単独は`pytest 'tests/test_run.py::test_pdf_correction_concurrency_split_reverse_order_and_resume[None-4]'`、moduleは`tests/test_run.py tests/test_pdf_correction.py tests/test_pdf_source.py tests/test_resume.py tests/test_pdf_candidate_acceptance.py tests/test_performance_verification.py`を再実行します。公開CLI／実Node／faux／no-network・既存converter／page backendのみ人工化し、generate／validator／saveは実物、保存故障はOS replace境界です。PDF依存回帰は現行PDF CI4集合の`test_run.py`に置きます。
+
+[性能reference](docs/reference/performance.md#pdf補正の制限付き並列issue-61)と[既存Map](.pi/skills/verify-project/references/feature-map.md#pdf補正の制限付き並列issue-61)の`preparation_concurrency.py --feature pdf-correction`は既存計測／証拠／cleanupを再利用し、60所有ページ／12job各500ms・fresh Python各3回・実跨process activeを比較します。小さい`pdf_correction_concurrency.py`は既存test_runの自作入力／public-run seedと公開resume／loadを接続するだけです。実provider／OCR／意味品質、rate limit／課金／他OSは未確認、既定1を維持します。Workerのfocused／資産成立をRoot自身の正式core／PDF4／ty／import／Ruff／Node全phase・別隔離状態の直接確認／独立Reviewの代用にしません。production Node／依存／compiled resource／workspace lock契約は不変で、無断install／sync／buildは不要です。
+
 本節と次節のfocused pytestは境界の再現入口です。Workerの回帰とRoot自身の正式／直接確認を区別し、Rootの範囲は上の変更影響の選定手順で決めます。固定準備のコピーは前提作成だけに使い、実準備→実翻訳→公開load／無送信再利用の対照を維持します。
 
 `tests/test_preparation.py`の自作PDF原文snapshotと実EPUB readerからの人工原文、`ai/tests/preparation-process.mjs`のnetwork拒否下の公開`fauxProvider`＋実`runHelper`を使います。内部`generate`／validator／保存helperをmockしません。保存故障注入はOSの`replace`境界だけです。faux processも通常のBiome／oxlint検査対象です。
