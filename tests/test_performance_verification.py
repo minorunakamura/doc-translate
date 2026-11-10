@@ -318,3 +318,86 @@ def test_translation_baseline_pre_job_boundary_and_public_load_are_separate(
         )
         == 4
     )
+
+
+def test_performance_revision_checks_real_import_path(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    revision = load("performance_revision")
+    root = Path(__file__).resolve().parents[1] / "src"
+    imported = revision.imported_sources(root)
+    assert set(imported) == {"preparation", "translation", "render", "run", "snapshot"}
+    assert all(Path(item["path"]).is_relative_to(root) for item in imported.values())
+    assert all(len(item["sha256"]) == 64 for item in imported.values())
+    with pytest.raises(AssertionError):
+        revision.imported_sources(tmp_path)
+
+
+def test_performance_comparison_preserves_qa_targets_and_order(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    comparison = load("performance_comparison")
+    before, after = tmp_path / "before", tmp_path / "after"
+    for directory, digest in ((before, "a" * 64), (after, "b" * 64)):
+        directory.mkdir()
+        for name in ("japanese", "english"):
+            (directory / f"saved-{name}.md").write_text("Self-authored queue.")
+        (directory / "saved-source_map.json").write_text(
+            json.dumps(
+                {"units": [{"source_snapshot_sha256": digest, "unit_id": "unit-1"}]}
+            )
+        )
+        (directory / "saved-qa.json").write_text(
+            json.dumps(
+                {
+                    "checks": [
+                        {
+                            "name": "pdf_chunk_ownership",
+                            "details": f"chunk={digest}; owned_pages=[1]",
+                            "passed": True,
+                            "target_ids": ["block-1", "block-2"],
+                        }
+                    ]
+                }
+            )
+        )
+    assert comparison.compare_saved_outputs(before, after, independent=True)["equal"]
+    with pytest.raises(AssertionError):
+        comparison.compare_saved_outputs(before, after)
+    qa = json.loads((after / "saved-qa.json").read_text())
+    qa["checks"][0]["target_ids"].reverse()
+    (after / "saved-qa.json").write_text(json.dumps(qa))
+    with pytest.raises(AssertionError):
+        comparison.compare_saved_outputs(before, after, independent=True)
+
+
+def test_performance_comparison_rejects_epub_source_snapshot_digest_difference(
+    tmp_path, monkeypatch
+):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    comparison = load("performance_comparison")
+    before, after = tmp_path / "before", tmp_path / "after"
+    for directory in (before, after):
+        directory.mkdir()
+        for name in ("japanese", "english"):
+            (directory / f"saved-{name}.md").write_text("Self-authored EPUB queue.")
+        (directory / "saved-qa.json").write_text(json.dumps({"checks": []}))
+        (directory / "saved-source_map.json").write_text(
+            json.dumps(
+                {
+                    "units": [
+                        {
+                            "source_snapshot_sha256": "a" * 64,
+                            "unit_id": "unit-1",
+                            "locations": [
+                                {"format": "epub", "resource_path": "own.xhtml"}
+                            ],
+                        }
+                    ]
+                }
+            )
+        )
+    assert comparison.compare_saved_outputs(before, after)["equal"]
+    mapping = json.loads((after / "saved-source_map.json").read_text())
+    mapping["units"][0]["source_snapshot_sha256"] = "b" * 64
+    (after / "saved-source_map.json").write_text(json.dumps(mapping))
+    with pytest.raises(AssertionError, match="saved-source_map"):
+        comparison.compare_saved_outputs(before, after)

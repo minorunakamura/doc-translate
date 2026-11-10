@@ -1068,3 +1068,22 @@ PY
 逆順／lengthとinput_limit分割後のactive、run／resume保存優先・override／旧field・EPUB明示1拒否、attempt／chunk／manifest保存例外・config/auth/storage拒否後のdrainは`pytest tests/test_run.py -k correction_concurrency`、代表単独は`pytest 'tests/test_run.py::test_pdf_correction_concurrency_split_reverse_order_and_resume[None-4]'`で補完する。既存`test_pdf_correction`の公開lock／domain／coverage／有限transport retryと、runのorphan・partial／candidate保護・保存後progress、resume／pdf_sourceもmoduleで再実行する。性能秒閾値はpytestへ入れない。
 
 手順成立は通常正式phase／Rootの別workspace直接確認／2独立Reviewの代用ではない。実provider速度・品質・rate limit／課金、実OCR・layout、親／helper RSS・同時aggregate RSS・物理I/Oは未測定。既定1を維持し、既存workspace／lock／venv／model／所有しないPIDを操作しない。project trust後、新セッションか`/reload`、`/skill:verify-project PDF correction concurrency`またはSkill実ファイルreadで再利用する。
+
+## 統合性能比較・採否（Issue #62）
+
+対象は既存renderer／operation-local catalog／wire v2／制限付き並列の同条件before／afterと採否だけ。入口は公開save後render、prepare/load、translate/load、CLI run→別fresh process resume、既存並列helperの公開prepare／PDF resume。新機能・UI・production／既定変更・実AI・実OCR・追加install／buildは対象外。[性能reference #62](../../../../docs/reference/performance.md#統合beforeafterと採否issue-62)が具体的起動command／入力／停止予算／数値と限界の参照先。
+
+前提：repository root、既存PDF extra付きPython／実Node／compiled helper全10file hash一致、人工資料／credentialと既存faux/no-networkのみ。旧revision `8f19b4b`をgit archiveで所有tempへ抽出し、checkout非切替・同script/fixture/helperで子のPYTHONPATHだけ変更する。`imports.json`の実path/hashが指定src内であること、source-hashes／manifestの入力・fixture・helper・config／cache条件を照合する。旧runtimeもcurrent installed resourceを使う。CodeGraph初期化や別venvは不要。不足では停止し無断取得しない。
+
+操作：referenceの`performance_comparison.py --feature render|attempts|run-resume --evidence work/issue62-<unique>`を別の新directoryで逐次実行する。初回接続だけは`--smoke`で小入力を選べる。各EPUB規模の生成archive全byteを両sideへ接続し、v1 seedも旧src公開prepare/translateで一度生成した全byte/hashを独立コピーする。現test launcherのv2 _projectionを旧srcに追加せず、専用`performance_revision.py`のseed接続で既存Node argv／回答を使う。通常各3回＋代表別diagnostic、warm filesystem/no flush、各child fresh Python。全caseの重複control6回は不要。並列は既存`preparation_concurrency.py`と同`--feature pdf-correction`をそのまま再実行する。
+
+期待／観測：
+
+- PDF／EPUB型render50/200/500、N500中央値beforeの50%以下。全日英Markdown・assetsのbyte、map／QA全対象・順/checksを落とさず比較。summary elapsedと派生directoryだけ分離。
+- attempt-heavy100group・v1 seed原byte維持、準備unadopted inclusive _call合計／翻訳初glob→Executor入口をprimary、70%以下。別diagnosticで到達元record各read/hash1回を原則とし、公開loadの正当再読と区別。実追加request0／translation submit0、旧immutable／seed不変。
+- PDF6/35（200×100pt・1800px）、EPUB2/20/200と最小2-resource。before v1 fresh／after v2 fresh cold runと、各side無変更warm resumeを別系列とし、各中央値<=max(before×1.10,before+.05秒)。全resume log増加0、completed／unit数・所有/参照・QA checks・immutable保持。独立fresh PDF runのchunk digestとunit.source_snapshot_sha256だけを元値保持で分離し、他map fields・QA全対象/順/checksとMD/assetsを比較する（同入力renderのbyte同等性とは別）。
+- 準備PDF型/実EPUBとPDF補正各12job×500ms、c1/2/4各3回、stage c2<=75%／c4<=55%。実跨process callback active<=設定／終了0、calls・実input/config/raw/順・無変更追加0／旧immutable不変。親Python生涯peak・wait済み最大child ru_maxrssも記録し、stage同時aggregate RSSと呼ばない。
+
+証拠：新規ignore済みwork直下のrevision／dirty／diff、manifest／source-hashes／verification-sources、各child imports／command（完全argv/exit/外側wall）／metrics（CPU/内側wall/resource）、通常raw/statistics、別diagnosticのlogical read/hash/schema/domain/比較/保存とinclusive profile、QA/map/MD/assets・人工attempt/request、seed/input hash、equivalence／cleanup。比較不能な失敗や目標未達を成功中央値へ混ぜず、有利なcontrol選別・無断閾値変更・非対称追加をしない。独立public loadを追加観測するときも同seedコピー・同既存operation／timerを使い、通常探索primaryへ混ぜない。stage全体同時RSS／物理I/O／実provider時間・rate limit/cost／意味品質等はunknownを残す。
+
+cleanup：各childは既存invokeの所有process groupだけSIGINT→45秒drain→必要時SIGKILL/wait。成功/失敗とも所有TemporaryDirectoryの旧src／入力／model／credential／workspaceのみ回収、人工seedと証拠は外に保持。既存work／workspace／process／lock／venvは触らない。cleanup後全証拠file／参照先を実readback。性能以外のRoot直接回帰・正式core/PDF/Node phaseと独立Reviewは別。実AI未承認は未実施・provider推薦保留で、準備／PDF補正既定1、翻訳2を維持する。候補別採用／見送り・batch上限試算とtoken不明、追加品質評価はreferenceの採否表を使う。Mapは再実行手順であり今回の成功台帳ではない。
