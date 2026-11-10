@@ -48,7 +48,9 @@ WORKSPACE/
   ...                             # 既存のdraft／attempt／snapshot／render契約
 ```
 
-`run.json`は`schema_version: 1/document/source_name/owned_pages/reference_pages/correction/translation/policy/user_terms/corrected_pages/failed_pages/not_processed_pages/chunk_sha256s/artifacts_path/error/error_code`です。`document`は`SourceDocument`、段階設定は既存`GenerationConfig`、`policy`は既存`StylePolicy`です。EPUBの`owned_pages`／`correction`はnull、ページ集合は空です。PDF全体を指定したときの`owned_pages`は取得前null、取得後に実ページ番号を固定します。明示所有範囲は取得前から保持します。参照指定と補正済み／失敗／未処理ページ、採用chunk digestは区別し、進行に応じatomicに更新します。credential・raw環境・秘密値・raw例外は保存しません。`error_code`は観測できた既存推論分類で、分類未観測時はnull、`error`は非秘密の工程失敗案内です。resume／途中artifact復旧の検証規則は次節を参照してください。
+`run.json`は`schema_version: 1/document/source_name/owned_pages/reference_pages/correction/translation/preparation_concurrency/policy/user_terms/corrected_pages/failed_pages/not_processed_pages/chunk_sha256s/artifacts_path/error/error_code`です。`document`は`SourceDocument`、段階設定は既存`GenerationConfig`、`policy`は既存`StylePolicy`です。EPUBの`owned_pages`／`correction`はnull、ページ集合は空です。PDF全体を指定したときの`owned_pages`は取得前null、取得後に実ページ番号を固定します。明示所有範囲は取得前から保持します。参照指定と補正済み／失敗／未処理ページ、採用chunk digestは区別し、進行に応じatomicに更新します。credential・raw環境・秘密値・raw例外は保存しません。`error_code`は観測できた既存推論分類で、分類未観測時はnull、`error`は非秘密の工程失敗案内です。resume／途中artifact復旧の検証規則は次節を参照してください。
+
+準備collectの上限は`run_document(preparation_concurrency=1)`／`resume_document(preparation_concurrency=None)`、CLI `--preparation-concurrency {1,2,4}`です。run manifestの`preparation_concurrency`へ保存し、resume未指定時は保存値を継承、旧manifestの欠落は1です。明示overrideは保存されます。公開APIの不正値はworkspace作成／更新・送信前に拒否します。設定は送信request／GenerationConfigに入らず、変更だけでは既存回答を無効化しません。render／saved statusのmanifest読込みも旧field欠落を許容します。
 
 CLIの送信前表示は新しいpreflightを重ねず、既存推論の**preflight→generate境界**を使います。`generate`と各stage公開APIに任意の`before_send: BeforeSend | None = None`を追加し、`BeforeSend = Callable[[GenerationConfig, GenerationInput, Preflight], None]`です。検証済みpreflightと画像を確認した後、実際のgenerate recordを送る直前に毎回（retryを含む）呼びます。CLIのrun／resumeは`--events-json`時にstderrへ入力名／hash、意図範囲、実requestの送信範囲・内容種別（本文・画像payloadそのものは含めない）、段階provider／model／thinking、実`Preflight.auth.source/type`をflushします（reviewも`--events-json`時だけ従来noticeを出力）。原本fileや画像は準備／翻訳へ送らず、provider／model／認証fallbackやproductionのfake環境flagはありません。`cli.main(argv=None, *, process_command=None)`の明示process指定は既存adapterと同じ外部processテストseamだけです。productionは検証済み導入済みruntimeを使います。
 
@@ -80,7 +82,7 @@ reviewは`review_validate`を`_inputs`・範囲照合・準備／過去review再
 
 ## 再開（Issue #15）
 
-公開CLIは`doc-translate resume DIR`、Python入口は`doc_translate.run.resume_document(*, workspace, translation=None, correction=None, shared=None, policy=None, artifacts_path=None, user_terms=None, process_command=None, before_send=None, observer=None)`です。保存済み`RunManifest`を既定にし、CLIの明示stage設定 > 明示共通設定 > 保存値の順で解決します。resumeにPI環境の設定fallback・新たなページ許可optionはありません。明示変更は`run.json`へatomic保存し、旧不変artifactを保持します。
+公開CLIは`doc-translate resume DIR`、Python入口は`doc_translate.run.resume_document(*, workspace, translation=None, preparation_concurrency=None, correction=None, shared=None, policy=None, artifacts_path=None, user_terms=None, process_command=None, before_send=None, observer=None)`です。保存済み`RunManifest`を既定にし、CLIの明示stage設定 > 明示共通設定 > 保存値の順で解決します。resumeにPI環境の設定fallback・新たなページ許可optionはありません。明示変更は`run.json`へatomic保存し、旧不変artifactを保持します。
 
 - `artifacts_path`はPDF再取得時だけ必要な非秘密local path（旧manifestでは省略／null可）。元INPUT名は表示・book名用で、再開はworkspace内の原本hash／pathを検査します。
 - EPUBは保存原本と現行reader／extractorの入力から原文を再構築し、採用済みsourceとの対応を検査します。PDF依存は読み込みません。
@@ -264,7 +266,7 @@ leafは`text/code/literal/identifier/formula`＋`text`、paired構造は`emphasi
 
 ## 文書context・glossary準備（Issue #11）
 
-公開APIは`doc_translate.preparation.prepare_document(*, workspace: Path, book: str, policy: StylePolicy, config: GenerationConfig, user_terms: dict[str, str] | None = None, version: str = "1", source_sha256: str | None = None, process_command: Sequence[str] | None = None, cancel: threading.Event | None = None, before_send: BeforeSend | None = None, observer: Observer | None = None) -> str`と`load_preparation(workspace: Path, sha256: str | None = None) -> PreparationSnapshot`です。`prepare_document`自身が保存・採用とworkspace lockを所有します。callerは外側から同じlockを取得しません。原文の保存・loadは既存APIを使い、PDF依存をimportしません。CLI・訳文生成・翻訳snapshotは追加しません。
+公開APIは`doc_translate.preparation.prepare_document(*, workspace: Path, book: str, policy: StylePolicy, config: GenerationConfig, concurrency: Literal[1, 2, 4] = 1, user_terms: dict[str, str] | None = None, version: str = "1", source_sha256: str | None = None, process_command: Sequence[str] | None = None, cancel: threading.Event | None = None, before_send: BeforeSend | None = None, observer: Observer | None = None) -> str`と`load_preparation(workspace: Path, sha256: str | None = None) -> PreparationSnapshot`です。`prepare_document`自身が保存・採用とworkspace lockを所有します。callerは外側から同じlockを取得しません。原文の保存・loadは既存APIを使い、PDF依存をimportしません。CLI・訳文生成・翻訳snapshotは追加しません。
 
 ```python
 from pathlib import Path
@@ -321,13 +323,19 @@ WORKSPACE/
   attempts/preparation/<sha256>.json     # 1呼出しごとの全attempt、失敗も保存
 ```
 
-`PreparationSnapshot`は`schema_version: 1`、`source_snapshot_sha256`、`glossary`、`context`、`policy`、`translation_inputs_sha256`、`evidence_sha256`、`runs`（呼出し順の実行記録digest）を持ちます。候補／根拠／実行metadataをglossaryへ混入させません。根拠artifactは`source_snapshot_sha256/sources/collections/organization/user_terms`を持ちます。`sources`はunit IDをkeyに`block_id/cell_id/node_path/attribute/locations/snapshot_id`を保持し、PDF位置／EPUB resource・snapshot-bound nodeへ追跡できます。参照元snapshot自体もhashで固定します。
+`PreparationSnapshot`は`schema_version: 1`、`source_snapshot_sha256`、`glossary`、`context`、`policy`、`translation_inputs_sha256`、`evidence_sha256`、`runs`（元group順のcollect＋最後にorganizeの実行記録digest。同じraw成功を共有したgroupは同じdigest）を持ちます。候補／根拠／実行metadataをglossaryへ混入させません。根拠artifactは`source_snapshot_sha256/sources/collections/organization/user_terms`を持ちます。`sources`はunit IDをkeyに`block_id/cell_id/node_path/attribute/locations/snapshot_id`を保持し、PDF位置／EPUB resource・snapshot-bound nodeへ追跡できます。参照元snapshot自体もhashで固定します。
 
 実行記録は`stage: prepare`、`method`、`status: validated | rejected`、実`request/config`、`elapsed_seconds`、既存adapterの全`attempts`を保存します。成功・失敗・retryのprovider／model・要求／確認済み設定・terminal・終了code・時間・raw回答・usage生値・不明状態を失いません。準備の根拠検証だけは、未知unit・引用不一致・用語表記不一致・整理後の根拠なし用語を固定codeの`PreparationValidationError`として区別し、本文投影・glossaryを変えず、固定の訂正指示と`context.validation_feedback`を加えて初回込み最大3回答まで再生成します。feedbackには固定codeと、収集時は0始まりのcandidate／evidence index・用語・不正な根拠のunit_id／quote、整理時は根拠なし用語の一覧を含めます。これらは未信頼dataとしてJSONで渡し、system指示やterminalのエラー文に埋め込みません。有効な根拠は残し、不正な根拠だけの訂正・削除をmodelに求めます。失敗recordには`validation_error`を残し、成功した訂正requestも通常requestと同じ再検証で再利用します。schema不正・認証・保存・timeout・取消等にはこの再生成を適用しません。各`generate`の一時的通信失敗retryは既存どおり最大3試行のため、1収集／整理の新規helper試行は最大9回であり、再生成でも利用量を消費します。準備usageを訳文生成usageと合算した記録にはしません。参考costはproviderの生値で、実請求を主張しません。
 
 固定入力hashはsort済みUTF-8 JSONの`{glossary, context, policy}`だけから生成し、準備方式・config／model・usage・根拠artifact hash・参照元snapshot hashを含めません。翻訳callerはunitの実入力hashに加え、この固定入力hashを参照できます。方式だけが変わって採用内容が同じなら翻訳入力を無効化しません。原文とpolicy／book／version／利用者terms、全呼出しの準備方式・configと各版の実requestが現採用版と一致するとき、`prepare_document`はloadで再検証してdigestを返し、再送しません。内容変更後の新版も旧artifactを削除しません。`version`はcaller指定の非空文字列であり、時刻や試行数による自動改版を行いません。
 
 準備attemptの探索はfile名の辞書順で、受理可能な一致に達した時点で止まります。一つの`prepare_document`内では、到達してbyte hashを検証したimmutable raw recordだけをmemo化し、後続collect／organizeで同じ元fileを再read／hashしません。今回新規保存したrecordもatomic保存成功後に同じ正規JSON値を登録します。memo化するのは回答の受理結果ではなくraw recordであり、各候補の方式・実request・規定repair・config・raw回答schema／正常terminal／helper終了と現在の根拠の照合は省きません。到達した破損は従来どおり拒否し、一致より後方の未到達recordを先読みして拒否しません。公開`load_preparation`はこのmemoを共有せず、全runを独立検証します。別のprepareも読み直し、永続index・全履歴snapshot常駐・旧artifact書換えは行いません。
+
+`concurrency`は1・2・4（既定1）で、上限までのcollectだけを投入し、完了後に次を投入します。group／実wire／configは同じです。collectionsとrunsは元group順に戻し、全group成功・保存後だけorganizeを1回行います。workerはimmutable attempt保存、親だけが根拠／snapshot／pointerを確定します。workflow lockのthread貸出契約は変えません。
+
+同じoperationで同じwire request＋configが競合missしたときはthread-safeなin-flight Futureでraw成功／失敗を共有します。configは実値で比較し、等値のsigned zeroをJSON byte差で分離しません。各利用箇所で現在groupへのbinding・引用／根拠を再検証します。共有参照数をusageへ加算せず、usage artifactは従来どおり実保存attemptを一度だけ集計します。到達済みraw memoのread／hash・新規保存登録もlock下で行い、未到達の破損をeager readしません。
+
+失敗／取消／保存例外の観測後は新規投入・新しい送信許可を止め、開始済みhelperへ取消を伝播し既存の最大30秒drain／回収を待ち、例外を返します。共有Futureは例外でも完結させます。旧採用pointerと保存済み成功を保持し、後のprepare／resumeは後者を厳密再検証して回収します。競合時に既に開始／許可された送信のゼロ、未保存応答やexactly-once課金は保証しません。利用者observer／before_sendはworkerからも呼ばれるため共有状態を同期してください（標準ProgressStateはthread-safeです）。
 
 保存は同filesystemのfsync／atomic replace、参照切替は全artifact確定後です。schema・根拠拒否でも得られた全attemptを記録してから例外を返し、旧採用参照を維持します。採用参照更新失敗でも実行記録と旧版を保持します。未確定artifactを自動採用する復旧engineは追加しません。
 

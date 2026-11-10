@@ -200,6 +200,8 @@ PDFのDocling refやbboxによる追跡は、そこから導いた原文の正�
 
 v2 raw収集回答のaliasは現在groupへ結び直して引用／用語根拠を再検証し、根拠artifactは現在の追跡IDと位置を持つ。候補のevidenceは全unitの列挙ではなく、同unitの複数引用・疎な根拠・空根拠を許す。整理入力はgroup順の実raw収集回答で、binding後のglobal ID差を再混入させない。公開loadも各runからwire collectionsを再構成し、原文から得たbinding・整理入力・採用結果を独立照合する。利用者terms優先と固定入力hashは不変で、準備wire差だけでは翻訳を無効化しない。翻訳v2でも固定document context／glossary／policy／schemaは全実wire照合に含め、意味的に似ていることを理由に同一視しない。
 
+準備collectはgroup・wire／configを変えず1・2・4の上限で独立実行し、完了順ではなく元group順に回答とrunを並べる。全groupの検証成功・immutable保存後だけorganizeを1回実行する。親がworkspace lockと根拠／snapshot／pointer採用を所有し、workerはimmutable attempt保存だけを行う。別threadへworkflow lockを貸さない。待ち時間を重ねるための変更で、batch変更や品質検証の省略ではない。
+
 ### 文体と変更
 
 本文・説明文は**ですます調**で統一する。見出し・短いlabelは自然な体言止めを認める。chunkの境界で文体を変えない。図内文字・数式の英語label・program identifier等の保護対象には、訳語の置換を適用しない。採用glossaryの`style`と文体policyは、同じ文体指定から生成して独立した二重管理を避ける。
@@ -307,6 +309,8 @@ catalogはhash／JSON検証済み値だけを保持し、新規の通常／repai
 
 splitのv2実requestには順序付きsplit_inputs（非splitはnull、splitは親source_hashと元source_range）を加える。親hashは親全文・保護tokenを含み、現在sourceからの全unit／split操作再生成で本文・座標・part順も検証するため、親全文／保護payloadは追加送信しない。adjustmentは追跡bindingも一致する場合だけreplayし、不明対応をaliasで移植したり旧訳を推測分割・接合したりしない。
 
+準備のraw memo・in-flightもoperation内だけのthread-safeな共有とする。同じ実wire request＋configの競合missはraw成功／失敗をFutureで共有し、利用箇所ごとに現在groupへのbinding・引用根拠を検証する。同じrecordを複数groupのrunsが参照しても実attempt／usageは一度だけである。失敗／取消／保存例外ではFutureを完結させ、新規job投入・新しい送信許可を止め、開始済みchildへ取消を伝播してdrain／回収する。旧採用pointerを保ち、保存済み成功は後のresumeで厳密再検証して回収する。競合時に既に開始／許可した送信までゼロにはできない。
+
 ### 基点付き修正
 
 `revise DIR --source FILE --reason TEXT`は全SourceSnapshot置換、`--translations FILE`は指定unitの訳文patchで、いずれも現在のsource／translation hashを基点とするCASである。古い基点・未知ID・不正schema／構造・根拠・assets・参照を採用前に拒否し、理由・旧版・元回答を保持する。操作自体はオフラインで、Node・認証・PDF model・推論を要求せず、訳文を自動更新しない。後のresumeで準備・unit・翻訳・QA／出力を更新する。訳文patchは現在の原文・準備・設定に対応する訳文に限る。具体的なfieldと保存pathは[artifact契約](../reference/artifacts.md#基点付き修正pdf補正候補採用issue-16)を正本とする。
@@ -331,6 +335,8 @@ splitのv2実requestには順序付きsplit_inputs（非splitはnull、splitは�
 346ページ検証での確定済み55ページ再利用は§18の過去実験である。現在のCLIでは人工入力・固定人工応答／実helperによって修正・候補待ち・明示採用・設定変更・中断復旧の機械的契約を検査する（§19）。それを実provider・実Doclingの一般的品質や、訂正の意味的な完全保持の保証にしない。
 
 ## 15. retry・concurrency・入力上限
+
+準備の公開`prepare_document(concurrency=1)`、run／resumeの`preparation_concurrency`とCLI `--preparation-concurrency`は1・2・4だけを許す。run既定は1、resume未指定はrun manifest保存値、旧field欠落は1とする。並列数は実request／configや固定入力hashに加えず、変更だけで再送しない。offline制御遅延の比較は実providerの速度・rate limit・意味品質を保証しないため、既定1を変更しない。PDF補正の並列設定は別Work Itemである。
 
 翻訳は既存の12,000文字chunk算法・concurrency既定2を維持する。同一wireのin-flight共有は新しいschedulerや並列設定を追加せず、親の部分snapshot確定とchild取消／drainを変えない。
 

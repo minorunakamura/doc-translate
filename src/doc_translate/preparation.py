@@ -2,9 +2,11 @@
 
 import hashlib
 import json
+import signal
 import threading
 import time
 from collections.abc import Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Literal
@@ -167,6 +169,40 @@ def _repair_request(request, code, feedback=None):
     return request.model_copy(update={"policy": policy, "context": context})
 
 
+class _AttemptCatalog:
+    """Thread-safe operation-local raw memo; never read beyond a reached candidate."""
+
+    def __init__(self, workspace):
+        self.workspace = workspace
+        self._lock = threading.Lock()
+        self._records = {}
+        self._flights = {}
+
+    def __getitem__(self, digest):
+        with self._lock:
+            if digest not in self._records:
+                self._records[digest] = _read(
+                    self.workspace, "attempts/preparation", digest
+                )
+            return self._records[digest]
+
+    def store(self, saved):
+        with self._lock:
+            digest = _store(self.workspace, "attempts/preparation", saved)
+            self._records[digest] = json.loads(_bytes(saved))
+            return digest
+
+    def flight(self, request, config):
+        # Match actual values, including equal signed-zero config values.
+        with self._lock:
+            for original, saved_config, future in self._flights.get(request.text, ()):
+                if original == request and saved_config == config:
+                    return future, False
+            future = Future()
+            self._flights.setdefault(request.text, []).append((request, config, future))
+            return future, True
+
+
 def _call(
     workspace,
     config,
@@ -194,8 +230,6 @@ def _call(
         for version, (original, _) in requests.items()
     }
     for path in sorted((workspace / "attempts/preparation").glob("*.json")):
-        if path.stem not in records:
-            records[path.stem] = _read(workspace, "attempts/preparation", path.stem)
         saved = records[path.stem]
         saved_request = saved.get("request")
         context = (
@@ -231,6 +265,47 @@ def _call(
             continue
         emit(observer, "prepare", "reused")
         return answer, path.stem
+    future, leader = records.flight(request, config)
+    if leader:
+        try:
+            result = _generate_call(
+                workspace,
+                config,
+                request,
+                response_model,
+                validate,
+                command,
+                cancel,
+                before_send,
+                observer,
+                records,
+            )
+        except BaseException as error:
+            cancel.set()
+            future.set_exception(error)
+            raise
+        else:
+            future.set_result(result)
+    answer, digest = future.result()
+    # The shared raw result is not an acceptance for this source binding.
+    validate(answer)
+    if not leader:
+        emit(observer, "prepare", "reused")
+    return answer, digest
+
+
+def _generate_call(
+    workspace,
+    config,
+    request,
+    response_model,
+    validate,
+    command,
+    cancel,
+    before_send,
+    observer,
+    records,
+):
     current_request = request
 
     def record(status, attempts, validation_error=None):
@@ -245,9 +320,7 @@ def _call(
             "elapsed_seconds": time.monotonic() - started,
             "attempts": [asdict(attempt) for attempt in attempts],
         }
-        digest = _store(workspace, "attempts/preparation", saved)
-        records[digest] = json.loads(_bytes(saved))
-        return digest
+        return records.store(saved)
 
     for number in range(3):
         started = time.monotonic()
@@ -262,12 +335,15 @@ def _call(
                 observer=observer,
             )
         except InferenceError as error:
+            cancel.set()
             record("rejected", error.attempts)
             emit(observer, "prepare", "failed", reason="inference_rejected")
             raise
         try:
             validate(result.answer)
         except PreparationValidationError as error:
+            if number == 2:
+                cancel.set()
             record("rejected", result.attempts, error.code)
             if number == 2:
                 emit(observer, "prepare", "failed", reason=error.code)
@@ -275,6 +351,7 @@ def _call(
             emit(observer, "prepare", "repair", reason=error.code)
             current_request = _repair_request(request, error.code, error.feedback)
         except ValueError:
+            cancel.set()
             record("rejected", result.attempts)
             emit(observer, "prepare", "failed", reason="validation_failed")
             raise
@@ -424,6 +501,7 @@ def prepare_document(
     book: str,
     policy: StylePolicy,
     config: GenerationConfig,
+    concurrency: Literal[1, 2, 4] = 1,
     user_terms: dict[str, str] | None = None,
     version: str = "1",
     source_sha256: str | None = None,
@@ -433,6 +511,26 @@ def prepare_document(
     observer: Observer | None = None,
 ) -> str:
     """Collect source evidence, organize document-wide, save and atomically adopt."""
+    if type(concurrency) is not int or concurrency not in (1, 2, 4):
+        raise ValueError("preparation concurrency must be 1, 2 or 4")
+    cancelled = cancel if cancel is not None else threading.Event()
+    # Serialize send permissions with failure observation, not with child execution.
+    send_lock = threading.Lock()
+
+    def stop():
+        with send_lock:
+            cancelled.set()
+
+    def permitted(callback):
+        def send(config, request, preflight):
+            with send_lock:
+                if cancelled.is_set():
+                    raise InferenceError("cancelled", [])
+            if callback is not None:
+                callback(config, request, preflight)
+
+        return send
+
     emit(observer, "prepare", "start")
     policy = StylePolicy.model_validate(policy.model_dump())
     config = GenerationConfig.model_validate(config.model_dump())
@@ -453,14 +551,19 @@ def prepare_document(
         if reference_path.exists():
             load_preparation(workspace)
         units = generate_translation_units(snapshot, source_sha256=source_digest)
-        collections = []
-        wire_collections = []
         groups = _groups(units)
-        # Memoize only reached immutable records; each public operation validates anew.
-        records = {}
+        records = _AttemptCatalog(workspace)
         emit(observer, "prepare", "collect")
-        runs = []
-        for index, group in enumerate(groups):
+
+        def collect(index):
+            try:
+                return collect_group(index)
+            except BaseException:
+                stop()
+                raise
+
+        def collect_group(index):
+            group = groups[index]
             request = GenerationInput(
                 stage="prepare",
                 policy=(
@@ -501,12 +604,14 @@ def prepare_document(
                 CollectionAnswer,
                 lambda answer, group=group: _bind_collection(answer, group, 2),
                 process_command,
-                cancel,
-                scoped_before_send(
-                    before_send,
-                    phase="collect",
-                    section=index,
-                    unit_ids=[unit.unit_id for unit in group],
+                cancelled,
+                permitted(
+                    scoped_before_send(
+                        before_send,
+                        phase="collect",
+                        section=index,
+                        unit_ids=[unit.unit_id for unit in group],
+                    )
                 ),
                 scoped_observer(
                     observer,
@@ -519,12 +624,54 @@ def prepare_document(
                     answer, group, 1
                 ),
             )
-            wire_collections.append(collection)
-            collection = _bind_collection(
-                collection, group, _wire_version(records[run])
-            )
-            collections.append(collection)
-            runs.append(run)
+            bound = _bind_collection(collection, group, _wire_version(records[run]))
+            return collection, bound, run
+
+        results = {}
+        pending = iter(range(len(groups)))
+        previous_handlers = {}
+
+        def interrupt(_signum, _frame):
+            cancelled.set()
+
+        try:
+            if threading.current_thread() is threading.main_thread():
+                for signum in (signal.SIGINT, signal.SIGTERM):
+                    previous_handlers[signum] = signal.signal(signum, interrupt)
+            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                active = {}
+
+                def submit():
+                    with send_lock:
+                        if cancelled.is_set():
+                            return False
+                        index = next(pending, None)
+                        if index is None:
+                            return False
+                        active[executor.submit(collect, index)] = index
+                        return True
+
+                try:
+                    while len(active) < concurrency and submit():
+                        pass
+                    while active:
+                        finished, _ = wait(active, return_when=FIRST_COMPLETED)
+                        for future in finished:
+                            results[active.pop(future)] = future.result()
+                        while len(active) < concurrency and submit():
+                            pass
+                except BaseException:
+                    stop()
+                    # Executor exit drains every started child, including failed followers.
+                    raise
+        finally:
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
+        if cancelled.is_set():
+            raise InferenceError("cancelled", [])
+        wire_collections = [results[index][0] for index in range(len(groups))]
+        collections = [results[index][1] for index in range(len(groups))]
+        runs = [results[index][2] for index in range(len(groups))]
         request = GenerationInput(
             stage="prepare",
             policy=(
@@ -575,8 +722,8 @@ def prepare_document(
             OrganizationAnswer,
             lambda answer: _validate_organization(answer, collections, supplied.terms),
             process_command,
-            cancel,
-            scoped_before_send(before_send, phase="organize", unit_ids=[]),
+            cancelled,
+            permitted(scoped_before_send(before_send, phase="organize", unit_ids=[])),
             scoped_observer(
                 observer,
                 phase="organize",
@@ -588,6 +735,8 @@ def prepare_document(
                 answer, collections, supplied.terms
             ),
         )
+        if cancelled.is_set():
+            raise InferenceError("cancelled", [])
         wire_version = max(_wire_version(records[run]) for run in [*runs, run2])
         evidence = PreparationEvidence(
             wire_version=wire_version,

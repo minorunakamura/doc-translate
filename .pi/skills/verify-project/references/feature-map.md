@@ -843,3 +843,119 @@ PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 ```
 
 Mapは成功台帳でなく再実行入口。全体性能／新しい準備・PDF並列設定、実provider速度・意味品質、実Docling／OCR、viewer、他OS／remote CIは未確認。正式full core／PDF4／Node checks・Rootの別workspace独立再実行・Reviewer gateは別に行う。
+
+## 準備collectの制限付き並列（Issue #60）
+
+入口は公開`prepare_document(concurrency=1|2|4)`→`load_preparation`、公開CLI `run/resume --preparation-concurrency 1|2|4`。group／実wire／configを変更せず、既定1、run manifest保存・resume未指定保存値・旧field欠落1を確認する。PDF補正の並列は対象外。前提は既存Python／pytest／Node、compiled `ai/dist`と同梱resource全10file hash一致。helperが検査して不一致なら止める。install／build／model取得・実provider／実書籍を使わない。通常の正式チェックを代用しない。
+
+### 12job制御遅延・active・不変性
+
+repository rootから非並行・foregroundで実行する。出力先は未作成のignore済みwork直下。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/doc-translate run --help
+.venv/bin/doc-translate resume --help
+.venv/bin/python .pi/skills/verify-project/scripts/preparation_concurrency.py \
+  --evidence work/issue60-concurrency-new
+```
+
+helperは自作PDF型sourceと実EPUB archive reader／extractorを公開saveへ通し、各設定fresh Python通常3回、各12独立collect（500ms）＋organize1を実Node／公開faux／no-networkへ送る。EPUBは保持した同じ人工archive byteを全sampleで読む。timerは公開prepare全体でNode起動／実検証／attempt・根拠・snapshot・pointer保存を含む。source生成／saveと別公開loadは区間外、外側Python全体wallも各command記録に残る。diagnosticや失敗値を通常統計へ混ぜない。個々のchild60秒の予算、所有process groupだけSIGINT→45秒drain→必要時SIGKILL／wait。毎回の所有TemporaryDirectory／credentialだけfinallyで回収し、child強制終了時も親がreap後に新規sample内の所有tempだけを回収する。
+
+期待：stage median(c2/c1)<=.75、c4/c1<=.55、実faux callbackの跨process monotonic ns start/endを集約してactive<=設定、最終0。calls13、collect12／organize1、各実request／config・raw回答・collections／run対応・総入力bytesが全設定で同じ。全collect終了後にorganize1回。無変更再実行は追加送信0・旧immutable不変。`summary.json`のraw／median／min/max／比、各case `timeline.jsonl`／`requests.jsonl`／`comparable.json`／`immutable-hashes.json`、`command.json`のcommand／exitを直接照合する。start/endは実faux callbackの区間で、pre-sendやhelper生存数・provider内部時間ではない。実provider性能／rate limit／意味品質、物理I/O・同時aggregate RSSはunknownで、既定1を変えない。
+
+### 局所失敗／取消／保存障害→成功回収の直接操作
+
+下の独立invocationはタイミング性能値には混ぜない。旧採用を作り、設定の実変更でcollectをmissさせ、成功1件以上の保存後に局所失敗／Event取消／OS replace障害を観測する。内部generate／validator／saveは置換せず、保存障害はOS replace境界だけ。各caseの公開操作と例外・旧pointer・保存成功・resumeでの追加calls／全immutable不変を照合する。
+
+```sh
+EVIDENCE=$(mktemp -d "$PWD/work/issue60-recovery-XXXXXX")
+export EVIDENCE
+PYTHONPATH=tests .venv/bin/python - <<'PY'
+import json, os, subprocess, tempfile, threading
+from pathlib import Path
+from unittest.mock import patch
+from test_preparation import CONFIG, id_answers, parallel_source, run
+from doc_translate.inference import GenerationOptions, InferenceError
+from doc_translate.preparation import load_preparation
+from doc_translate.snapshot import save_source_snapshot
+
+evidence = Path(os.environ['EVIDENCE'])
+(evidence / 'revision.txt').write_text(subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True))
+(evidence / 'scope.diff').write_text(subprocess.check_output(['git', 'diff'], text=True))
+(evidence / 'dirty.txt').write_text(subprocess.check_output(['git', 'status', '--short'], text=True))
+observations = []
+try:
+    for fault in ('local', 'cancel', 'save'):
+        with tempfile.TemporaryDirectory(prefix='issue60-recovery-owned-') as temporary:
+            owned = Path(temporary)
+            workspace = owned / 'workspace'
+            snapshot = parallel_source(owned, size=5)
+            save_source_snapshot(workspace, snapshot)
+            answers = id_answers(snapshot)
+            old = run(owned, workspace, [], answers_override=answers)
+            pointer = (workspace / 'preparation-snapshot.json').read_bytes()
+            config = CONFIG.model_copy(update={'options': GenerationOptions(temperature=.2)})
+            cancel = threading.Event()
+            timeline = evidence / (fault + '-timeline.jsonl')
+            answers['observation'] = {'delay_ms': [0,800,0,0,0], 'timeline': str(timeline), 'fail_sections': [2] if fault == 'local' else []}
+            original_replace = os.replace
+            def replace(src, dst):
+                if fault == 'save' and Path(dst).parent == workspace / 'attempts/preparation' and 'Section group2' in json.loads(Path(src).read_bytes())['request']['text']:
+                    raise OSError('artificial immutable save failure')
+                return original_replace(src, dst)
+            def observe(event):
+                if fault == 'cancel' and event.kind == 'saved':
+                    cancel.set()
+            try:
+                with patch('os.replace', replace):
+                    run(owned, workspace, [], config=config, answers_override=answers, concurrency=2, cancel=cancel, observer=observe)
+            except (InferenceError, OSError) as error:
+                failure = type(error).__name__
+            else:
+                raise AssertionError('fault was not observed')
+            assert (workspace / 'preparation-snapshot.json').read_bytes() == pointer
+            load_preparation(workspace, old)
+            immutable = {p: p.read_bytes() for directory in ('snapshots','attempts','preparation') for p in (workspace / directory).rglob('*.json')}
+            successes = [json.loads(data) for p, data in immutable.items() if p.parent == workspace / 'attempts/preparation' and json.loads(data)['config'] == config.model_dump(mode='json') and json.loads(data)['status'] == 'validated']
+            assert successes
+            prior = len((owned / 'requests.jsonl').read_text().splitlines())
+            answers.pop('observation')
+            recovered = run(owned, workspace, [], config=config, answers_override=answers, concurrency=2)
+            assert load_preparation(workspace, recovered).translation_inputs_sha256 == load_preparation(workspace, old).translation_inputs_sha256
+            assert all(p.read_bytes() == data for p, data in immutable.items())
+            added = len((owned / 'requests.jsonl').read_text().splitlines()) - prior
+            assert added == 6 - len(successes)
+            events = [json.loads(line) for line in timeline.read_text().splitlines()]
+            assert all(e['phase'] == 'collect' and e['section'] in (0,1,2) for e in events)
+            assert {(e['pid'],e['section']) for e in events if e['event']=='start'} == {(e['pid'],e['section']) for e in events if e['event']=='end'}
+            (evidence / (fault + '-requests.jsonl')).write_bytes((owned / 'requests.jsonl').read_bytes())
+            observations.append({'fault':fault, 'observed_exception':failure, 'saved_successes':len(successes), 'recovery_added_calls':added, 'old_pointer_on_failure':True, 'immutable_unchanged':True, 'expected':'no organize on failure; success recovery; all started callbacks ended', 'observed':'matched'})
+finally:
+    (evidence / 'observations.json').write_text(json.dumps(observations, indent=2))
+    (evidence / 'cleanup.txt').write_text('only owned TemporaryDirectories removed; helper children drained/reaped; evidence retained\n')
+for path in evidence.rglob('*'):
+    if path.is_file(): path.read_bytes()
+assert len(observations) == 3
+print(evidence, 'three public recovery operations matched; cleanup/readback complete')
+PY
+```
+
+### 公開prepare単体の親signal取消
+
+run／resume外側のhandlerに依存せず、prepare親main threadのSIGINT／SIGTERMを共有Eventへ伝え、executor drain終了までhandlerを保持しfinallyで元へ復元する。次の最小subprocess回帰を同じ既存環境で実行する。実Node／faux／no-networkのcallback開始をtimelineで確認してから**親Python PIDだけ**へSIGTERM（既定1／並列4）と同経路のSIGINTを送る。取消例外、開始した全collectのrejected attempt保存、organize未送信、旧pointer／immutable保持、全callback終了・child不存在／reap、元handler復元をassertする。並列4はrun／resumeと同じ外側取消Event／handlerも使い、その復元を確認する。非main thread呼出しはhandlerを変更せずcaller Eventを使う。失敗時も所有process groupだけ回収・waitし、所有TemporaryDirectory／人工credentialを削除する。signalの直積・秒数の性能閾値は増やさない。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/pytest -q tests/test_preparation.py -k 'parent_signal or non_main_thread'
+```
+
+逆順完了／同時miss成功・失敗共有／binding・usage1度／Future完結は小さい恒久回帰も再実行する。CLI保存優先・override・旧field・拒否は公開CLIの実Node結合で確認する。
+
+```sh
+.venv/bin/pytest -q tests/test_preparation.py -k 'parallel or invalid_concurrency or parent_signal or non_main_thread'
+.venv/bin/pytest -q tests/test_run.py -k preparation_concurrency
+.venv/bin/pytest -q tests/test_preparation.py::test_preparation_parallel_same_wire_miss_shares_raw_success_or_failure
+```
+
+証拠はrevision／dirty／diff、manifestのsource・input・helper hash／条件／unknown、各command／exit／raw／期待観測、cleanup。helperの失敗時も途中command／stdout／stderr・resultsを保持し、再試行は別directoryにする。失敗runを成功に置換しない。cleanup後に全file参照を実readbackする。通常正式phase・Rootの別invocation／workspaceでの直接API・CLI確認とReviewer gateは別。実workspace／lock／既存model／venvを触らず、所有しないPIDを止めない。再利用はproject trust→新セッションか`/reload`→`/skill:verify-project preparation concurrency`またはSkill実ファイルread。

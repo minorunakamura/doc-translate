@@ -37,32 +37,61 @@ faux.setResponses([
       if (section < 0) throw new Error("Missing fixture group binding");
       binding = groups[section];
     }
-    const answer = structuredClone(
-      Array.isArray(response) ? response[section] : response,
-    );
-    if (binding && Array.isArray(answer?.candidates)) {
-      for (const candidate of answer.candidates) {
-        if (!Array.isArray(candidate?.evidence)) continue;
-        for (const evidence of candidate.evidence) {
-          const index = binding.unit_ids.indexOf(evidence?.unit_id);
-          // Invalid/global IDs outside this group must remain invalid.
-          if (index >= 0) evidence.unit_id = `request-unit-${index + 1}`;
+    const observation = answers.observation;
+    const timeline = async (event) => {
+      if (observation?.timeline) {
+        await appendFile(
+          observation.timeline,
+          `${JSON.stringify({ event, pid: process.pid, ns: process.hrtime.bigint().toString(), phase: input.context.phase, section })}\n`,
+        );
+      }
+    };
+    await timeline("start");
+    try {
+      const delay =
+        input.context.phase === "collect" ? observation?.delay_ms : undefined;
+      if (delay !== undefined) {
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            (Array.isArray(delay) ? delay[section] : delay) ?? 0,
+          ),
+        );
+      }
+      const answer = structuredClone(
+        Array.isArray(response) ? response[section] : response,
+      );
+      if (binding && Array.isArray(answer?.candidates)) {
+        for (const candidate of answer.candidates) {
+          if (!Array.isArray(candidate?.evidence)) continue;
+          for (const evidence of candidate.evidence) {
+            const index = binding.unit_ids.indexOf(evidence?.unit_id);
+            // Invalid/global IDs outside this group must remain invalid.
+            if (index >= 0) evidence.unit_id = `request-unit-${index + 1}`;
+          }
         }
       }
+      const calls = (await readFile(recordingPath, "utf8"))
+        .trim()
+        .split("\n").length;
+      const retry = answers.retry && calls === 1;
+      const failed =
+        input.context.phase === "collect" &&
+        observation?.fail_sections?.includes(section);
+      const message = fauxAssistantMessage(
+        JSON.stringify(answer),
+        failed
+          ? { stopReason: "error", errorMessage: "Artificial local failure" }
+          : retry
+            ? { stopReason: "error", errorMessage: "429 rate limit exceeded" }
+            : {},
+      );
+      message.provider = model.provider;
+      message.model = model.id;
+      return message;
+    } finally {
+      await timeline("end");
     }
-    const calls = (await readFile(recordingPath, "utf8"))
-      .trim()
-      .split("\n").length;
-    const retry = answers.retry && calls === 1;
-    const message = fauxAssistantMessage(
-      JSON.stringify(answer),
-      retry
-        ? { stopReason: "error", errorMessage: "429 rate limit exceeded" }
-        : {},
-    );
-    message.provider = model.provider;
-    message.model = model.id;
-    return message;
   },
 ]);
 models.setProvider(faux.provider);

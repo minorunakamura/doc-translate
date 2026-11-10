@@ -68,6 +68,7 @@ class RunManifest(Contract):
     reference_pages: list[int]
     correction: GenerationConfig | None
     translation: GenerationConfig
+    preparation_concurrency: Literal[1, 2, 4] = 1
     policy: StylePolicy
     user_terms: dict[str, str]
     corrected_pages: list[int] = Field(default_factory=list)
@@ -84,6 +85,7 @@ def run_document(
     source: Path,
     workspace: Path,
     translation: GenerationConfig,
+    preparation_concurrency: Literal[1, 2, 4] = 1,
     correction: GenerationConfig | None = None,
     pages: tuple[int, int] | None = None,
     reference_pages: tuple[int, int] | None = None,
@@ -93,6 +95,12 @@ def run_document(
     before_send: BeforeSend | None = None,
     observer: Observer | None = None,
 ) -> dict:
+    if type(preparation_concurrency) is not int or preparation_concurrency not in (
+        1,
+        2,
+        4,
+    ):
+        raise ValueError("preparation concurrency must be 1, 2 or 4")
     format = source.suffix.lower().lstrip(".")
     if format not in {"pdf", "epub"}:
         raise ValueError("INPUT must be a local PDF or EPUB")
@@ -141,6 +149,7 @@ def run_document(
         else [],
         correction=correction,
         translation=translation,
+        preparation_concurrency=preparation_concurrency,
         policy=StylePolicy(
             version="1", text="本文はですます調。見出しは自然な体言止めを認めます。"
         ),
@@ -184,6 +193,7 @@ def resume_document(
     *,
     workspace: Path,
     translation: GenerationConfig | Selection | None = None,
+    preparation_concurrency: Literal[1, 2, 4] | None = None,
     correction: GenerationConfig | Selection | None = None,
     shared: Selection | None = None,
     policy: StylePolicy | None = None,
@@ -198,6 +208,11 @@ def resume_document(
     from doc_translate.render import workspace_status
     from doc_translate.translation import load_translation
 
+    if preparation_concurrency is not None and (
+        type(preparation_concurrency) is not int
+        or preparation_concurrency not in (1, 2, 4)
+    ):
+        raise ValueError("preparation concurrency must be 1, 2 or 4")
     if not (workspace / "run.json").is_file():
         raise ValueError("Resume requires a workspace with run.json")
     emit(observer, "validate", "start")
@@ -246,6 +261,8 @@ def resume_document(
                 }
             )
 
+        if preparation_concurrency is not None:
+            manifest.preparation_concurrency = preparation_concurrency
         manifest.translation = selected(manifest.translation, translation)
         if manifest.correction is not None:
             manifest.correction = selected(manifest.correction, correction)
@@ -668,6 +685,7 @@ def _continue_run(
         prepare_document(
             workspace=workspace,
             book=Path(manifest.source_name).stem,
+            concurrency=manifest.preparation_concurrency,
             policy=manifest.policy,
             config=manifest.translation,
             user_terms=manifest.user_terms,
