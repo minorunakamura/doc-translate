@@ -883,3 +883,7 @@ translation saved-attempt操作内catalog／計測（Issue #57）は[性能refer
 ## PDF／EPUB性能の統合比較・採否（Issue #62）
 
 [性能referenceの統合節](docs/reference/performance.md#統合beforeafterと採否issue-62)と既存[Skill／Map](.pi/skills/verify-project/references/feature-map.md#統合性能比較採否issue-62)から、旧srcの隔離archive対照・同byte EPUB/v1 seed・通常3raw＋別診断・現並列helper再実行へ進みます。全対象は非TDDで、秒数閾値pytest・新benchmark基盤・production／既定変更は追加しません。Workerは比較／helper selfcheck・focused consumerと証拠／所有物cleanup、Rootは差分直接read後の正式core全pytest／CLI、PDF ty/import/4ファイル・関係契約、Node全品質/testと別workspace公開seam直接操作、Reviewerは独立受入れを担当します。各候補の採否・未達・未確認を明示し、実AI未承認なら未実施・provider推薦保留、準備／PDF補正既定1・翻訳2を維持します。過去Issueの成功を今回へ流用しません。
+
+### PDF原文の代表標本準備（Issue #79）
+
+[準備契約・起動・対応表](docs/design/pdf-source-quality-feasibility.md)と[verify-projectの関係節](.pi/skills/verify-project/SKILL.md#pdf原文標本準備issue-79)を使います。Plan方針1の自作描画→公開取得/人工補正/組立と実書籍read-only対応資料だけで、実AI/auth/preflight・通常run/resume・検査/回復/採否は提供しません。正解/期待は入力から分離し、Rootの全原画像直接照合と固定前はpendingです。変更影響の選定に従い、専用self-checkの代表単独fresh process＋module全体とPDF公開取得/組立回帰、RootのRuff/format/既存PDF extra ty・別invocationを行います。共有fixture/src/Node/CIは変更せず、影響が広がる場合だけfull phasesへ戻します。本文/画像は承認されたprivate work限定、無送信・元hash/mtime保持・所有物cleanup後の証拠再読を必須とします。
