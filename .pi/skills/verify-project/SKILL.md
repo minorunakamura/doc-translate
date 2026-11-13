@@ -65,3 +65,9 @@ renderer／catalog／v2／準備・PDF補正並列を合わせたbefore／after�
 通常primary各3回と別diagnostic、cold v1/v2 fresh runとwarm無変更resumeを別系列で残す。render N500<=50%、探索<=70%、代表run/resume<=max(before×1.10,before+.05秒)、現並列helperの12job×500msでc2<=75%／c4<=55%・active上限/終了0・全入力/raw/順不変を照合する。秒閾値はpytestにしない。renderは全Markdown/map/QA/assets byte一致、独立fresh PDF runだけelapsed由来のchunk/source snapshot digestを元値保持で分離し、本文・QA全対象/順/checks・mapの残りを比較する。親／reaped childのru_maxrssは生涯peak／最大childでありstage同時aggregate RSSではない。
 
 新しいignore済み`work/issue62-<unique>/`へcommand/exit/imports/hash/raw/CPU/resource・診断・出力と採否／未達／未確認を残す。所有childのみdrain/waitし、作ったTemporaryDirectoryだけcleanup後、証拠全参照をreadbackする。最終helper hashでのsmall `--smoke`は手順成立だけで代表性能を代用しない。実AI未承認なら未実施・provider推薦保留、準備／PDF補正既定1・翻訳2のまま。正式Plan／設計／progress／production／既定値は変更せず、追加install/sync/build・実送信を許可しない。Workerのfocused／性能とRootの正式全phase・別workspace直接操作／独立Reviewの分担はreferenceに従う。project trust後、新セッションか`/reload`、`/skill:verify-project integrated performance`または本ファイルreadで再利用する。
+
+## PDF原文標本準備（Issue #79）
+
+評価準備だけを依頼された場合はMapの「PDF原文標本準備」を選び、[準備契約](../../../docs/design/pdf-source-quality-feasibility.md)の2入口を使う。既存保存-only/公開PDF取得補正の境界を再利用し、局所の自作描画fixture→公開acquire→実Node/faux/no-network correct→assemble、および固定4chunkの書籍read-only load/assembleと対応表作成だけを行う。実AI/auth/preflight・通常run/resume・回復/採否/実評価は提供しない。既存PDF extra/Node/resource鮮度が不足なら停止し、install/sync/buildしない。
+
+出力は承認されたignore済みwork内の新規directory、直上親0700。書籍本文/画像/rawはprivate資料だけに保存し、stdout/Git/Issueへ出さない。本節だけは承認された実書籍のread-only参照を許可し、他節の利用者workspace禁止を一般解除しない。人工標本・実書籍入力・review-only正解提案を分離する。全標本のRoot原画像直接照合/期待固定とReviewer gateは別で、未固定を成功にしない。所有一時物/childだけcleanup後、Workspace外の証拠hashと全参照を再読する。project trust後の新セッションまたは`/reload`、`/skill:verify-project PDF source samples`か本ファイルreadで再利用し、Maintain/全Mapは要求しない。

@@ -1087,3 +1087,13 @@ PY
 証拠：新規ignore済みwork直下のrevision／dirty／diff、manifest／source-hashes／verification-sources、各child imports／command（完全argv/exit/外側wall）／metrics（CPU/内側wall/resource）、通常raw/statistics、別diagnosticのlogical read/hash/schema/domain/比較/保存とinclusive profile、QA/map/MD/assets・人工attempt/request、seed/input hash、equivalence／cleanup。比較不能な失敗や目標未達を成功中央値へ混ぜず、有利なcontrol選別・無断閾値変更・非対称追加をしない。独立public loadを追加観測するときも同seedコピー・同既存operation／timerを使い、通常探索primaryへ混ぜない。stage全体同時RSS／物理I/O／実provider時間・rate limit/cost／意味品質等はunknownを残す。
 
 cleanup：各childは既存invokeの所有process groupだけSIGINT→45秒drain→必要時SIGKILL/wait。成功/失敗とも所有TemporaryDirectoryの旧src／入力／model／credential／workspaceのみ回収、人工seedと証拠は外に保持。既存work／workspace／process／lock／venvは触らない。cleanup後全証拠file／参照先を実readback。性能以外のRoot直接回帰・正式core/PDF/Node phaseと独立Reviewは別。実AI未承認は未実施・provider推薦保留で、準備／PDF補正既定1、翻訳2を維持する。候補別採用／見送り・batch上限試算とtoken不明、追加品質評価はreferenceの採否表を使う。Mapは再実行手順であり今回の成功台帳ではない。
+
+## PDF原文標本準備（Issue #79）
+
+入口は`../scripts/pdf_source_feasibility.py synthetic|book --output NEW`（既存Python、repository root）。[契約・起動・表の読み方](../../../../docs/design/pdf-source-quality-feasibility.md)のコマンドを使う。上の「保存記録と詳細検査」の無送信・元hash/mtime保持・証拠外置きと「PDF run／resumeの工程・所有ページ進捗」の外部converter/page backend人工fixture・実Node/faux/no-networkだけを再利用し、通常run/resume自体は実行しない。
+
+期待：自作4組8例が描画済原本→公開取得/補正/組立を通り、targetなしcharspan履歴・空図/不良crop・本文/code接続・段落/表/数値/code/判読不能の対照を保持する。正常/欠陥生成は人工回答で、精度保証ではない。実書籍は指定source hashの4chunk/20所有を一度に公開assembleし、fragment系列・現在内容・ID対応後warning multisetが元と一致する。185/186の境界は切らず、必要context画像を含める。警告数を誤り数とせず、Rootが全画像を直接見て期待を別途固定するまでpending。
+
+証拠：新規private出力の`observations.json/hashes.json`、書籍`references.json/correspondence.json/original-inventory.json/preservation.json`、`book-inputs/page-N.json`と全PNG、別の`review-only`索引。原本PDF/raw全体/source全体は複製せず参照に留めるため、単独load可能なWorkspaceコピーではない。command/exit・環境/build hash・revision/dirty/diff・未確認はWorkspace外のprivate evidenceへ保存する。本文/画像/raw回答を通常stdoutやGitへ出さない。
+
+安全拒否は専用`test_pdf_source_feasibility.py`の既存出力/同一/包含/symlink/Workspace/公開親拒否、内容/履歴変化拒否で確認する。代表consumer単独fresh process→新module全体と、設計文書のfocused回帰を実行。Rootの別invocation・全画像直接照合・正式チェック・Reviewer gateは代替しない。所有TemporaryDirectoryと同期childだけcleanup後に全保持hashを再読し、書籍元全file hash/mtime不変を確認する。実AI/auth/preflight/送信、検査/回復/採否、全冊/通常CLI統合は未提供・未実施のまま送信前停止する。
