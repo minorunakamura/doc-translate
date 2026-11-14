@@ -887,3 +887,7 @@ translation saved-attempt操作内catalog／計測（Issue #57）は[性能refer
 ### PDF原文の代表標本準備（Issue #79）
 
 [準備契約・起動・対応表](docs/design/pdf-source-quality-feasibility.md)と[verify-projectの関係節](.pi/skills/verify-project/SKILL.md#pdf原文標本準備issue-79)を使います。Plan方針1の自作描画→公開取得/人工補正/組立と実書籍read-only対応資料だけで、実AI/auth/preflight・通常run/resume・検査/回復/採否は提供しません。正解/期待は入力から分離し、Rootの全原画像直接照合と固定前はpendingです。変更影響の選定に従い、専用self-checkの代表単独fresh process＋module全体とPDF公開取得/組立回帰、RootのRuff/format/既存PDF extra ty・別invocationを行います。共有fixture/src/Node/CIは変更せず、影響が広がる場合だけfull phasesへ戻します。本文/画像は承認されたprivate work限定、無送信・元hash/mtime保持・所有物cleanup後の証拠再読を必須とします。
+
+### PDF原文の隔離offline実験（Issue #80）
+
+#79準備を保持した[offline契約・起動・証拠](docs/design/pdf-source-quality-feasibility.md#隔離offline実験issue-80)を使います。`pdf_source_feasibility.py offline`は固定人工標本と既存Node/faux/no-networkだけで公開検査→限定再補正→独立再検査→自動採否→保存/別process英語出力を確認します。専用self-check代表単独→module、PDF取得/補正/組立/units/renderのfocused回帰を選び、Rootの正式品質チェック・別invocationとReviewer gateを分けます。通常製品/実AI評価ではありません。実送信/authは#81の別承認、元hash/mtime保持・全失敗保存・所有物cleanup後の証拠再読が必須です。

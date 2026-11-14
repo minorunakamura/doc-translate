@@ -1097,3 +1097,13 @@ cleanup：各childは既存invokeの所有process groupだけSIGINT→45秒drain
 証拠：新規private出力の`observations.json/hashes.json`、書籍`references.json/correspondence.json/original-inventory.json/preservation.json`、`book-inputs/page-N.json`と全PNG、別の`review-only`索引。原本PDF/raw全体/source全体は複製せず参照に留めるため、単独load可能なWorkspaceコピーではない。command/exit・環境/build hash・revision/dirty/diff・未確認はWorkspace外のprivate evidenceへ保存する。本文/画像/raw回答を通常stdoutやGitへ出さない。
 
 安全拒否は専用`test_pdf_source_feasibility.py`の既存出力/同一/包含/symlink/Workspace/公開親拒否、内容/履歴変化拒否で確認する。代表consumer単独fresh process→新module全体と、設計文書のfocused回帰を実行。Rootの別invocation・全画像直接照合・正式チェック・Reviewer gateは代替しない。所有TemporaryDirectoryと同期childだけcleanup後に全保持hashを再読し、書籍元全file hash/mtime不変を確認する。実AI/auth/preflight/送信、検査/回復/採否、全冊/通常CLI統合は未提供・未実施のまま送信前停止する。
+
+## PDF原文の隔離offline実験（Issue #80）
+
+repository rootから既存Pythonで起動する入口・正確なshell・入力directory構造と設定は[designのoffline節](../../../../docs/design/pdf-source-quality-feasibility.md#隔離offline実験issue-80)に従う。#79固定人工入力のhashを事前に確認し、期待/正解はmodel入力へ渡さない。PDF extra/Node/resource鮮度が不足なら停止、install/build/実AI/authは行わない。
+
+期待：8例に同じbefore_send予算を使い、通常人工回答18予約。01/02は不読値の局所残件を保持、正常03/05/07は不要変更なし、02/04/06/08は独立再検査後だけ採用。候補はsource pointerなし、公開save後の別processで採用hash/英語全文/cell/code/図asset byteが一致する。unitありsource-onlyはpartial、空図のみunitなしはcoverageを満たせばcompletedであり、どちらも意味品質承認ではない。
+
+観測は`cases.json`/各`result.json`の採否/残件/元・baseline hash/mtime保持、`adopted/readback.json`、候補source、全`*-authorization.json`/`sends.json`/`*-attempts.json`/補正公開attempt、`hashes.json`。save例外後の`saving/`はreadback結果を残す失敗出力で、adoptedではない。偽quote/根拠不足/範囲漏れ/無関係変更、cap retry/取消/auth/保存異常は専用`test_pdf_source_trial.py`とdesignのfocused consumerで確認する。Root別invocationと全Ruff/format/PDF ty、Reviewer判断は別。
+
+証拠は新規0700 evidence親にcommand/exit/版/dirty/diff/全失敗/期待観測/未確認とともに保存する。人工制御回答/credentialは所有tempだけcleanupし、短命childをwait後に保持証拠全hashを再読する。pytest所有basetempは必要証拠退避後だけ削除。元input/旧workを変更しない。実書籍copy・実AI品質・通常CLI/全冊/再開契約は未確認。過去成功を今回の成功にしない。

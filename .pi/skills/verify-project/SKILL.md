@@ -71,3 +71,9 @@ renderer／catalog／v2／準備・PDF補正並列を合わせたbefore／after�
 評価準備だけを依頼された場合はMapの「PDF原文標本準備」を選び、[準備契約](../../../docs/design/pdf-source-quality-feasibility.md)の2入口を使う。既存保存-only/公開PDF取得補正の境界を再利用し、局所の自作描画fixture→公開acquire→実Node/faux/no-network correct→assemble、および固定4chunkの書籍read-only load/assembleと対応表作成だけを行う。実AI/auth/preflight・通常run/resume・回復/採否/実評価は提供しない。既存PDF extra/Node/resource鮮度が不足なら停止し、install/sync/buildしない。
 
 出力は承認されたignore済みwork内の新規directory、直上親0700。書籍本文/画像/rawはprivate資料だけに保存し、stdout/Git/Issueへ出さない。本節だけは承認された実書籍のread-only参照を許可し、他節の利用者workspace禁止を一般解除しない。人工標本・実書籍入力・review-only正解提案を分離する。全標本のRoot原画像直接照合/期待固定とReviewer gateは別で、未固定を成功にしない。所有一時物/childだけcleanup後、Workspace外の証拠hashと全参照を再読する。project trust後の新セッションまたは`/reload`、`/skill:verify-project PDF source samples`か本ファイルreadで再利用し、Maintain/全Mapは要求しない。
+
+## PDF原文の隔離offline実験（Issue #80）
+
+Mapの同節と[実験契約](../../../docs/design/pdf-source-quality-feasibility.md#隔離offline実験issue-80)の`offline`入口を選ぶ。#79準備とは別操作で、固定人工標本→公開generate(review)/correct/assemble→別request検査→コード採否→公開save→空PATH別process load/units/renderを確認する。実Node/faux/no-network、人工credentialだけを使い、実AI/auth/preflight/通常run/resumeは起動しない。元input/baseline不変、候補/採用分離、局所不読残件、全予約/失敗とsave後readbackを照合する。意味品質は未評価。
+
+具体的command、期待/観測、self-check/関連consumer、全証拠とcleanupはdesign/Mapに従う。Rootの別invocation/正式品質チェック、Reviewer gateを代替しない。既存workは保持し所有一時物/childだけcleanup後に全証拠hashを再読する。project trust後、新セッションか`/reload`、`/skill:verify-project PDF source offline`または本ファイルreadで再利用できる。全Map/Maintain/汎用runnerは要求しない。

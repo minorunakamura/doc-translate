@@ -1,6 +1,6 @@
 # PDF原文の代表標本準備（Issue #79）
 
-[Approved Plan](../plans/pdf-source-quality-feasibility.md)の実装方針1の評価準備だけを提供する。通常製品の機能ではなく、AI検査、回復、採否、英語出力への反映、実評価runnerは未提供。警告件数は誤り件数ではない。手順成立や人工回答の受理をAI精度・自動採用成功・確認負担削減と呼ばない。
+[Approved Plan](../plans/pdf-source-quality-feasibility.md)の実装方針1の準備契約を以下に保持する。Issue #80の隔離offline検査→回復→自動採否→英語出力は末尾の追加節を使う。通常製品の機能でも実評価runnerでもない。警告件数は誤り件数ではない。人工回答による契約成立をAI精度・実書籍の回復成功・確認負担削減と呼ばない。
 
 ## 入口と境界
 
@@ -77,3 +77,60 @@ Rootは**全標本の原画像と現在内容を直接照合**し、正常/現�
 代表consumer単独fresh process→新module→関連公開境界の回帰を実行し、Rootは全体Ruff check/format、既存PDF extraのty、影響moduleと別invocationの直接操作・全画像照合、Reviewerは独立受入を担当する。共有fixture/src/Nodeへの影響が広がれば[開発ガイドの選定](../../CONTRIBUTING.md#変更影響から正式実行範囲を選ぶ)へ戻る。無関係な全Map/全pytest/PDF4/Vitest/buildを自動追加しない。
 
 自作の一時PDF/model/credential/workspaceだけをTemporaryDirectoryでcleanupし、同期helper childは既存generateで回収する。保持資料はその外側へcopyして全fileをhash再読する。書籍ではchild/一時Workspaceを作らず元はread-only。command/exit、revision/dirty/diff、環境/resource hash、期待/観測/失敗/未確認を同じ非公開evidence親に記録し、終了後に再読する。実AI意味品質、実OCR、通常run/resume、全冊、他OS/remote CIは未確認。
+
+## 隔離offline実験（Issue #80）
+
+準備とは別の`offline`入口。実AI評価はIssue #81で別承認後に行う。通常run/resume、manual revise、手書きmanifest/proof、旧品質moduleは使わない。production src/tests共有fixture/Node/依存は変更しない。
+
+### 起動と再実行
+
+既存環境・resource鮮度を確認してからrepository rootで実行する。以下の`INPUT`は#79で固定した**人工**準備directory（`hashes.json`と`synthetic-inputs/sample-01..08`を持つ親）へ置換し、`INPUT_SHA`は承認済みmanifest hashを指定する。毎回新しい0700 evidence親と未作成出力を使う。固定期待ファイルはこの入口へ渡さない。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+umask 077
+EVIDENCE=$(mktemp -d "$PWD/work/issue80-offline-XXXXXX")
+INPUT=/absolute/path/to/fixed/synthetic-preparation
+INPUT_SHA=approved_sha256_of_hashes_json
+REVISION=$(git rev-parse HEAD)
+git status --short > "$EVIDENCE/dirty.txt"
+git diff > "$EVIDENCE/scope.diff"
+printf '%s\n' "$REVISION" > "$EVIDENCE/revision.txt"
+.venv/bin/python .pi/skills/verify-project/scripts/pdf_source_feasibility.py offline \
+  --workspace "$INPUT" --input-sha256 "$INPUT_SHA" --revision "$REVISION" \
+  --cap 80 --output "$EVIDENCE/trial" > "$EVIDENCE/entry.log" 2>&1
+# 失敗時もexitを記録して停止し、既存結果を上書きしない。
+printf 'entry exit=%s\n' "$?" > "$EVIDENCE/exit.txt"
+```
+
+`--cap 80`はこの人工操作の総予約上限であり実送信許可ではない。通常の人工回答は18予約（8初回検査、6所有chunk再補正、4独立再検査）。入力manifestの全hash、HEAD、出力分離を確認し、8例各1trial・最大1回復roundだけを実行する。追加trialは消費/失敗を保持して別に判断する。CLIにprovider/auth/実送信optionはない。`pdf_source_offline.py`の明示的人工応答adapterのみが、既存`pdf-correction-process.mjs`の実Node/faux/no-networkへ接続する。実runtime/preflight/認証には接続しない。
+
+### 実際の境界と採否
+
+`pdf_source_trial.py`は公開load/correct/assemble/generate/save/units/renderだけを接続する局所補助。`trial(source, output, digests, budget, command)`は固定chunkを受ける内部実験入口で、人工fixtureの正解に依存しない。後続書籍では#79の固定chunk/原本hash・`correspond`によるfull sourceとの同等性を再検証し、scope/config/送信資料と`command`の実接続を**別承認**する。現CLIは書籍を送信しない。
+
+- **独立コピー**：公開chunk/draft loadで検証したchunk、生成attempt、draft、原本PDF、raw、draftの全PNGをimmutable依存閉包としてbyte copyする。hardlink、pointer/auth/runコピー、manifest編集はしない。公開loadが全draft画像を検証するため、送信範囲外の依存PNGもコピーに必要な場合がある。実書籍の閉包サイズ/機密性は#81承認資料に含める。#79のbook-inputsだけでは単独loadできない。
+- **baseline / candidate / adopted**：baselineへ公開saveした後は全hash/mtime不変。候補は別directoryの公開correct_pdf（各最大5所有ページ、元chunkの許可referenceを維持）、公開assembleで作る。policyを初回と区別して旧成功のreuseを回復と数えない。candidateにsource採用pointerを作らない。
+- **検査**：初回と別requestのreinspectionに原PNGと現在source、再検査ではbaselineも渡す。再生成chunk全体と接続境界を含む全選択範囲を検査する。期待/正解はrequestへ渡さない。生成理由/履歴は未信頼data。`Inspection`は全page、全block、全cellの判定・正確な現行全文quote、画像hash/位置/観測、構造、図crop/構成要素/重複、両側接続と所属、欠落/局所不読の前後anchorを要求する。
+- **自動gate**：範囲外/偽quote/欠落coverage/不読page/履歴対応不明/不正構造を拒否する。空図のquoteは空のまま画像根拠で検査する。初回の具体的欠陥と再検査の全before/after対応groupを照合し、正常blockの内容/位置/構造と相対順、正常/不読cellを保持する。追加/削除/結合/分割/順序/表/図crop/数値/code復元を一律禁止しない。未対応変更、独立再検査に残る欠陥は不採用。
+- **局所不読**：history-layout page2の隠れた値は不読のまま残す。page1復元はpage2のlabel/所属/不読領域と近傍が不変で独立再検査済みの場合のみ許可する。`remaining_gaps`を残し`whole_sample_clean=false`とする。履歴のみの正常page1に不要な修正を求めず、page2を全体正常へ読み替えない。旧履歴はbaseline/元artifactに不変で保持する。
+- **保存**：gate成立後だけ新規`saving/`へ公開save、公開load readback、空PATHの別Pythonでload/units/renderを実行する。source SHA、unit参照、全block出力coverage、英語本文/cell/code、原PNGのcrop byteと生成assetを照合する。翻訳対象unitありはsource-only `partial`、空図のみでunitなし・coverage成立・source completedなら`completed`が既存仕様。exit0だけを成功にしない。全照合後だけdirectoryを`adopted/`へ公開する。
+- **停止**：拒否/取消/auth/storage/cap異常は追加送信を止める。saveのreplace後fsync例外でもpointerが切替済みの可能性があるため、`saving/`を失敗出力として残してreadback可否/hashを記録し、baseline不変と区別する。失敗出力をadoptedと表示しない。成功/失敗の自動再開・通常resume保持は提供しない。
+
+同じ`SendBudget.before_send`を全case/工程/coverage retry/transport retryで共有する。configと承認request全文（coverage訂正feedback以外）、scope/policy/schemaを照合し、送信直前予約を計数する。画像byte/hashは呼出側の`arm`と公開correctのloadで検証する。既存coverage最大3生成・transport最大3attemptを変更しない。preflightはcallbackより前なので、cap=0も実認証を無副作用にする仕組みではない。no-sendはfaux内に限定する。
+
+### 観測・証拠・限界
+
+`execution.json`はrevision/helper hash、設定、上限、実AI0。`*-authorization.json`はprompt/schema、maxTokens/timeout、画像hash/bytes、scopeと残予約。`sends.json`は全実request/configと予約、`*-attempts.json`は独立検査の全attempt/usage（補正attemptはcandidate内の公開記録）、`*-inspection.json`は回答。`sample-NN/result.json`と`cases.json`は採否/残件/保存失敗readback、`candidate-source.json`と`adopted/readback.json`で候補と出力を区別する。`input-inventory.json`、`observations.json`、`hashes.json`で元不変/cleanup後readbackを照合する。予約は課金確定ではなく、usage未観測を0にしない。
+
+正常対照03/05/07はbaseline、02/04/06/08は人工復元を採用可能、01/02はpage2残件という期待を別途照合する。これは人工応答での契約確認であり、画像認識・意味判断はAIに依存する。機械validatorは観測文が真実か証明しない。実AI前にはこの資料に加えて固定期待（modelへ非送信）、provider/model/thinking、認証/更新操作の非秘密種別、対象原本/本文、全工程cap、価格/usage不明、保存先/cleanupを#81で提示する。送信前資料を作れることと実送信承認は別。
+
+```sh
+.venv/bin/pytest .pi/skills/verify-project/scripts/test_pdf_source_trial.py::test_pdf_source_trial_public_pipeline_and_independent_readback -q
+.venv/bin/pytest .pi/skills/verify-project/scripts/test_pdf_source_trial.py .pi/skills/verify-project/scripts/test_pdf_source_feasibility.py -q
+.venv/bin/pytest tests/test_pdf.py tests/test_pdf_correction.py tests/test_pdf_source.py tests/test_units.py tests/test_render.py -q
+```
+
+小self-checkは偽本文/code/cell quote、空図の正否、両側接続、scope/正常内容/局所不読保持、coverage retry/transport cap、取消、人工auth失敗、保存replace前/後、独立再検査失敗を扱う。Rootは別invocation・正式Ruff/format/PDF extra tyと必要consumerを再実行し、Reviewerが独立確認する。全core/Node/他Mapは変更影響なしなら自動追加しない。
+
+全失敗/command+exit/版/dirty/diff/期待観測は非公開Workspace外へ残す。人工資格情報/回答controlは所有TemporaryDirectoryのみcleanup、同期childはwait済み。pytestの所有basetempは必要証拠退避後だけ削除し、既存workを削除しない。cleanup後に全保持hash/参照を再読する。書籍本文/画像/回答はstdout/Git/Issueへ出さない。未確認は実書籍操作/実AI意味品質、実OCR、通常CLI/全冊/手動revision統合/中断replay/他OS/remote CI。今回の成功でこれらを完了扱いしない。

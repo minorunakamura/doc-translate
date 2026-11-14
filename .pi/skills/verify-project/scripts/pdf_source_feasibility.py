@@ -1,4 +1,4 @@
-"""Issue 79 preparation only: drawn faux samples or fixed read-only book references."""
+"""Issue 79 preparation and Issue 80 isolated offline experiment (never real AI)."""
 
 import argparse
 import hashlib
@@ -384,7 +384,7 @@ def book(output, workspace):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("synthetic", "book"))
+    parser.add_argument("mode", choices=("synthetic", "book", "offline"))
     parser.add_argument(
         "--output",
         type=Path,
@@ -394,27 +394,52 @@ def main():
     parser.add_argument(
         "--workspace", type=Path, help="Read-only original book; required only for book"
     )
+    parser.add_argument(
+        "--input-sha256", help="Fixed preparation hashes.json SHA-256 (offline)"
+    )
+    parser.add_argument("--revision", help="Exact current git HEAD (offline)")
+    parser.add_argument(
+        "--cap",
+        type=int,
+        help="Total before_send reservations across all cases/retries (offline)",
+    )
     args = parser.parse_args()
-    if (args.mode == "book") != (args.workspace is not None):
-        parser.error("--workspace is required only for book")
+    if (args.mode in {"book", "offline"}) != (args.workspace is not None):
+        parser.error("--workspace is required for book/offline only")
+    if args.mode == "offline" and any(
+        value is None for value in (args.input_sha256, args.revision, args.cap)
+    ):
+        parser.error("offline requires --input-sha256, --revision and --cap")
+    if args.mode != "offline" and any(
+        value is not None for value in (args.input_sha256, args.revision, args.cap)
+    ):
+        parser.error("offline settings are not preparation options")
     if not args.output.absolute().is_relative_to(ROOT / "work"):
         parser.error("Output must be in the repository's ignored work directory")
     os.umask(0o077)
-    result = (
-        book(args.output, args.workspace)
-        if args.mode == "book"
-        else synthetic(args.output)
-    )
-    print(
-        f"Prepared without real AI/auth/preflight: {result}; Root image review pending"
-    )
+    if args.mode == "offline":
+        from pdf_source_offline import offline
+
+        result = offline(
+            args.output, args.workspace, args.input_sha256, args.revision, args.cap
+        )
+        print(f"Offline contract exercise: {result}; real AI quality not evaluated")
+    else:
+        result = (
+            book(args.output, args.workspace)
+            if args.mode == "book"
+            else synthetic(args.output)
+        )
+        print(
+            f"Prepared without real AI/auth/preflight: {result}; Root image review pending"
+        )
     return 0
 
 
 def private_error(exception_type, _exception, _traceback):
     # Unhandled exception values/tracebacks may contain private source text.
     print(
-        f"Preparation stopped ({exception_type.__name__}); retained private evidence is not a success.",
+        f"Experiment stopped ({exception_type.__name__}); retained private evidence is not a success.",
         file=sys.stderr,
     )
 
