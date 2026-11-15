@@ -24,7 +24,7 @@ from doc_translate.inference import InferenceError
 from doc_translate.pdf_correction import load_pdf_correction
 from doc_translate.snapshot import SourceSnapshot, load_source_snapshot
 
-pytest_plugins = ["test_pdf_source_feasibility"]
+pytest_plugins = ["test_pdf_source_feasibility", "test_pdf_correction"]
 
 
 def inputs(samples, name):
@@ -294,6 +294,11 @@ def test_pdf_source_trial_stops_at_public_boundaries(
                 trial(workspace, evidence / "case", digests, budget, command)
             result = json.loads((evidence / "case/result.json").read_bytes())
             assert not result["adopt"] and result["status"] == "stopped"
+            assert result["stop"]["kind"] == (
+                "quality" if fault == "reinspection" else "safety"
+            )
+            assert result["stop"]["stage"]
+            assert result["stop"]["reason"]
             assert result["baseline_hash_mtime_unchanged"] and budget.cancel.is_set()
             assert not (evidence / "case/adopted").exists()
             if fault == "save-after":
@@ -328,6 +333,122 @@ def test_pdf_source_trial_dependency_copy_is_independent_and_rejects_damage(
     image.write_bytes(b"damage")
     with pytest.raises(ValueError):
         copy_dependencies(copy, tmp_path / "rejected", digests)
+
+
+def test_pdf_source_trial_exclusions_only_selected_chunk_and_indeterminate_gap(
+    draft, tmp_path
+):
+    correction = import_module("test_pdf_correction")
+    workspace, digest, _ = draft
+    digests = []
+    for page in (1, 2, 3):
+        response = correction.answer(digest)
+        response["owned_pages"] = [page]
+        if page != 1:
+            response["blocks"] = []
+            response["exclusions"] = [
+                {
+                    "text": "REFERENCE ONLY" if page == 2 else "SECRET PAGE",
+                    "reason": "Unverified exclusion claim, not proof",
+                    "evidence": [correction.evidence(page, f"#/texts/{page - 1}")],
+                }
+            ]
+        control = tmp_path / f"correction-{page}"
+        control.mkdir()
+        digests.append(
+            correction.run(
+                control, draft, response, owned_pages=[page], reference_pages=[]
+            )
+        )
+    selected = digests[:2]
+    pages = {
+        p.page: p
+        for d in selected
+        for p in load_pdf_correction(workspace, d).page_images
+    }
+    assert load_pdf_correction(workspace, selected[1]).blocks == []
+    controls = tmp_path / "owned-review"
+    controls.mkdir()
+    process = ArtificialProcess(controls, "figure", False, pages)
+
+    def command(label, *args):
+        argv = process(label, *args)
+        path = Path(argv[3])
+        report = json.loads(path.read_bytes())
+        report["gaps"] = [
+            {
+                "key": "unverified-exclusion",
+                "verdict": "indeterminate",
+                "before": None,
+                "after": None,
+                "evidence": report["pages"][1]["evidence"],
+                "absence": "The recorded exclusion has not established legitimate omission.",
+            }
+        ]
+        write_json(path, report)
+        return argv
+
+    output = tmp_path / "evidence"
+    output.mkdir(mode=0o700)
+    budget = SendBudget(CONFIG, 1, output)
+    before = inventory(workspace)
+    result = trial(workspace, output / "case", selected, budget, command)
+    assert result["status"] == "baseline-verified" and not result["whole_sample_clean"]
+    assert result["remaining_gaps"] == 1 and inventory(workspace) == before
+    request = budget.sends[0]["request"]
+    groups = request["context"]["exclusions"]
+    assert [g["chunk_sha256"] for g in groups] == selected
+    assert groups[0]["exclusions"] == []
+    chunk = load_pdf_correction(workspace, selected[1])
+    assert groups[1] == {
+        "chunk_sha256": selected[1],
+        "owned_pages": [2],
+        "reference_pages": [],
+        "exclusions": [e.model_dump(mode="json") for e in chunk.exclusions],
+    }
+    assert request["context"]["pages"] == [1, 2]
+    wire = json.loads((controls / "case-review/request.json").read_bytes())
+    received = json.loads(wire["messages"][1]["content"][0]["text"])
+    assert received["context"] == request["context"]
+    assert "SECRET PAGE" not in json.dumps(wire)
+    assert digests[2] not in json.dumps(request)
+    assert "Recorded exclusions are not proof" in request["policy"]
+    assert "report unjustified exclusions as defects" in request["policy"]
+    assert "unclear exclusions as indeterminate" in request["policy"]
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    ["start", "end", "adjacent", "other-page", "unknown", "cell", "nonadjacent"],
+)
+def test_pdf_source_trial_page_local_gap_anchors(completed, boundary):
+    before, _, report, _, pages = reports(completed, "sample-02")
+    report.gaps = [report.gaps[0]]
+    gap = report.gaps[0]
+    if boundary == "start":
+        gap.before, gap.after = None, before.blocks[-1].block_id
+    elif boundary == "end":
+        gap.before, gap.after = before.blocks[-1].block_id, None
+    elif boundary in {"adjacent", "nonadjacent"}:
+        gap.evidence = report.blocks[0].evidence[0]
+        gap.before = before.blocks[0].block_id
+        gap.after = before.blocks[1 if boundary == "adjacent" else 2].block_id
+    else:
+        gap.before = {
+            "other-page": before.blocks[0].block_id,
+            "unknown": "missing-block",
+            "cell": before.blocks[4].structure["cells"][0]["cell_id"],
+        }[boundary]
+    if boundary in {"start", "end", "adjacent"}:
+        assert validate_inspection(report, before, pages) == report
+    else:
+        with pytest.raises(
+            ValueError,
+            match="Nonadjacent gap anchors"
+            if boundary == "nonadjacent"
+            else "Unknown gap anchor",
+        ):
+            validate_inspection(report, before, pages)
 
 
 def test_pdf_source_trial_unknown_history_cannot_pass(completed):
@@ -465,3 +586,188 @@ def test_pdf_source_trial_readback_preserves_raw_code_and_entity_escaped_text(
     assert proof["source_sha256"] == digest
     assert proof["english_sha256"] == sha(english)
     assert load_source_snapshot(workspace) == source
+
+
+def test_pdf_source_trial_legacy_request_uses_current_public_template(
+    samples, tmp_path, monkeypatch
+):
+    from pdf_source_evaluation import prepare_case
+    from pdf_source_trial import RECOVERY_POLICY
+
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    artifact = import_module("test_pdf_correction").artifact
+
+    def forbidden_runtime():
+        pytest.fail("Offline capture reached real runtime/auth")
+
+    monkeypatch.setattr("doc_translate.ai_runtime.installed_runtime", forbidden_runtime)
+    original, digests, pages = inputs(samples, "sample-02")
+    legacy = tmp_path / "legacy"
+    chunk = copy_dependencies(original, legacy, digests)[0]
+    record = json.loads((legacy / chunk.run.artifact).read_bytes())
+    del record["request"]["context"]["page_results"]
+    value = chunk.model_dump(mode="json")
+    value["run"] = artifact(
+        legacy, "attempts/pdf-correction", "json", json.dumps(record).encode()
+    )
+    digest = artifact(legacy, "corrections/pdf", "json", json.dumps(value).encode())[
+        "sha256"
+    ]
+    fixed = assemble_pdf_source(
+        workspace=legacy, chunk_sha256s=[digest], snapshot_id="legacy-test"
+    )
+    write_json(legacy / "current-source.json", fixed.model_dump(mode="json"))
+    before = inventory(legacy)
+    prepared = tmp_path / "prepared"
+    prepare_case(legacy, prepared, [digest], fixed)
+    template = json.loads((prepared / "correction-templates.json").read_bytes())[0]
+    assert template["context"]["page_results"]
+    assert template["policy_prefix"] == RECOVERY_POLICY
+    evidence = tmp_path / "trial"
+    evidence.mkdir(mode=0o700)
+    controls = tmp_path / "controls"
+    controls.mkdir()
+    budget = SendBudget(CONFIG, 20, evidence)
+    result = trial(
+        legacy,
+        evidence / "case",
+        [digest],
+        budget,
+        ArtificialProcess(controls, "history-layout", True, pages, coverage=True),
+    )
+    assert result["adopt"]
+    requests = [
+        s["request"] for s in budget.sends if s["request"]["stage"] == "correction"
+    ]
+    assert (
+        len(requests) == 2
+    )  # Current request and coverage retry, both strictly bound.
+    for request in requests:
+        context = request["context"].copy()
+        context.pop("correction_feedback", None)
+        context.pop("coverage_correction", None)
+        assert context == template["context"]
+        assert request["text"] == template["text"]
+    assert inventory(legacy) == before
+    assert not list(tmp_path.rglob("pdf-request-owned-*"))
+
+
+@pytest.mark.parametrize(
+    "auth_type,auth_source,allowed",
+    [
+        ("oauth", "OAuth", True),
+        ("api_key", "env", False),
+        ("oauth", "other", False),
+        ("oauth", None, False),
+    ],
+)
+def test_pdf_source_trial_approved_oauth_checked_before_reservation(
+    tmp_path, auth_type, auth_source, allowed
+):
+    from types import SimpleNamespace
+
+    from doc_translate.inference import GenerationInput
+
+    budget = SendBudget(
+        CONFIG, 1, tmp_path, required_auth={"type": "oauth", "source": "OAuth"}
+    )
+    request = GenerationInput(
+        stage="review", policy="fixed", text="artificial", context={}, glossary=None
+    )
+    budget.request = request
+    preflight = SimpleNamespace(
+        auth=SimpleNamespace(type=auth_type, source=auth_source)
+    )
+    if allowed:
+        budget.before_send(CONFIG, request, preflight)
+        assert len(budget.sends) == 1 and not budget.cancel.is_set()
+        assert budget.sends[0]["auth_source"] == "OAuth"
+    else:
+        with pytest.raises(ValueError, match="Authentication scope changed"):
+            budget.before_send(CONFIG, request, preflight)
+        assert budget.cancel.is_set() and not budget.sends
+        evidence = json.loads((tmp_path / "auth-rejected.json").read_bytes())
+        assert evidence["observed"] == {"type": auth_type, "source": auth_source}
+        assert evidence["reserved"] == 0
+
+
+def test_pdf_source_trial_wrong_auth_stops_faux_before_generate(
+    samples, tmp_path, monkeypatch
+):
+    def forbidden_runtime():
+        pytest.fail("Faux auth test reached production runtime")
+
+    monkeypatch.setattr("doc_translate.ai_runtime.installed_runtime", forbidden_runtime)
+    workspace, digests, pages = inputs(samples, "sample-03")
+    controls = tmp_path / "controls"
+    controls.mkdir()
+    budget = SendBudget(
+        CONFIG, 10, tmp_path, required_auth={"type": "oauth", "source": "OAuth"}
+    )
+    with pytest.raises(InferenceError):
+        trial(
+            workspace,
+            tmp_path / "case",
+            digests,
+            budget,
+            ArtificialProcess(controls, "figure", False, pages),
+        )
+    assert not budget.sends and budget.cancel.is_set()
+    assert not list(controls.rglob("request.json"))
+    assert (tmp_path / "auth-rejected.json").exists()
+
+
+def test_pdf_source_trial_recovery_policy_preserves_full_baseline_chunk(samples):
+    from pdf_source_trial import RECOVERY_POLICY, recovery_policy
+
+    from doc_translate.pdf_correction import CorrectionAnswer, load_pdf_correction
+
+    workspace, digests, _ = inputs(samples, "sample-01")
+    chunk = load_pdf_correction(workspace, digests[0])
+    findings = {"blocks": [], "gaps": []}
+    payload = json.loads(recovery_policy(chunk, findings)[len(RECOVERY_POLICY) :])
+    assert payload == {
+        "baseline_chunk": chunk.model_dump(mode="json"),
+        "findings": findings,
+    }
+    # Normal code/table/evidence/exclusions are supplied, not regenerated from extraction text.
+    assert any(b["kind"] == "code" for b in payload["baseline_chunk"]["blocks"])
+    assert payload["baseline_chunk"]["exclusions"]
+    assert (
+        CorrectionAnswer.model_json_schema()
+    )  # Public schema is unchanged; no answer rewriting.
+
+
+@pytest.mark.parametrize("fault", ["transport", "unknown"])
+def test_pdf_source_trial_stop_cause_not_just_cancel_or_exception(
+    samples, tmp_path, fault
+):
+    workspace, digests, pages = inputs(samples, "sample-01")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir(mode=0o700)
+    budget = SendBudget(CONFIG, 10, evidence)
+    with tempfile.TemporaryDirectory(prefix="issue81-stop-owned-") as temporary:
+        process = ArtificialProcess(Path(temporary), "history-layout", False, pages)
+
+        def command(label, *args):
+            if fault == "unknown":
+                raise RuntimeError("Artificial unknown runtime cause")
+            argv = process(label, *args)
+            answer = json.loads(Path(argv[3]).read_bytes())
+            answer["terminal"] = {
+                "stopReason": "error",
+                "errorMessage": "429 rate limit exceeded",
+            }
+            write_json(Path(argv[3]), answer)
+            return argv
+
+        with pytest.raises((InferenceError, RuntimeError)):
+            trial(workspace, evidence / "case", digests, budget, command)
+    result = json.loads((evidence / "case/result.json").read_bytes())
+    assert result["stop"]["kind"] == ("transport" if fault == "transport" else "safety")
+    assert result["stop"]["reason"] == (
+        "generation_failed" if fault == "transport" else "unknown/storage/runtime"
+    )
+    assert budget.cancel.is_set() and result["baseline_hash_mtime_unchanged"]
+    assert len(budget.sends) == (3 if fault == "transport" else 0)

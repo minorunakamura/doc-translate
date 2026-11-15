@@ -103,7 +103,7 @@ printf '%s\n' "$REVISION" > "$EVIDENCE/revision.txt"
 printf 'entry exit=%s\n' "$?" > "$EVIDENCE/exit.txt"
 ```
 
-`--cap 80`はこの人工操作の総予約上限であり実送信許可ではない。通常の人工回答は18予約（8初回検査、6所有chunk再補正、4独立再検査）。入力manifestの全hash、HEAD、出力分離を確認し、8例各1trial・最大1回復roundだけを実行する。追加trialは消費/失敗を保持して別に判断する。CLIにprovider/auth/実送信optionはない。`pdf_source_offline.py`の明示的人工応答adapterのみが、既存`pdf-correction-process.mjs`の実Node/faux/no-networkへ接続する。実runtime/preflight/認証には接続しない。
+`--cap 80`はこの人工操作の総予約上限であり実送信許可ではない。通常の人工回答は18予約（8初回検査、6所有chunk再補正、4独立再検査）。入力manifestの全hash、HEAD、出力分離を確認し、8例各1trial・最大1回復roundだけを実行する。追加trialは消費/失敗を保持して別に判断する。CLIにprovider/auth/実送信optionはない。`pdf_source_offline.py`の明示的人工応答adapterと現行requestの送信前捕捉だけが、既存`pdf-correction-process.mjs`の実Node/faux/no-networkへ接続する。実runtime/preflight/認証には接続しない。
 
 ### 実際の境界と採否
 
@@ -134,3 +134,277 @@ printf 'entry exit=%s\n' "$?" > "$EVIDENCE/exit.txt"
 小self-checkは偽本文/code/cell quote、空図の正否、両側接続、scope/正常内容/局所不読保持、coverage retry/transport cap、取消、人工auth失敗、保存replace前/後、独立再検査失敗を扱う。Rootは別invocation・正式Ruff/format/PDF extra tyと必要consumerを再実行し、Reviewerが独立確認する。全core/Node/他Mapは変更影響なしなら自動追加しない。
 
 全失敗/command+exit/版/dirty/diff/期待観測は非公開Workspace外へ残す。人工資格情報/回答controlは所有TemporaryDirectoryのみcleanup、同期childはwait済み。pytestの所有basetempは必要証拠退避後だけ削除し、既存workを削除しない。cleanup後に全保持hash/参照を再読する。書籍本文/画像/回答はstdout/Git/Issueへ出さない。未確認は実書籍操作/実AI意味品質、実OCR、通常CLI/全冊/手動revision統合/中断replay/他OS/remote CI。今回の成功でこれらを完了扱いしない。
+
+## 固定実評価の送信前準備（Issue #81）
+
+今回の入口は**sample-01だけ**。[正式Plan](../plans/pdf-source-quality-feasibility.md)の先頭限定節・§4・Issue #81完了条件と[改訂Work Item](https://github.com/minorunakamura/doc-translate/issues/81#issuecomment-6877899293)を先に読む。旧9case／cap198／許可内helper変更や追加trialごとの再承認手順は使わない。他7標本・実書籍は別承認待ち。通常run/resume、無人repair loop、正解／schema／validator／`normalized`／`decide`／製品変更は対象外。
+
+`pdf_source_evaluation.py`のCLIは資料作成で停止し、実runtime/auth/preflight/AIへ接続しない。現行requestの捕捉だけは既存Node/faux/no-networkの人工preflightを使う。準備・実行双方で固定sample-01のchunk・所有1,2・参照なし・画像2枚・configを照合する。固定正解はhash確認だけでmodel／採否へ渡さない。repository root、既存PDF extra／Node／installed resource鮮度を確認し、不足時はBLOCKED、install/sync/buildしない。正式Plan SHAは`d5f9adae55e8adb0e29c36c1b712e49977c424f7538e10ebd51739a43fba38c9`。`fixed_guard`の保護hashを現在値に置換して通さない。既存入力／旧結果は再作成しない。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+umask 077
+# この許可の固定親。別の親にして累計をresetしない。
+AUTH="$PWD/work/issue81-sample01-urr6jl4s"
+EVIDENCE=$(mktemp -d "$AUTH/preparation-XXXXXX")
+printf '%s\n' '{"provider":"openai","model":"gpt-6.1-terra","thinking":"medium","options":{"timeoutMs":1200000,"maxTokens":null}}' > "$EVIDENCE/config.json"
+git rev-parse HEAD > "$EVIDENCE/revision.txt"
+git status --short > "$EVIDENCE/dirty.txt"
+git diff > "$EVIDENCE/scope.diff"
+.venv/bin/python .pi/skills/verify-project/scripts/pdf_source_evaluation.py \
+  --config "$EVIDENCE/config.json" --revision "$(cat "$EVIDENCE/revision.txt")" \
+  --output "$EVIDENCE/prepared" > "$EVIDENCE/prepare.log" 2>&1
+printf 'prepare exit=%s\n' "$?" > "$EVIDENCE/prepare.exit"
+# ここで停止。失敗資料も保持し、実接続へ自動進行しない。
+```
+
+観測は`proposal.json`のcasesがsample-01だけ、`prior_trials=2/prior_sends=4`、追加10trial/50送信・累計12/54、固定config、`required_auth=oauth/OAuth`、固定continuation path。`policies-schemas.json`、`sample-01/initial-review.json`／`correction-templates.json`／`copy-closure.json`、`input-inventory.json`／`observations.json`／`hashes.json`を保存・再読する。copyは公開loadに必要な原本/raw/draft/PNG/chunk/attempt閉包で、送信範囲とは異なる。0700親、非包含、symlink／既存出力拒否を維持する。旧preparedと旧2trialの全失敗／消費を保持する。
+
+各trialは回復最大1round、coverage最大3生成・transport最大3attemptを維持し、全工程を共通before_sendで累計へ予約する。maxTokens=null、1attempt20分・追加最大50送信はtoken／料金／wall-clock上限ではない。既知旧67694tokens、usage不明を0にしない。予約は課金確定ではない。
+
+準備とtrialの`correction_request`は独立コピー上で公開`correct_pdf`を既存Node/faux/no-networkへ接続し、`before_send`で現行requestを捕捉して専用例外でgenerate送信前に止める。旧保存attemptのcontextを再利用・書換えせず、指示文字列の複製/private helper importも行わない。これにより旧chunkにも現行`page_results`を含む完全一致guardを適用する。所有tempの人工credential/controlはcleanupし、childは公開generateのfinallyでwaitする。コピー内の公開lock fileは保持する。人工preflightは送信予約ではなく、実runtime/実認証操作ではない。
+
+初回reviewの本文/画像hashは確定して保存する。準備と実trialは同じ`review_request`を使い、公開`load_pdf_correction`で検証した完全な選択chunk集合の`exclusions`（text/reason/evidence）をchunk hash・所有/参照page付きで渡す。block fragmentや任意のmachine_inputsから逆算せず、blockなしのexclusions-only chunkも含める。独立再検査はcandidateの現在chunkを使い、旧exclusionsやscope外chunkを混ぜない。除外記録は未信頼dataであり正当性の証明ではない。原画像/所属/根拠と照合して妥当な除外を欠落と誤判定せず、不当ならdefect、不明ならindeterminateとして残す。headerの無条件例外はない。
+
+`gap.before/after`は`evidence.page`上の実block ID（同pageに接続するblockを含む）に限り、同page順で隣接させる。先頭はbefore=null/after=最初block、末尾はbefore=最後block/after=null、blockなしは両null。未知/別page/cell/nonadjacent anchorは従来どおり拒否する。validator/Inspection schema/採否閾値/固定期待/標本は変更しない。
+
+回復policyに加える検査結果、coverage feedback、再検査の候補本文/exclusions/初回gapは動的であり、事前に全request hashが確定したとは言わない。固定policy/schema・生成規則・選択範囲を承認し、実際の全request/config/画像hashは既存`SendBudget.arm`/`before_send`で送信直前に保存/照合する。期待の採点結果は自動採否へ混ぜない。
+
+### 承認済み条件でRootだけが単一trialを実行する
+
+CLIに実行flagはない。改訂Planのsample-01許可内では初回／追加trialや許可内helper/prompt変更のたびに再承認を求めない。ただしRootは各trial前に差分・検証結果・固定条件・全hash・残予算を確認し、変更後は新prepared/manifestへ再bindingする。旧manifestの流用やhash guard削除はしない。schema/validator/採否条件・固定正解・入力・config・製品実装は保護対象のまま。
+
+初回だけRootが`initialize_continuation(config)`を別操作で呼び、固定`CONTINUATION`に旧2trial/4送信の参照付きoriginを作る。既存なら再初期化しない。欠落が不審なら推測で復元しない。実continuationはWorker／Reviewerが操作しない。Root一名・一系列で、既存continuationと未使用outputを渡して**一回ずつ**呼ぶ（無人loop禁止）。以下は実送信用で、無送信確認では実行しない。
+
+```python
+from pathlib import Path
+from pdf_source_evaluation import CONTINUATION, run_approved
+
+run_approved(Path(PREPARED), MANIFEST_SHA, Path(OUTPUT), CONTINUATION)
+```
+
+repository rootの既存Pythonで`PYTHONPATH=.pi/skills/verify-project/scripts`を指定する。`PREPARED`と`MANIFEST_SHA`はRootが現資料を確認して確定し、`OUTPUT`は固定AUTHORIZATION下・continuation外の0700親に置く未作成path。上記呼出にinitializationを混ぜない。`production_command`は`None`で公開generate/correct_pdfの検証済みinstalled runtimeを使い、手動Node overrideやfauxを品質評価に使わない。
+
+既存アプリOAuth preflight・通常refresh/saveだけを許可し、子環境のambient API keyを除外する（固定openaiでは少なくとも`env -u OPENAI_API_KEY`）。共通SendBudgetは全工程/retryで予約前に`oauth/OAuth`を強制する。不一致はcancel・非秘密`auth-rejected.json`保存・無送信停止。過去attemptは現在の認証証明ではない。Pi auth参照／コピー、新login、手動credential変更、API key／別provider fallbackは禁止。preflightはbefore_sendより前なのでcap=0を無認証dry-runにしない。
+
+- 全操作でlockを保持し、runtime前にも取消・累計・固定条件を照合する。番号・出力・版付きmanifestを独立した`continuation/start-NN.json`へexclusive fsync/readbackしてからtrial directoryを作り、同じ内容を`trial-NN/start.json`にも保存する。再読では双方の存在・内容一致・連番を必須とし、末尾directory欠落や独立開始保存直後の中断でも返却せずruntime前に停止する。0送信の失敗も1trialとして消費する。この契約導入前の独立開始記録なしの追加trialは厳密な再開入口では拒否する。旧実ledger・prepared・結果・stopはそのまま保持し、開始前証拠の後付け／移行で通さない（Plan originの旧2trial/4送信参照は変更しない）。
+- 全送信は`trial-NN/send-NN.json`へ予約をdurable保存してから進む。送達不明・失敗予約も返却しない。出力の`sends.json`と予約を照合し、結果manifest/start hash付き`completion.json`を保持する。再invocation・修正・新出力で累計をresetしない。
+- 完全なtrialでも未分類なら`RootReviewRequired`で待つ。Rootは全記録→原因／安全不変確認→許可内最小修正（不要なら具体的理由）→関係テスト／正式チェック／無送信直接確認→新資料／残数照合を経て、`classify_trial(CONTINUATION, number, "continue", analysis)`を一度記録する。analysisに証拠参照を含める。品質拒否や追跡可能な有限通信失敗だけを継続対象にし、cancel flagを解除して途中再送しない。
+- 取消・上限・auth・scope/config/保護hash・storage/readback・記録欠落／矛盾・元変化・秘密露出・並行不明・未知原因では停止し、人間の明示確認を待つ。安全marker `safety-stop.json`に削除／解除APIはない。lock競合側もmarkerを残し、active側は次予約前に止まる。marker／予約／失敗を削除して再開しない。保存不能でも送信しない。
+- 固定条件・証拠が正常で許可内helperのimplementation bindingだけが古い場合は新資料を準備し直す。未使用output条件違反も開始前拒否であり、保護対象やmanifest破損をこの扱いに混ぜない。
+
+Rootは全画像・全回答・候補・採用／未変更部分・公開保存／別process英語出力を固定期待へ直接照合する。不要指摘／変更0、2header不要復元0、局所indeterminate保持、**回復不要でbaseline保存→別process再読→英語出力**を満たしたら`classify_trial(..., "stop", analysis)`で停止し追加trialしない。`whole_sample_clean=false`は期待どおりの残件であり、実行完了だけを品質成功にしない。確認箇所／重複除去page／判断数・時間／usage既知不明・原因／修正／検証／結果・累計／残数は採点用の非送信記録に分離する。
+
+### 人工入力の無送信直接確認
+
+**実AUTH／continuationから分離した新sandbox**だけで行う。公開generate/correct/save/validatorと既存実Node/faux/no-networkを使い、人工OAuth metadata以外は実認証へ接続しない。実runtime到達はassert拒否する。人工標本生成は8例だがprepare/trial対象はsample-01だけ。実入力／旧結果／実消費は変更しない。
+
+repository rootで以下の新規0700親を用意し、続くPythonをエディタで`$DIRECT/sandbox.py`へ保存する（一時検証scriptであり恒久helperへ追加しない）。ログ／scriptはsandboxのhash対象外へ置く。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+umask 077
+DIRECT=$(mktemp -d "$PWD/work/issue81-direct-XXXXXX")
+mkdir -m 700 "$DIRECT/sandbox"
+export EVIDENCE="$DIRECT/sandbox"
+```
+
+```python
+import json, os, subprocess, sys, tempfile, threading
+from pathlib import Path
+from unittest.mock import patch
+import pdf_source_evaluation as e
+from pdf_source_feasibility import synthetic, inventory, finish, sha, write_json
+from pdf_source_offline import CONFIG, ArtificialProcess
+from pdf_source_trial import SendBudget
+from doc_translate.pdf_correction import load_pdf_correction
+from doc_translate.pdf_source import assemble_pdf_source
+from doc_translate.workspace import workspace_lock
+
+os.umask(0o077)
+phase = sys.argv[1]
+assert phase in {"complete", "interrupt"}
+root = Path(os.environ["EVIDENCE"]).resolve()
+assert root.stat().st_mode & 0o077 == 0
+assert not root.is_relative_to(e.AUTHORIZATION)
+samples = synthetic(root / "samples") if phase == "complete" else root / "samples"
+source = samples / "synthetic-inputs/sample-01"
+fixed = json.loads((source / "current-source.json").read_bytes())
+digest = fixed["blocks"][0]["structure"]["fragments"][0]["chunk_sha256"]
+chunk = load_pdf_correction(source, digest)
+expected = root / "artificial-expectations.json"
+if phase == "complete":
+    write_json(expected, {"non_send_canary": "ARTIFICIAL_EXPECTATIONS_NOT_SENT"})
+    write_json(root / "input-before.json", inventory(source))
+old = {}
+for number, count in enumerate((1, 3), 1):
+    path = root / f"artificial-old-{number}.json"
+    if phase == "complete":
+        write_json(path, [{"artificial_reservation": True}] * count)
+    old[str(path)] = sha(path.read_bytes())
+# Sandbox constants only; protected implementation/Plan guards remain enabled.
+e.AUTHORIZATION, e.CONTINUATION, e.SAMPLE = root, root / "continuation", source
+e.CHUNK, e.IMAGES = digest, [p.image.sha256 for p in chunk.page_images]
+e.EXPECTATIONS, e.EXPECTATIONS_SHA = expected, sha(expected.read_bytes())
+e.SOURCE_SHA = sha((source / "current-source.json").read_bytes())
+e.BASELINE_SHA = sha(
+    assemble_pdf_source(
+        workspace=source, chunk_sha256s=[digest], snapshot_id="issue80-baseline"
+    )
+    .model_dump_json()
+    .encode()
+)
+e.CONFIG_SHA, e.OLD_SENDS = sha(CONFIG.model_dump_json().encode()), old
+before = json.loads((root / "input-before.json").read_bytes())
+
+
+def forbidden_runtime(*args, **kwargs):
+    raise AssertionError("Real runtime forbidden in sandbox")
+
+
+real_callback = SendBudget.before_send
+
+
+def artificial_oauth(self, config, request, preflight):
+    preflight = preflight.model_copy(
+        update={
+            "auth": preflight.auth.model_copy(
+                update={"type": "oauth", "source": "OAuth"}
+            )
+        }
+    )
+    return real_callback(self, config, request, preflight)
+
+
+with patch("doc_translate.ai_runtime.installed_runtime", forbidden_runtime):
+    prepared = root / "prepared"
+    if phase == "complete":
+        e.prepare(
+            prepared,
+            CONFIG,
+            subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        )
+        e.initialize_continuation(CONFIG)
+    manifest = sha((prepared / "hashes.json").read_bytes())
+    result = root / "trial-03"
+    if phase == "complete":
+        with tempfile.TemporaryDirectory(prefix="issue81-direct-owned-") as temporary:
+            process = ArtificialProcess(
+                Path(temporary),
+                "history-layout",
+                False,
+                {p.page: p for p in chunk.page_images},
+            )
+            with (
+                patch.object(e, "production_command", process),
+                patch.object(SendBudget, "before_send", artificial_oauth),
+            ):
+                e.run_approved(prepared, manifest, result, e.CONTINUATION)
+            observation = json.loads((result / "observations.json").read_bytes())
+            assert (
+                observation["cumulative_trials"],
+                observation["cumulative_reservations"],
+            ) == (3, 5)
+            report = json.loads((result / "sample-01/result.json").read_bytes())
+            assert (
+                report["status"] == "baseline-verified"
+                and report["remaining_gaps"] == 1
+            )
+            assert report["readback_exit"] == 0 and not report["whole_sample_clean"]
+            assert report["selected_sha256"] == report["baseline_sha256"]
+            assert (
+                "ARTIFICIAL_EXPECTATIONS_NOT_SENT"
+                not in (result / "sends.json").read_text()
+            )
+        assert not Path(temporary).exists()
+        e.classify_trial(
+            e.CONTINUATION,
+            3,
+            "continue",
+            "Artificial counter check only, not semantic success; input and retained baseline/readback verified before intentional interruption",
+        )
+    else:
+        # Fresh Python process rereads the SAME completed cumulative record.
+        state = e.Continuation(e.CONTINUATION, CONFIG, threading.Event())
+        with workspace_lock(e.CONTINUATION):
+            state.reconcile()
+            assert (state.trials, state.sends) == (1, 1)  # plus old 2/4 = 3/5
+            state.start(
+                root / "interrupted-trial-04",
+                prepared,
+                manifest,
+                json.loads((prepared / "proposal.json").read_bytes()),
+            )
+            state.reserve({"artificial_reservation": "interrupted before delivery"})
+        with patch.object(e, "production_command", forbidden_runtime):
+            try:
+                e.run_approved(
+                    prepared, manifest, root / "must-not-reset", e.CONTINUATION
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("Incomplete trial was refunded")
+            try:
+                e.run_approved(
+                    prepared, manifest, root / "must-stay-stopped", e.CONTINUATION
+                )
+            except ValueError as error:
+                assert "Safety stop" in str(error)
+            else:
+                raise AssertionError("Safety stop was cleared")
+        assert (e.CONTINUATION / "start-04.json").read_bytes() == (
+            e.CONTINUATION / "trial-04/start.json"
+        ).read_bytes()
+        assert (e.CONTINUATION / "trial-04/send-01.json").exists()
+        assert (e.CONTINUATION / "safety-stop.json").exists()
+        assert not (root / "must-not-reset").exists()
+        assert not (root / "must-stay-stopped").exists()
+    assert inventory(source) == before
+    e.verify_manifest(result, sha((result / "hashes.json").read_bytes()))
+    if phase == "interrupt":
+        finish(
+            root,
+            {
+                "real_ai_sends": 0,
+                "artificial_completed_cumulative": [3, 5],
+                "artificial_interrupted_cumulative": [4, 6],
+                "safety_stop_retained": True,
+                "input_unchanged": True,
+            },
+        )
+        e.verify_manifest(root, sha((root / "hashes.json").read_bytes()))
+print(phase, "sandbox checks passed; real AI 0")
+```
+
+以下は**別々のPython invocation**。completeのexit0と保存証拠を確認してからinterruptへ進む。途中失敗は保持し、そのsandboxで再実行／再初期化しない。
+
+```sh
+PYTHONPATH=.pi/skills/verify-project/scripts .venv/bin/python "$DIRECT/sandbox.py" complete > "$DIRECT/complete.log" 2>&1
+printf 'complete exit=%s\n' "$?" > "$DIRECT/complete.exit"
+# exit0とtrial-03の公開保存／別process英語readbackを確認してから次を実行
+PYTHONPATH=.pi/skills/verify-project/scripts .venv/bin/python "$DIRECT/sandbox.py" interrupt > "$DIRECT/interrupt.log" 2>&1
+printf 'interrupt exit=%s\n' "$?" > "$DIRECT/interrupt.exit"
+```
+
+期待は人工origin2/4→完了3/5、次Pythonで同じ累計再読→開始／予約中断4/6→追加無送信停止。`trial-04`はcompletion欠落を意図的に残し、返却も修復もしない。公開generateは同期childをfinallyでwaitし、公開保存の英語readbackは別process。所有TemporaryDirectoryの人工credential/controlだけcleanupし、sandbox入力／全結果／安全marker／証拠は保持・再読する。原画像／本文／raw／秘密をstdoutやGitへ出さない。candidate/exclusions-only/page-local gap/legacy/retryは下記回帰で別確認する。人工OAuth／faux成立は実認証・意味品質の証明ではなく、未実行の手順を成功扱いにしない。
+
+### focused確認と限界
+
+```sh
+.venv/bin/pytest .pi/skills/verify-project/scripts/test_pdf_source_evaluation.py::test_pdf_source_evaluation_review_exclusions_match_preparation_and_candidate -q
+.venv/bin/pytest .pi/skills/verify-project/scripts/test_pdf_source_trial.py -k 'exclusions_only or page_local_gap' -q
+.venv/bin/pytest .pi/skills/verify-project/scripts/test_pdf_source_evaluation.py::test_pdf_source_evaluation_prepare_no_auth_and_public_faux_connection -q
+.venv/bin/pytest .pi/skills/verify-project/scripts/test_pdf_source_evaluation.py .pi/skills/verify-project/scripts/test_pdf_source_trial.py .pi/skills/verify-project/scripts/test_pdf_source_feasibility.py -q
+.venv/bin/pytest tests/test_pdf_correction.py tests/test_pdf_source.py -q
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+.venv/bin/ruff check .pi/skills/verify-project/scripts/{pdf_source_evaluation,pdf_source_trial,test_pdf_source_evaluation,test_pdf_source_trial}.py
+.venv/bin/ruff format --check .pi/skills/verify-project/scripts/{pdf_source_evaluation,pdf_source_trial,test_pdf_source_evaluation,test_pdf_source_trial}.py
+.venv/bin/ty check
+.venv/bin/ty check .pi/skills/verify-project/scripts/{pdf_source_evaluation,pdf_source_trial,test_pdf_source_evaluation,test_pdf_source_trial}.py
+```
+
+専用回帰では旧2/4→残10/50、独立12trial/54送信上限、0送信開始、全工程/coverage/transport retry、再invocation・予約中断、記録欠落/保存不能/並行/取消、安全停止保持と未知/品質/通信の区別、新bindingと保護対象変更拒否を確認する。既存の偽quote/別page/正常metadata/局所不読/exclusions-only/候補分離/legacy request/OAuth限定/storage/別process英語readback回帰は維持する。fauxや人工OAuthを実認証・意味品質の証明にしない。
+
+Rootは現差分の正式check・関係公開consumer・上記手順の別invocationと全画像/固定期待照合、Reviewerは独立確認/Approveを担当する。共有fixture/製品を変更しなければ通常全pipeline/Node/build/全Mapを一律追加しない。未実施・安全停止は評価完了でなく、上限内未達FAILED、環境不足BLOCKED、保証/許可範囲変更REPLAN_REQUIREDを区別する。他7標本/実書籍/全冊/実OCR/日本語品質/通常run-resume/実課金/人の作業時間短縮は未保証。人照合なし/Agent相関誤り・同一標本調整の限界を明記する。本文/回答はprivate内限定、所有temp/人工credential/childだけcleanup/wait後に保持証拠のhashを再読し、旧全結果を削除しない。

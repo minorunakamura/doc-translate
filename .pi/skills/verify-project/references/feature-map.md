@@ -1107,3 +1107,15 @@ repository rootから既存Pythonで起動する入口・正確なshell・入力
 観測は`cases.json`/各`result.json`の採否/残件/元・baseline hash/mtime保持、`adopted/readback.json`、候補source、全`*-authorization.json`/`sends.json`/`*-attempts.json`/補正公開attempt、`hashes.json`。save例外後の`saving/`はreadback結果を残す失敗出力で、adoptedではない。偽quote/根拠不足/範囲漏れ/無関係変更、cap retry/取消/auth/保存異常は専用`test_pdf_source_trial.py`とdesignのfocused consumerで確認する。Root別invocationと全Ruff/format/PDF ty、Reviewer判断は別。
 
 証拠は新規0700 evidence親にcommand/exit/版/dirty/diff/全失敗/期待観測/未確認とともに保存する。人工制御回答/credentialは所有tempだけcleanupし、短命childをwait後に保持証拠全hashを再読する。pytest所有basetempは必要証拠退避後だけ削除。元input/旧workを変更しない。実書籍copy・実AI品質・通常CLI/全冊/再開契約は未確認。過去成功を今回の成功にしない。
+
+## 固定PDF原文評価の承認前準備（Issue #81）
+
+[designの送信前準備・単一trial・人工直接確認](../../../../docs/design/pdf-source-quality-feasibility.md#固定実評価の送信前準備issue-81)を使う。正式入力は同節の改訂Work ItemとPlanのsample-01限定節/§4/#81検証。既存PDF extra/Node/installed resourceを確認し、不足はBLOCKED（install/sync/buildなし）。`pdf_source_evaluation.py` CLIは固定sample-01所有1,2・参照なしの新規private資料だけを作り停止する。旧9case/書籍/cap198は対象外。現行補正requestは公開correct_pdf→実Node/faux/no-network人工preflight→before_sendでgenerate前捕捉し、実runtime/auth/preflightへ接続しない。
+
+期待/観測：proposalの1case・旧2trial/4送信・追加10/50・累計12/54・固定config/oauth/OAuth/continuation、初回request/画像・回復template/固定schemaと動的部分・copy閉包・元hash/mtime・現行版manifestを照合する。正解と計測/採点はmodel非送信、正解は採否にも渡さない。保護schema/validator/normalized/decide/標本を緩めず、旧失敗を保持する。maxTokens=null/20分attempt/送信数はtoken/料金/所要時間保証でなく、不明usageを0にしない。
+
+実操作はRoot一名が固定CONTINUATIONを別に一度だけinitializeし、既存continuation・新規outputで`run_approved`を一回ずつ呼ぶ。0送信開始trial・全retry予約を消費し、再起動/新出力でresetしない。directoryより先に保存する独立`start-NN.json`と`trial-NN/start.json`の双方存在・一致・連番を観測し、末尾directory欠落／独立記録欠落・不一致／開始保存直後中断をruntime前拒否する。旧追加trialへ開始証拠を後付け移行しない。Rootが原因/安全不変/修正/検証/新binding/残予算を照合して`classify_trial`で次を判断する。改訂許可内のhash変更/次trialごとの再承認は不要、無人loopは禁止。成功ならstop。取消/上限/auth/scope/保護hash/storage/記録異常/未知原因は人間確認待ちで、安全marker削除/解除APIなし。既存OAuth通常refresh/save以外の認証操作やfallbackは禁止する。
+
+無送信直接操作はdesignの新sandbox（実AUTH外）でcompleteとinterruptを**別Python invocation**として実行する。既存実Node/faux/no-network・人工OAuth metadata、実runtime到達assert拒否の下で公開保存/別process英語readbackを確認し、累計2/4→3/5を次Pythonで再読、開始/予約中断4/6→無送信停止・安全marker保持を観測する。人工消費を実累計へ混ぜない。専用回帰では上限/全retry/0送信/保存不能/並行/版binding/保護対象拒否と既存exclusions/page-local/legacy/auth/storageを確認する。人工成立は実認証・意味品質の証明でない。
+
+証拠は各新規0700親にcommand/exit/版/diff/観測/未確認と開始・予約・完了・分類・hashを保持。秘密/本文/画像を公開せず、所有temp/人工credential/childだけcleanup/wait後に全保持証拠を再読する。Root正式check/別invocation/全画像固定期待照合、Reviewer独立判断は別。正常不要指摘/変更0、正当な2header不要復元0、局所不読保持・回復不要baseline保存/英語出力で停止。他7標本/実書籍/全冊/通常run-resume/実OCR/日本語は未保証。
