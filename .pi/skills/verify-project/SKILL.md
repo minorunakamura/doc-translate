@@ -77,3 +77,13 @@ renderer／catalog／v2／準備・PDF補正並列を合わせたbefore／after�
 Mapの同節と[実験契約](../../../docs/design/pdf-source-quality-feasibility.md#隔離offline実験issue-80)の`offline`入口を選ぶ。#79準備とは別操作で、固定人工標本→公開generate(review)/correct/assemble→別request検査→コード採否→公開save→空PATH別process load/units/renderを確認する。実Node/faux/no-network、人工credentialだけを使い、実AI/auth/preflight/通常run/resumeは起動しない。元input/baseline不変、候補/採用分離、局所不読残件、全予約/失敗とsave後readbackを照合する。意味品質は未評価。
 
 具体的command、期待/観測、self-check/関連consumer、全証拠とcleanupはdesign/Mapに従う。Rootの別invocation/正式品質チェック、Reviewer gateを代替しない。既存workは保持し所有一時物/childだけcleanup後に全証拠hashを再読する。project trust後、新セッションか`/reload`、`/skill:verify-project PDF source offline`または本ファイルreadで再利用できる。全Map/Maintain/汎用runnerは要求しない。
+
+## 固定PDF原文評価の承認前準備（Issue #81）
+
+Mapの同節と[送信前準備・単一trial・人工直接確認](../../../docs/design/pdf-source-quality-feasibility.md#固定実評価の送信前準備issue-81)を選び、改訂Work ItemとPlanのsample-01限定節/§4/#81検証を読む。`scripts/pdf_source_evaluation.py`のCLIは固定sample-01（所有1,2・参照なし）だけを新規private資料へbindingして停止する。旧9case/書籍コピー/cap198は使わない。実runtime/auth/preflightへ接続せず、現行request捕捉だけ既存Node/faux/no-network人工preflightからbefore_sendでgenerate前停止する。正解・計測/採点はmodel非送信、固定正解は自動採否にも混ぜない。
+
+旧2trial/4送信を含む累計12trial/54送信（追加10/50）。Rootだけが固定CONTINUATIONを別操作で一度初期化し、既存continuationと未使用outputを`run_approved(prepared, manifest_sha, output, CONTINUATION)`へ渡して1trialずつ実行する。開始済み0送信trialも消費し、全工程/retryの送信前予約を返却しない。directory作成前の独立`start-NN.json`と`trial-NN/start.json`の双方存在・内容・連番を照合し、片側欠落はruntime前停止。旧記録へ独立開始証拠を後付けして再開しない。再invocation/新出力/修正でresetしない。無人loopはない。許可内変更・次trialごとの再承認は不要だが、Rootの原因分析/検証/新資料binding/残予算照合と`classify_trial`が必要。成功時はstop、auth/scope/保護hash/storage/累計不明/取消/未知原因等は人間確認待ち。安全markerに削除/解除APIはない。保護対象・schema/validator/採否条件は固定する。
+
+実接続は公開process_command=None、既存アプリOAuth preflight/通常refresh/saveのみ。全予約前oauth/OAuth照合、ambient API key除外、新login/Pi auth参照・コピー/fallback禁止。cap=0を無認証dry-runにしない。人工直接確認は**実AUTH外の新sandbox**でdesignのcomplete→interruptを別Python invocationで実行し、公開保存/別process英語readback、同じ累計再読、開始/予約中断と無送信停止を観測する。実runtime到達assert拒否・人工OAuth metadataを使い、実認証/意味品質の保証にしない。
+
+代表consumer/専用module/既存trial/公開consumerと明示helper品質はdesignに従い、Root正式check/別invocation/全画像固定期待照合とReviewer gateを分ける。正当なheader不要復元0・正常内容不要指摘/変更0・局所不読保持・回復不要baseline保存/英語出力で成功停止。他7標本/実書籍/通常run-resume/OCR/日本語/全冊は未保証。旧全結果/元hash/mtime/全失敗を保持し、秘密や本文を公開せず、所有temp/人工credential/childだけcleanup/wait後に証拠を再読する。project trust後、新セッションか`/reload`、`/skill:verify-project PDF source evaluation preparation`または本ファイル明示readで再利用する。

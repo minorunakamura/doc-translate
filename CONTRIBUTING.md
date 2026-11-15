@@ -891,3 +891,13 @@ translation saved-attempt操作内catalog／計測（Issue #57）は[性能refer
 ### PDF原文の隔離offline実験（Issue #80）
 
 #79準備を保持した[offline契約・起動・証拠](docs/design/pdf-source-quality-feasibility.md#隔離offline実験issue-80)を使います。`pdf_source_feasibility.py offline`は固定人工標本と既存Node/faux/no-networkだけで公開検査→限定再補正→独立再検査→自動採否→保存/別process英語出力を確認します。専用self-check代表単独→module、PDF取得/補正/組立/units/renderのfocused回帰を選び、Rootの正式品質チェック・別invocationとReviewer gateを分けます。通常製品/実AI評価ではありません。実送信/authは#81の別承認、元hash/mtime保持・全失敗保存・所有物cleanup後の証拠再読が必須です。
+
+### 固定PDF原文評価の承認前準備（Issue #81）
+
+[sample-01準備・単一trial・直接確認・focused検証](docs/design/pdf-source-quality-feasibility.md#固定実評価の送信前準備issue-81)とverify-projectの同節を使います。正式入力は改訂Work ItemとPlanのsample-01限定節/§4/#81検証。CLIは固定sample-01所有2ページ・参照なしだけを新しいprivate資料へbindingして停止し、実runtime/auth/preflightは起動しません。現行補正requestの捕捉だけ既存実Node/faux/no-networkの人工preflightを使います。旧9case/書籍/cap198の手順は使いません。
+
+Root一名が固定CONTINUATIONを別に一度初期化し、既存continuation・未使用outputで`run_approved`を1trialずつ呼びます。旧2trial/4送信を含む累計12trial/54送信、追加10/50。0送信開始trialも消費し、全工程/retryの送信前予約を返却しません。再invocation/新出力/修正でresetせず、Rootの原因分析・検証・新資料binding・残数照合後に`classify_trial`で判断します。許可内修正/次trialごとの再承認は不要ですが、無人loopは禁止、成功時は停止。認証/scope/保護hash/保存/累計不明/取消/未知原因等は人間確認待ちで、安全markerに削除/解除APIはありません。既存OAuth preflight/通常refresh/saveのみ、ambient key除外・fallback/Pi auth参照やコピー/新login禁止です。
+
+非TDDで専用evaluation/trial代表単独→module、既存公開補正/組立等のconsumer、全Ruff/format/PDF extra tyとhelper明示品質を選びます。累計/上限/予約中断/停止原因/保護対象拒否と既存exclusions/page-local/legacy/auth/storage回帰を維持します。人工直接確認は実AUTH外の新sandboxで実Node/faux/no-network・人工OAuth metadataを用い、実runtime到達をassert拒否します。公開保存/別process英語readback後、**次Python invocationで同じ累計再読→開始/予約中断→無送信停止**までdesignに従います。実認証・意味品質の証明とは分け、Root正式check/別invocation/全画像固定期待照合とReviewer独立判断を省きません。
+
+固定正解/計測はmodel非送信、schema/validator/normalized/decide/標本/期待は固定。全旧結果・失敗・元hash/mtimeを保持し、秘密や本文を公開せず、所有temp/人工credential/childだけcleanup/wait後に証拠を再読します。他7標本/実書籍/全冊/通常run-resume/実OCR/日本語品質は未保証です。
