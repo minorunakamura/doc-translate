@@ -1,4 +1,4 @@
-"""#97 only: two saved successes into a new workspace, without a provider."""
+"""#97 or #98: the selected saved successes into a new workspace, without a provider."""
 
 import base64
 import json
@@ -36,7 +36,7 @@ def wire(path, digest):
     """Only private pipes; no runtime/provider/auth, no second invocation."""
     from doc_translate.pdf_correction import ADOPTION_RULE
 
-    assert path.name in {"0.json", "1.json"} and all(
+    assert path.name in {"0.json", "1.json", "2.json", "3.json"} and all(
         stat.S_ISFIFO(os.fstat(stream.fileno()).st_mode)
         for stream in (sys.stdin, sys.stdout)
     )
@@ -79,7 +79,18 @@ def wire(path, digest):
         )
 
 
-def listing_evidence(block, prior, source_block, source, raw, workspace, manifest):
+def listing_evidence(
+    block,
+    prior,
+    source_block,
+    source,
+    raw,
+    workspace,
+    manifest,
+    *,
+    caption=None,
+    relative=False,
+):
     """Compare each printed line and each separator, independently of adoption."""
     import ctypes
     from math import isclose
@@ -120,6 +131,11 @@ def listing_evidence(block, prior, source_block, source, raw, workspace, manifes
             (index,) = indices
             search.close()
             cursor = prov["charspan"][0]
+            if caption is not None:
+                first = lines.pop(0)
+                assert first.rstrip("\r\n") == caption == n["text"][: len(caption)]
+                cursor += len(caption)
+                index += len(first)
             for physical in lines:
                 line = physical.rstrip("\r\n")
                 start = n["text"].index(line, cursor)
@@ -159,11 +175,11 @@ def listing_evidence(block, prior, source_block, source, raw, workspace, manifes
         (want, sep),
         (got, actual_sep),
     ) in enumerate(zip(rows, expected, actual, strict=True)):
-        indent = len(want) - len(line)
+        indent = len(got) - len(line)
         assert (
             indent >= 0
-            and want == " " * indent + line
-            and want == got
+            and got == " " * indent + line
+            and (relative or want == got)
             and isclose(x, margin + indent * pitch, abs_tol=0.02)
             and (step is None or isclose(step, pitch, abs_tol=0.02))
         )
@@ -544,17 +560,18 @@ def compare(workspace, digests, historical, gold):
     }
 
 
-def replay(output):
+def replay(output, *, listings=False):
     from doc_translate.inference import GenerationConfig
     from doc_translate.pdf_correction import correct_pdf, load_pdf_correction
 
     assert output.absolute().parent.parent == ROOT / "work"
     output = new_directory(output, BOOK)
     inventory = {}
+    seeds = [SEED.parent / f"seed-{n}" for n in (111, 346)] if listings else [SEED]
 
     def read(path, h=None):
         assert path == path.resolve() and (
-            path.is_relative_to(BOOK) or path.parent in (FINAL, SEED)
+            path.is_relative_to(BOOK) or path.parent in (FINAL, *seeds)
         )
         mtime = path.stat().st_mtime_ns
         h = h or sha(path.read_bytes())
@@ -565,11 +582,20 @@ def replay(output):
         return data
 
     try:
-        rows = json.loads(read(SEED / "correspondence.json"))
-        old_ids = list(dict.fromkeys(h for row in rows for h, _ in row["fragments"]))
-        assert len(old_ids) == 2
+        old_ids = []
+        for seed in seeds:
+            rows = json.loads(read(seed / "correspondence.json"))
+            old_ids.extend(
+                dict.fromkeys(h for row in rows for h, _ in row["fragments"])
+            )
+            read(seed / "current-source.json")
+        scopes = [
+            list(range(n, n + 5)) for n in ((111, 116, 121) if listings else (71, 76))
+        ]
+        if listings:
+            scopes.append([346])
+        assert len(old_ids) == len(scopes)
         read(BOOK / ".writer.lock")
-        read(SEED / "current-source.json")
         with tempfile.TemporaryDirectory(dir=output, prefix="isolated-") as tmp:
             parent = Path(tmp)
             workspace = parent / "new"
@@ -577,23 +603,24 @@ def replay(output):
             digests = []
             for i, h in enumerate(old_ids):
                 c = json.loads(read(BOOK / f"corrections/pdf/{h}.json", h))
-                assert c["owned_pages"] == list(range(71 + i * 5, 76 + i * 5))
+                assert c["owned_pages"] == scopes[i]
                 dh = c["draft_sha256"]
                 rel = f"drafts/pdf/{dh}.json"
-                draft_data = read(BOOK / rel, dh)
-                d = json.loads(draft_data)
-                for name, data in [(rel, draft_data)] + [
-                    (a["artifact"], read(BOOK / a["artifact"], a["sha256"]))
-                    for a in [
-                        d["document"],
-                        d["raw"],
-                        *(p["image"] for p in d["pages"]),
-                    ]
-                ]:
-                    dest = workspace / name
-                    assert dest.resolve().is_relative_to(workspace)
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    dest.write_bytes(data)
+                if not (workspace / rel).exists():
+                    draft_data = read(BOOK / rel, dh)
+                    d = json.loads(draft_data)
+                    for name, data in [(rel, draft_data)] + [
+                        (a["artifact"], read(BOOK / a["artifact"], a["sha256"]))
+                        for a in [
+                            d["document"],
+                            d["raw"],
+                            *(p["image"] for p in d["pages"]),
+                        ]
+                    ]:
+                        dest = workspace / name
+                        assert dest.resolve().is_relative_to(workspace)
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        dest.write_bytes(data)
                 load_pdf_correction(
                     BOOK, h
                 )  # historical request/projection/pages, no workspace lock
@@ -630,26 +657,40 @@ def replay(output):
                 )
                 assert record_path.with_suffix(".sent").is_file()
             # Gold never enters the wire, request, or workspace. Compare in a fresh process.
-            hashes = json.loads(read(FINAL / "hashes.json"))
-            fixed = json.loads(
-                read(
-                    FINAL / "fixed-expectations.json", hashes["fixed-expectations.json"]
+            if not listings:
+                hashes = json.loads(read(FINAL / "hashes.json"))
+                fixed = json.loads(
+                    read(
+                        FINAL / "fixed-expectations.json",
+                        hashes["fixed-expectations.json"],
+                    )
                 )
-            )
-            source_digest = fixed["source_sha256"]
-            read(BOOK / f"snapshots/source/{source_digest}.json", source_digest)
-            read(
-                FINAL / "missing-content-gold.json", hashes["missing-content-gold.json"]
-            )
+                source_digest = fixed["source_sha256"]
+                read(BOOK / f"snapshots/source/{source_digest}.json", source_digest)
+                gold_name = "missing-content-gold.json"
+                read(FINAL / gold_name, hashes[gold_name])
             result = subprocess.run(
-                [sys.executable, SCRIPT, "compare", str(workspace), *digests, *old_ids],
+                [
+                    sys.executable,
+                    SCRIPT,
+                    "compare-98" if listings else "compare",
+                    str(workspace),
+                    *digests,
+                    *old_ids,
+                ],
                 capture_output=True,
                 check=False,
             )
             if result.returncode:
                 (output / "compare-error.log").write_bytes(result.stderr)
                 raise AssertionError("fresh comparison failed")
-            observations = json.loads(result.stdout)
+            observations = json.loads(
+                (parent / "listing-observations.json").read_bytes()
+                if listings
+                else result.stdout
+            )
+            if listings:
+                inventory.update(observations["comparison_inputs"])
     finally:
         for p, (h, mtime) in inventory.items():
             assert (
@@ -657,6 +698,9 @@ def replay(output):
             )
         write_json(output / "inputs.json", inventory)
     finish(output, observations)
+    if listings:
+        print(json.dumps({"chunks": len(digests)}))
+        return
     print(
         json.dumps(
             {k: v for k, v in observations.items() if not k.endswith("_evidence")}
@@ -679,7 +723,7 @@ if __name__ == "__main__":
     sys.addaudithook(deny_network)
     if not __debug__:
         raise RuntimeError("Assertions required")
-    if sys.argv[1] in ("wire", "compare"):
+    if sys.argv[1] in ("wire", "compare", "compare-98"):
         target = Path(sys.argv[2])
         parent = target.parent
         assert (
@@ -712,5 +756,15 @@ if __name__ == "__main__":
                 )
             )
         )
+    elif sys.argv[1] == "compare-98":
+        from pdf_listing_comparison import compare_listings
+
+        assert target.name == "new" and not (target / "source-snapshot.json").exists()
+        write_json(
+            target.parent / "listing-observations.json",
+            compare_listings(target, sys.argv[3:7], sys.argv[7:]),
+        )
+    elif sys.argv[1] == "--listings":
+        replay(Path(sys.argv[2]), listings=True)
     else:
         replay(Path(sys.argv[1]))

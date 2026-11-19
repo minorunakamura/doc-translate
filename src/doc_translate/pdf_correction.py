@@ -31,12 +31,17 @@ from doc_translate.progress import Observer, emit, scoped_observer
 from doc_translate.snapshot import Contract, Nonempty, Sha256
 from doc_translate.workspace import workspace_lock
 
-ADOPTION_RULE = "printed-lines-v4"
+ADOPTION_RULE = "printed-ownership-v9"
 _RULE_VERSIONS = {
     "owned-text-v1": 2,
     "owned-ranges-v2": 3,
     "owned-layout-v3": 4,
-    ADOPTION_RULE: 5,
+    "printed-lines-v4": 5,
+    "printed-ranges-v5": 6,
+    "printed-margin-v6": 7,
+    "printed-separators-v7": 8,
+    "printed-display-v8": 9,
+    ADOPTION_RULE: 10,
 }
 
 
@@ -229,7 +234,7 @@ class CorrectionAnswer(Contract):
 
 
 class PDFCorrectionChunk(Contract):
-    schema_version: Literal[1, 2, 3, 4, 5] = 1
+    schema_version: Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10] = 1
     draft_sha256: Sha256
     owned_pages: list[PositiveInt]
     reference_pages: list[PositiveInt]
@@ -492,7 +497,10 @@ def _make_chunk(
             ),
             lambda page: _read_artifact(workspace, page.image),
             verify_layout=version >= 4,
-            printed_lines=version == 5,
+            printed_lines=version >= 5,
+            printed_ranges=version >= 6,
+            relative_margin=version >= 7,
+            layout_version=version,
         )
     candidates = {block.block_id: block for block in answer.blocks}
     candidates.update(

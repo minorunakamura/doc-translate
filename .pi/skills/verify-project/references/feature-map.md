@@ -1170,3 +1170,40 @@ PY
 ```
 
 版・dirty・command/exitと未確認事項は各親に残す。上記に加え、異なるhashの原本・同一ref/座標での局所語区切りの直列/並列比較は`tests/test_pdf_correction.py -k concurrent_loads`、旧byteは`-k recorded_adoption_rule`を開発ガイドのsignal wrapperで別途検査する。
+
+## コード断片・表の閉じた再生（#98）
+
+[第3版Plan](../../../../docs/plans/pdf-initial-source-preservation-98-r3.md)で許可した4 chunk限定。標本準備・保存記録・直前の#97節と同じoffline前提。書籍のrun／resume、旧成功の移行、実AI・追加retry・認証・外部trial markerへのアクセスはしない。repository rootで次を実行する。入力・画像・英語・QA・stderrはprivateでのみ扱い、`observations.json`を端末にdumpしない。
+
+```sh
+set -eu
+umask 077
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+E=$(mktemp -d "$PWD/work/listing-book-XXXXXXXX"); export E
+git rev-parse HEAD > "$E/revision"; git status --short > "$E/dirty"
+printf '%s\n' 'python .pi/skills/verify-project/scripts/pdf_adoption_replay.py --listings "$E/proof"' > "$E/command"
+rc=0; python .pi/skills/verify-project/scripts/pdf_adoption_replay.py --listings "$E/proof" > "$E/result" 2> "$E/stderr" || rc=$?
+printf '%s\n' "$rc" > "$E/exit"; test "$rc" = 0
+python - <<'PY'
+import hashlib,json,os
+from collections import Counter
+from pathlib import Path
+e=Path(os.environ['E']); p=e/'proof'; rd=lambda f: json.loads(f.read_bytes()); sha=lambda f:hashlib.sha256(f.read_bytes()).hexdigest()
+assert not list(p.glob('isolated-*'))
+for name,digest in rd(p/'hashes.json').items(): assert sha(p/name)==digest
+for name,(digest,mtime) in rd(p/'inputs.json').items():
+    f=Path(name); assert sha(f)==digest and f.stat().st_mtime_ns==mtime
+obs=rd(p/'observations.json'); assert [c['schema_version'] for c in obs['chunks']]==[10]*4
+s=obs['score']; rows=s['lines']; assert len(s['cells'])==12
+report={k:{'lines':len(v),'output_minus_fixed':dict(Counter(r['fixed_delta'] for r in v)), 'located_margin_rows':sum('margin_qa' in r for r in v)} for k,v in rows.items()}
+report['116']['located_extra_blank_boundaries']=sum(r['located_blank_count_uncertainty'] for r in rows['116'])
+(e/'counts.json').write_text(json.dumps(report)); assert rd(e/'counts.json')==json.loads(json.dumps(report))
+PY
+```
+
+- `--listings`は所有111–115、116–120、121–125、346を別々に、各requestの元の隣接参照・projection・画像hashと順・未編集の最終回答で再生する。英語出力後の比較は `../scripts/pdf_listing_comparison.py`。失敗時は今回の親のexitとprivateエラー位置を確認し、成功に数えない。
+- `score.lines`の115の4行、116の29行を `root-survey/seed-111/page-{115,116}.png` の同じ行に上から対応付ける。`original_xy` は左下原点pt、`pitch` は実字送り。原画像と出力anchorの英語fence内の全文（内部空白・記号を含む）、順、回数、表示列を行別に検査する。115のcaptionはコード外の元位置に1回だけ。`score.paragraphs`の前後本文・captionの実unitを追い、コード自体にunitがないことを確認する。
+- 116では第1非空行が表示2、第3非空行が表示0で直後本文の行頭に揃う。全29行の紙面との一致、`fixed_delta`（出力−固定）が各行−2、著者の絶対字下げ未確認を別記。共通余白は`margin_qa`全行のref/span・行頭とQAの提案／採用差・理由を確認する。追加空行は別に、各`expected_newlines`（案）／`actual_newlines`・`fixed_newlines`と`qa`前後両行のref/span・位置を照合。紙面合格を見本の8空行や41行の完全復元と呼ばない。
+- 119–121は別系列。`lines`の各行を当該pageのfragment→source→出力anchorのfenceで照合し、各行の`fixed_delta`と残差に対する位置QAを報告する。121の既知21行を他の行と分け、120等の追加差も省かない。116で許した差を流用せず、修復・跨ページ接続成功とはしない。
+- `score.cells`は346の行・列ごとのraw ref/span、原本bbox、`seed-346/page-346.png`の左上原点pixel矩形、unit ID、全文hash。原画像の全12矩形の読みをそれぞれ当該raw範囲・tokenを展開した実unit・英語HTML表の同じ行列に突き合わせる（URL／数字／記号、同一行の左右・上下順、欠落・重複も確認）。件数・黒画素・hashだけで画像を読んだとはしない。
+- 別の新規0700親で直前の**#97「別の人工実操作」**をそのまま行う。通常CLIの実Node/faux/no-networkで実翻訳入力、fresh resumeの成功済み再送0・immutable不変を確認する。各親のcommand/exit・revision/dirty・観測・未確認を保持し、所有child／一時Workspaceだけを回収して証拠全fileを再読する。正式検査・Root別親での原画像直接確認・独立Reviewは別。
