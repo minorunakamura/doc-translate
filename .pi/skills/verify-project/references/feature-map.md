@@ -1156,11 +1156,15 @@ with tempfile.TemporaryDirectory(dir=e) as tmp:
         r=subprocess.run(prefix+args,capture_output=True,check=False);assert r.returncode==0
         assert json.loads(r.stdout)['processing']['status']=='completed'
     invoke(['run','--json',str(fix/'own.pdf'),'--workspace',str(ws),'--pages','2-7','--reference-pages','8-8','--artifacts-path',str(fix/'models'),'--provider','faux','--model','text','--thinking','off','--correction-model','vision','--correction-concurrency',str(concurrency)])
-    def immutable():return {p.relative_to(ws):hashlib.sha256(p.read_bytes()).hexdigest() for d in ('originals','drafts','corrections','attempts','snapshots') for p in (ws/d).rglob('*') if p.is_file()}
-    before=immutable();sent=log.read_bytes();requests=[json.loads(json.loads(line)['messages'][1]['content'][0]['text']) for line in sent.splitlines()]
+    def immutable():return {p.relative_to(ws):(hashlib.sha256(p.read_bytes()).hexdigest(),p.stat().st_mtime_ns) for d in ('originals','drafts','corrections','attempts','snapshots') for p in (ws/d).rglob('*') if p.is_file()}
+    before=immutable();(e/f'inputs-{concurrency}.json').write_text(json.dumps({str(k):v for k,v in before.items()}));sent=log.read_bytes();requests=[json.loads(json.loads(line)['messages'][1]['content'][0]['text']) for line in sent.splitlines()]
     actual=[unit['source_text'] for r in requests if not r['context'].get('phase') and 'owned_pages' not in r['context'] for unit in json.loads(r['text'])]
     texts=[b.text for b in load_source_snapshot(ws).blocks];wanted=[t for n in range(2,8) for t in ([f'Page {n} source.']+({2:['Pack the parcel.'],7:['Seal the parcel.']}.get(n,[])))]
     assert texts==wanted and all(actual.count(t)==1 for t in ('Pack the parcel.','Seal the parcel.')) and not any('Return the parcel.' in t or 'ONLY_PAGE_' in t for t in actual)
+    source=load_source_snapshot(ws)
+    for n,text in ((2,'Pack the parcel.'),(7,'Seal the parcel.')):
+        (block,)=[b for b in source.blocks if b.text==text]
+        assert any(block.block_id in q.target_ids and any(l.format=='pdf' and l.page==n and l.extraction_ref for l in q.locations) for q in source.uncertainties)
     for path in (ws/'attempts/pdf-correction').glob('*.json'):
         r=json.loads(path.read_bytes());answer=json.loads(r['attempts'][-1]['final']['message']['content'][0]['text']);assert not any('parcel' in b['text'] for b in answer['blocks'])
     proof.append([u.source_text for u in generate_translation_units(load_source_snapshot(ws))]);invoke(['resume','--json',str(ws)]);assert log.read_bytes()==sent and immutable()==before
@@ -1193,7 +1197,7 @@ assert not list(p.glob('isolated-*'))
 for name,digest in rd(p/'hashes.json').items(): assert sha(p/name)==digest
 for name,(digest,mtime) in rd(p/'inputs.json').items():
     f=Path(name); assert sha(f)==digest and f.stat().st_mtime_ns==mtime
-obs=rd(p/'observations.json'); assert [c['schema_version'] for c in obs['chunks']]==[10]*4
+obs=rd(p/'observations.json'); assert [c['schema_version'] for c in obs['chunks']]==[11]*4
 s=obs['score']; rows=s['lines']; assert len(s['cells'])==12
 report={k:{'lines':len(v),'output_minus_fixed':dict(Counter(r['fixed_delta'] for r in v)), 'located_margin_rows':sum('margin_qa' in r for r in v)} for k,v in rows.items()}
 report['116']['located_extra_blank_boundaries']=sum(r['located_blank_count_uncertainty'] for r in rows['116'])
@@ -1207,3 +1211,32 @@ PY
 - 119–121は別系列。`lines`の各行を当該pageのfragment→source→出力anchorのfenceで照合し、各行の`fixed_delta`と残差に対する位置QAを報告する。121の既知21行を他の行と分け、120等の追加差も省かない。116で許した差を流用せず、修復・跨ページ接続成功とはしない。
 - `score.cells`は346の行・列ごとのraw ref/span、原本bbox、`seed-346/page-346.png`の左上原点pixel矩形、unit ID、全文hash。原画像の全12矩形の読みをそれぞれ当該raw範囲・tokenを展開した実unit・英語HTML表の同じ行列に突き合わせる（URL／数字／記号、同一行の左右・上下順、欠落・重複も確認）。件数・黒画素・hashだけで画像を読んだとはしない。
 - 別の新規0700親で直前の**#97「別の人工実操作」**をそのまま行う。通常CLIの実Node/faux/no-networkで実翻訳入力、fresh resumeの成功済み再送0・immutable不変を確認する。各親のcommand/exit・revision/dirty・観測・未確認を保持し、所有child／一時Workspaceだけを回収して証拠全fileを再読する。正式検査・Root別親での原画像直接確認・独立Reviewは別。
+
+## コードの共有出典と独立した注記（#108）
+
+#97／#98と同じprivate条件。repo rootから既存PDF環境で次をforeground実行する。`--roles`の入力は所有開始181・186の2件だけ。元workspaceを復旧・移行せず、未編集回答の全体を1回だけ各正規pipeへ渡す。生の英語・回答・画像・エラー値を表示／送信しない。
+
+```sh
+set -eu
+umask 077
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+E=$(mktemp -d "$PWD/work/test-verification-108-book-XXXXXXXX"); export E
+git rev-parse HEAD > "$E/revision"; git status --short > "$E/dirty"
+printf '%s\n' 'python .pi/skills/verify-project/scripts/pdf_adoption_replay.py --roles "$E/proof"' > "$E/command"
+rc=0; python .pi/skills/verify-project/scripts/pdf_adoption_replay.py --roles "$E/proof" > "$E/result" 2> "$E/stderr" || rc=$?
+printf '%s\n' "$rc" > "$E/exit"; test "$rc" = 0
+python - <<'PY'
+import hashlib,json,os
+from pathlib import Path
+p=Path(os.environ['E'])/'proof'; rd=lambda f:json.loads(f.read_bytes()); sha=lambda f:hashlib.sha256(f.read_bytes()).hexdigest()
+assert not list(p.glob('isolated-*'))
+for k,v in rd(p/'hashes.json').items():assert sha(p/k)==v
+for k,(v,m) in rd(p/'inputs.json').items():assert sha(Path(k))==v and Path(k).stat().st_mtime_ns==m
+s=rd(p/'observations.json'); assert [(x['page'],x['display']) for x in s['shared']]==[(181,'raw-with-located-qa'),(182,'raw-with-located-qa'),(183,'literal'),(185,'printed'),(186,'raw-with-located-qa'),(187,'printed')]
+assert len(s['printed_evidence'])==4 and len(s['blank_boundaries'])==4
+PY
+```
+
+`pdf_role_comparison.py`はfresh load→assemble→実units・英語出力後にだけ固定資料を使う。seed-181画像の全画素を検証原本の同じページ・scaleの描画と照合し、共有bboxの描画行全文を、各役割の出典範囲・caption target・順序と実units／英語anchorの出力に対応付ける。181/182/186のコードは各charspanの抽出全文（空白・改行込み）と、それを採るQAの理由・全行の位置・対象anchorを照合。185脚注、187captionと各コード、183本文と周囲、190のfilenameの元警告・位置を確認する。共有箇所の6ページでは、固定資料の元blockをbindingで英語anchorに対応させ、相対順が変わっていないことを確認する。間に新しく回復したblockがあっても除去しない。`printed_evidence`で185/186・187/188の対象断片の全表示行・字下げ・区切りを原本の字送りと比較し、同じ2回答の185/188にある追加空行は`blank_boundaries`で各境界前後の位置と実QAを照合する。2組の固定コードとの照合は断片の順序と可読内容についてであり、接続・字下げの完全復元とはしない。`observations.json`の`shared`と`blocks`は元位置と出力の対応、`inputs.json`は元資料のhashとmtime。
+
+別の新規0700親で#97「別の人工実操作」を実行し、実翻訳入力・位置QA、fresh resume送信0・旧immutable不変を記録する。各親へrevision/dirty・command/exit・期待/観測/未達を記録し、所有一時workspace・childのみ回収後、証拠を再読。Rootの別親での独立照合・正式検査は別である。

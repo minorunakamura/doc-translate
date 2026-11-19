@@ -571,7 +571,7 @@ for block in chunk.blocks:
 
 ### 所有本文の採否（#97・#98）
 
-`correct_pdf` は生回答をattemptへ保存し、それとは別に採用chunkを作ります。新しい `request.context.adoption_rule = "printed-ownership-v9"`（chunk schema 10）は、draftの読順・所有page・有効な文字範囲をblock／cellの出典と照合します。案が欠いた読める範囲を、見出し・本文・脚注・コード等の位置と役割に戻し、図内文字や参照ページを独立本文に足しません。既知の同一itemの所有部分を保持する規則で、別item間の新しい跨ページ接続や表再構築はしません。
+`correct_pdf` は生回答をattemptへ保存し、それとは別に採用chunkを作ります。新しい `request.context.adoption_rule = "printed-roles-v10"`（chunk schema 11）は、draftの読順・所有page・有効な文字範囲をblock／cellの出典と照合します。案が欠いた読める範囲を、見出し・本文・脚注・コード等の位置と役割に戻し、図内文字や参照ページを独立本文に足しません。既知の同一itemの所有部分を保持する規則で、別item間の新しい跨ページ接続や表再構築はしません。
 
 通常本文で案の差が局所的な語間SPACEだけなら、draftのSHA-256を検証した**その原本byte列**を、所有ページのprovenance bbox内だけで照合します。同一出現・同一行の実文字SPACE、または別描画間で通常の字送りを越え、周囲の字間の揺れでは説明できない余白だけを採用します。生成SPACEや描画の分割だけでは採用しません。一意の裏付けがない区切りや行末hyphen、数字などの読みの不一致は抽出文字を採り、両者の違いと位置を要確認に残します。不確かな所属は推測しません。hash不一致は照合失敗であり、文字層のないPDFと同じ扱いにしません。
 
@@ -587,7 +587,9 @@ schema 9では同一出現のcaption直後の抽出改行は役割間の境界�
 
 schema 10では、captionとコードの間が改行のないSPACE列なら、局所描画で確認した第1コード行の表示列を使って境界を決めます。隣接範囲の候補は所有を書き換える前に照合します。同じ未割当範囲を複数のコード案が要求する場合は、どちらにも拡張せず、抽出の位置・役割に残します。競合したコード案と両側の所有根拠・対象範囲は位置付きQAで確認できます。
 
-`load_pdf_correction`・成功再利用・未採用attempt回収も記録された方式で再構成します。方式なし（schema 1）は旧回答の採用、`owned-text-v1`（schema 2）と`owned-ranges-v2`（schema 3）、`owned-layout-v3`（schema 4）、`printed-lines-v4`（schema 5、印刷行）、`printed-ranges-v5`（schema 6、caption等の局所所有）、`printed-margin-v6`（schema 7、共通余白）、`printed-separators-v7`（schema 8、提案の共通余白を除く区切り照合）、`printed-display-v8`（schema 9、最終表示による照合）はそれぞれ当時の採否をbyte単位で維持します。新方式へ移行・再送せず、方式値と実入力、再構成した保存内容を検証します。未知の方式のchunk、方式取り違え、再hashだけした不一致chunkは読めません。今回の要求・設定に該当する検証済み成功attemptの方式が未知なら、回収時にエラーとし、新規送信には進みません。
+schema 11では、抽出上は一つのコード欄でも、対応する原本描画行とDoclingの可読範囲が一意に分かれる場合、独立した脚注や対応するコードを指すcaptionを元位置に残します。新しく共有範囲を救済する場合、captionは元の案がその局所コードを指すこと、番号付き脚注は同じ描画行に独立した番号表記があることを確かめます。別書体だけでコード行を脚注にしたり、所属不明の繰返しを本文にしたりしません。範囲の所属とコード整形の照合は別です。元の回答・targetは変えず採用側の出典を絞り、裏付けられない行・字下げは抽出文字と位置付きQAに戻します。所属が競合したままなら保存しません。ページ間の接続規則は変更しません。
+
+`load_pdf_correction`・成功再利用・未採用attempt回収も記録された方式で再構成します。方式なし（schema 1）は旧回答の採用、`owned-text-v1`（schema 2）と`owned-ranges-v2`（schema 3）、`owned-layout-v3`（schema 4）、`printed-lines-v4`（schema 5、印刷行）、`printed-ranges-v5`（schema 6、caption等の局所所有）、`printed-margin-v6`（schema 7、共通余白）、`printed-separators-v7`（schema 8、提案の共通余白を除く区切り照合）、`printed-display-v8`（schema 9、最終表示による照合）、`printed-ownership-v9`（schema 10）はそれぞれ当時の採否をbyte単位で維持します。新方式へ移行・再送せず、方式値と実入力、再構成した保存内容を検証します。未知の方式のchunk、方式取り違え、再hashだけした不一致chunkは読めません。今回の要求・設定に該当する検証済み成功attemptの方式が未知なら、回収時にエラーとし、新規送信には進みません。
 
 ### 図の所属と採用結果
 
