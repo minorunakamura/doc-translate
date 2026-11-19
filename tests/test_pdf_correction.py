@@ -1513,7 +1513,7 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
             "printed-margin-v6": 7,
             "printed-separators-v7": 8,
             "printed-display-v8": 9,
-            "current": 10,
+            "current": 11,
         }[base]
     )
 
@@ -2298,6 +2298,11 @@ def prose_pdf(lines, font="Helvetica"):
         f"<< /Type /Font /Subtype /Type1 /BaseFont /{font} >>".encode(),
         f"<< /Length {len(content)} >>\nstream\n".encode() + content + b"endstream",
     ]
+    if b"/Other " in content:
+        objects[2] = objects[2].replace(
+            b"/F 4 0 R",
+            b"/F 4 0 R /Other << /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>",
+        )
     pdf = bytearray(b"%PDF-1.4\n")
     offsets = []
     for i, obj in enumerate(objects, 1):
@@ -3809,6 +3814,11 @@ def test_printed_code_can_supply_boundary_or_indent_missing_from_extraction(
             4,
             "efe32e18940cb4aae64646e436a8b8f7fc94f9033d5ec5d0034543ca70e53425",
         ),
+        (
+            "printed-ownership-v9",
+            10,
+            "01613b5dead18d96cdd443cc9ab1a43576558eee15da34121249d27472510ed5",
+        ),
     ],
 )
 def test_named_orphan_recovers_historical_bytes_without_resending(
@@ -4164,3 +4174,349 @@ def test_common_margin_cannot_explain_a_single_displaced_line(tmp_path, draft):
         "    ab\n   cd\n    ef",
     )
     assert text == "ab cd ef" and qa[0].target_ids == ["example"]
+
+
+@pytest.mark.parametrize(
+    "proposed,span", [("read 10\n    stop", None), ("read\n10 stop", [0, 5])]
+)
+def test_shared_listing_owns_drawn_rows_without_adopting_unproved_indent(
+    tmp_path, draft, proposed, span
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    draft, reply = listing_reply(
+        draft,
+        [(80, "Trace"), (65, "read 10"), (50, "stop")],
+        "Trace read 10 stop",
+        proposed,
+    )
+    reply["blocks"].append(
+        {
+            "kind": "caption",
+            "block_id": "cap",
+            "target_id": "example",
+            "text": "Trace",
+            "evidence": [evidence(charspan=span)],
+        }
+    )
+    ws = draft[0]
+    digest = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(ws, digest)
+    assert [(b.kind, b.text, b.evidence[0].charspan) for b in chunk.blocks] == [
+        ("caption", "Trace", (0, 5)),
+        ("code", "read 10 stop", (6, 18)),
+    ]
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[digest], snapshot_id="drawn-roles"
+    )
+    cap, code = source.blocks
+    assert cap.structure["target_id"] == code.block_id
+    assert any(
+        code.block_id in q.target_ids
+        and any(
+            loc.format == "pdf"
+            and loc.evidence
+            and json.loads(loc.evidence)["charspan"]
+            for loc in q.locations
+        )
+        for q in source.uncertainties
+    )
+
+
+def test_repeated_note_in_shared_listing_does_not_pick_first(tmp_path, draft):
+    draft, reply = listing_reply(
+        draft,
+        [(80, "Note"), (65, "load"), (50, "Note")],
+        "Note load Note",
+        "Note\nload",
+    )
+    reply["blocks"].append(
+        {
+            "kind": "footnote",
+            "block_id": "note",
+            "text": "Note",
+            "evidence": [evidence()],
+        }
+    )
+    with pytest.raises(ValueError, match="Overlapping ownership"):
+        run(tmp_path, draft, reply)
+
+
+@pytest.mark.parametrize("last", ["1 + 2", b"/Other 9 Tf (1 + 2) Tj"])
+def test_shared_listing_does_not_assign_an_ordinary_code_row_as_a_note(
+    tmp_path, draft, last
+):
+    draft, reply = listing_reply(
+        draft,
+        [(80, "begin"), (65, "end"), (50, last)],
+        "begin end 1 + 2",
+        "begin\nend",
+    )
+    reply["blocks"].append(
+        {
+            "kind": "footnote",
+            "block_id": "note",
+            "text": "1 + 2",
+            "evidence": [evidence()],
+        }
+    )
+    with pytest.raises(ValueError, match="Overlapping ownership"):
+        run(tmp_path, draft, reply)
+
+
+def test_shared_body_cannot_take_the_second_occurrence_of_code(tmp_path, draft):
+    draft, reply = listing_reply(draft, [(75, "x"), (55, "x += 1")], "x x += 1", "x")
+    reply["blocks"].append(
+        {
+            "kind": "body",
+            "block_id": "paragraph",
+            "text": "x += 1",
+            "evidence": [evidence()],
+        }
+    )
+    with pytest.raises(ValueError, match="Overlapping ownership"):
+        run(tmp_path, draft, reply)
+
+
+def test_reversed_shared_caption_without_target_cannot_claim_formatted_listing(
+    tmp_path, draft
+):
+    draft, reply = listing_reply(
+        draft, [(75, "Title"), (55, "x"), (35, "end")], "Title x end", "x\nend"
+    )
+    reply["blocks"].append(
+        {
+            "kind": "caption",
+            "block_id": "cap",
+            "text": "Title",
+            "evidence": [evidence()],
+        }
+    )
+    with pytest.raises(ValueError, match="Overlapping ownership"):
+        run(tmp_path, draft, reply)
+
+
+@pytest.mark.parametrize("claimant", ["example", "cap"])
+def test_shared_caption_and_listing_cannot_absorb_another_ref(
+    tmp_path, draft, claimant
+):
+    draft, reply = listing_reply(
+        draft,
+        [(90, "prepare"), (70, "Trace"), (50, "read"), (30, "stop")],
+        "Trace read stop",
+        "read\n    stop",
+    )
+    ws, _, model = draft
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    shared = raw["texts"][0]
+    shared["prov"][0]["bbox"]["t"] = 82
+    ref = "#/texts/1"
+    raw["texts"].append(
+        {
+            **shared,
+            "self_ref": ref,
+            "text": "prepare",
+            "prov": [
+                {
+                    **shared["prov"][0],
+                    "charspan": [0, 7],
+                    "bbox": {**shared["prov"][0]["bbox"], "b": 83, "t": 99},
+                }
+            ],
+        }
+    )
+    raw["body"]["children"].insert(0, {"$ref": ref})
+    draft = rewrite_raw(draft, raw)
+    reply["draft_sha256"] = draft[1]
+    reply["blocks"].append(
+        {
+            "kind": "caption",
+            "block_id": "cap",
+            "text": "Trace",
+            "target_id": "example",
+            "evidence": [evidence()],
+        }
+    )
+    next(b for b in reply["blocks"] if b["block_id"] == claimant)["evidence"].insert(
+        0, evidence(ref=ref)
+    )
+    with pytest.raises(ValueError, match="Overlapping ownership"):
+        run(tmp_path, draft, reply)
+
+
+@pytest.mark.parametrize(
+    "raw,code,start,span,first_x",
+    [
+        ("Title   first\n  second", "first\n  second", 8, None, 8),
+        ("Title  first\n  second", "  first\n  second", 5, [0, 5], 18.8),
+        ("Title   first\n  second ", "first\n  second", 8, None, 8),
+    ],
+)
+def test_unique_listing_span_keeps_both_literal_edges(
+    tmp_path, draft, raw, code, start, span, first_x
+):
+    draft, reply = listing_reply(
+        draft,
+        [(80, "Title"), (65, "first", first_x), (50, "second")],
+        raw,
+        code,
+    )
+    reply["blocks"].append(
+        {
+            "kind": "caption",
+            "block_id": "cap",
+            "text": "Title",
+            "target_id": "example",
+            "evidence": [evidence(charspan=span)],
+        }
+    )
+    ws = draft[0]
+    chunk = load_pdf_correction(ws, run(tmp_path, draft, reply))
+    assert [(b.text, b.evidence[0].charspan) for b in chunk.blocks] == [
+        ("Title", (0, 5)),
+        (code, (start, start + len(code))),
+    ]
+
+
+@pytest.mark.parametrize(
+    "raw_code,proposal,first_x,qa_spans",
+    [
+        ("read 10 stop", "read\n10 stop", 8, [[0, 4], [5, 12]]),
+        ("  read 10\nstop", "read 10\nstop", 18.8, [[2, 9], [10, 14]]),
+    ],
+)
+def test_numbered_footnote_keeps_full_preceding_code(
+    tmp_path, draft, raw_code, proposal, first_x, qa_spans
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    draft, reply = listing_reply(
+        draft,
+        [
+            (80, "read 10", first_x),
+            (65, "stop"),
+            (40, b"/Other 7 Tf (1.) Tj /Other 9 Tf ( Note.) Tj"),
+        ],
+        raw_code + " 1. Note.",
+        proposal,
+    )
+    end = len(raw_code)
+    reply["blocks"].append(
+        {
+            "kind": "footnote",
+            "block_id": "note",
+            "text": "1. Note.",
+            "evidence": [evidence(charspan=[end + 1, end + 9])],
+        }
+    )
+    ws = draft[0]
+    digest = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(ws, digest)
+    assert [(b.kind, b.text, b.evidence[0].charspan) for b in chunk.blocks] == [
+        ("code", raw_code, (0, end)),
+        ("footnote", "1. Note.", (end + 1, end + 9)),
+    ]
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[digest], snapshot_id="footnote-wrap"
+    )
+    code, note = source.blocks
+    assert code.kind == "code" and code.text == raw_code and note.kind == "footnote"
+    (qa,) = [
+        q
+        for q in source.uncertainties
+        if q.target_ids == [code.block_id]
+        and "Line boundary or indentation" in q.reason
+    ]
+    assert [
+        json.loads(l.evidence)["charspan"]
+        for l in qa.locations
+        if l.format == "pdf" and l.page == 1 and l.evidence
+    ] == qa_spans
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_shared_caption_boundary_newline_is_not_a_blank_code_line(
+    tmp_path, draft, newline
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    draft, reply = listing_reply(
+        draft,
+        [(80, "Title"), (65, "read"), (50, "stop")],
+        "Title" + newline + "read\nstop",
+        newline + "read\nstop",
+    )
+    reply["blocks"].append(
+        {
+            "kind": "caption",
+            "block_id": "cap",
+            "text": "Title",
+            "target_id": "example",
+            "evidence": [evidence(charspan=[0, 5])],
+        }
+    )
+    ws = draft[0]
+    digest = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(ws, digest)
+    start = 5 + len(newline)
+    assert [(b.text, b.evidence[0].charspan) for b in chunk.blocks] == [
+        ("Title", (0, 5)),
+        ("read\nstop", (start, start + 9)),
+    ]
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[digest], snapshot_id="caption-boundary"
+    )
+    cap, code = source.blocks
+    assert cap.structure["target_id"] == code.block_id and code.text == "read\nstop"
+    (qa,) = [
+        q
+        for q in source.uncertainties
+        if q.target_ids == [code.block_id]
+        and "Line boundary or indentation" in q.reason
+    ]
+    assert [
+        json.loads(l.evidence)["charspan"]
+        for l in qa.locations
+        if l.format == "pdf" and l.page == 1 and l.evidence
+    ] == [[start, start + 4], [start + 5, start + 9]]
+
+
+def test_explicit_literal_listing_narrows_the_bare_footnote_ref(tmp_path, draft):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    draft, reply = listing_reply(
+        draft,
+        [
+            (80, "read 10"),
+            (65, "stop"),
+            (40, b"/Other 7 Tf (1.) Tj /Other 9 Tf ( Note.) Tj"),
+        ],
+        "  read 10\nstop 1. Note.",
+        "read 10\nstop",
+    )
+    reply["blocks"][0]["evidence"] = [evidence(charspan=[2, 14])]
+    reply["blocks"].append(
+        {
+            "kind": "footnote",
+            "block_id": "note",
+            "text": "1. Note.",
+            "evidence": [evidence()],
+        }
+    )
+    ws = draft[0]
+    digest = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(ws, digest)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[digest], snapshot_id="explicit-listing"
+    )
+    assert [(b.kind, b.text) for b in source.blocks] == [
+        ("code", "read 10\nstop"),
+        ("footnote", "1. Note."),
+    ]
+    assert [[e.charspan for e in b.evidence] for b in chunk.blocks] == [
+        [(2, 14)],
+        [(15, 23)],
+    ]
+    assert not any(
+        "Line boundary or indentation" in q.reason for q in source.uncertainties
+    )

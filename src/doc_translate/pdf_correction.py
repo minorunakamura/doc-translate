@@ -31,7 +31,7 @@ from doc_translate.progress import Observer, emit, scoped_observer
 from doc_translate.snapshot import Contract, Nonempty, Sha256
 from doc_translate.workspace import workspace_lock
 
-ADOPTION_RULE = "printed-ownership-v9"
+ADOPTION_RULE = "printed-roles-v10"
 _RULE_VERSIONS = {
     "owned-text-v1": 2,
     "owned-ranges-v2": 3,
@@ -41,7 +41,8 @@ _RULE_VERSIONS = {
     "printed-margin-v6": 7,
     "printed-separators-v7": 8,
     "printed-display-v8": 9,
-    ADOPTION_RULE: 10,
+    "printed-ownership-v9": 10,
+    ADOPTION_RULE: 11,
 }
 
 
@@ -234,7 +235,7 @@ class CorrectionAnswer(Contract):
 
 
 class PDFCorrectionChunk(Contract):
-    schema_version: Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10] = 1
+    schema_version: Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] = 1
     draft_sha256: Sha256
     owned_pages: list[PositiveInt]
     reference_pages: list[PositiveInt]
