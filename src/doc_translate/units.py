@@ -84,10 +84,11 @@ def _source_hash(text: str, tokens: list[InlineToken]) -> str:
 
 _MARKER = re.compile(r"⟦(?:=|/)?[0-9]+⟧")
 # shortcut: lexical literals only; annotate inline when an identifier looks like prose.
+_NUMBER = r"(?<!\w)[+-]?(?:0[xX][0-9a-fA-F]+|0[bB][01]+|(?:\d+(?:\.\d+)*|\.\d+)(?:[eE][+-]?\d+)?)(?!\w)"
 _LITERAL = re.compile(
     r"https?://[^\s<>]+|`[^`\n]+`|\b[A-Za-z]\w*(?:_\w+|\.[A-Za-z_]\w*)+\b"
     r"|\b[A-Z][a-z]+(?:[A-Z][A-Za-z0-9]*)+\b"
-    r"|(?<!\w)[+-]?(?:0[xX][0-9a-fA-F]+|0[bB][01]+|(?:\d+(?:\.\d+)*|\.\d+)(?:[eE][+-]?\d+)?)(?!\w)"
+    rf"|(?P<number>{_NUMBER})"
 )
 
 

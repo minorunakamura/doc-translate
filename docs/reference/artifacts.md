@@ -569,6 +569,16 @@ for block in chunk.blocks:
 
 除外は`text/reason/evidence`を保持します。uncertaintyは`reason/target_ids/evidence/origin`を持ち、originは`original/processing/undetermined`です。空のtarget配列はページやraw取得全体の問題に使用できます。未知IDは拒否します。空uncertainty配列は内容reviewの承認ではありません。
 
+### 所有本文の採否（#97）
+
+`correct_pdf` は生回答をattemptへ保存し、それとは別に採用chunkを作ります。新しい `request.context.adoption_rule = "printed-lines-v4"`（chunk schema 5）は、draftの読順・所有page・有効な文字範囲をblock／cellの出典と照合します。案が欠いた読める範囲を、見出し・本文・脚注・コード等の位置と役割に戻し、図内文字や参照ページを独立本文に足しません。既知の同一itemの所有部分を保持する規則で、別item間の新しい跨ページ接続や表再構築はしません。
+
+通常本文で案の差が局所的な語間SPACEだけなら、draftのSHA-256を検証した**その原本byte列**を、所有ページのprovenance bbox内だけで照合します。同一出現・同一行の実文字SPACE、または別描画間で通常の字送りを越え、周囲の字間の揺れでは説明できない余白だけを採用します。生成SPACEや描画の分割だけでは採用しません。一意の裏付けがない区切りや行末hyphen、数字などの読みの不一致は抽出文字を採り、両者の違いと位置を要確認に残します。不確かな所属は推測しません。hash不一致は照合失敗であり、文字層のないPDFと同じ扱いにしません。
+
+コード例は実行用ソースの論理改行を復元したものではなく、紙面の表示です。案と抽出が一致していても、同じ所有範囲の局所文字層の各行を案の全文・順序と照合し、行頭と等幅の実測字送りで相対字下げを確認します。抽出下書きの既存改行・空行を保持し、非空行の境界だけを確認できた場合は、案だけの余分な空行を足しません。空行数を確定できなかった理由と前後両行の位置をQAに残します。固定対照との追加空行数だけの差は、非空行の一致と別に扱い、完全一致には数えません。改行や字下げ自体に裏付けがなければ、当該範囲の抽出文字をcodeとして採用し、差をQAに残します。
+
+`load_pdf_correction`・成功再利用・未採用attempt回収も記録された方式で再構成します。方式なし（schema 1）は旧回答の採用、`owned-text-v1`（schema 2）と`owned-ranges-v2`（schema 3）、生成済みの`owned-layout-v3`（schema 4）はそれぞれ当時の採否をbyte単位で維持します。新方式へ移行・再送せず、方式値と実入力、再構成した保存内容を検証します。未知の方式のchunk、方式取り違え、再hashだけした不一致chunkは読めません。今回の要求・設定に該当する検証済み成功attemptの方式が未知なら、回収時にエラーとし、新規送信には進みません。
+
 ### 図の所属と採用結果
 
 `members`の要素は、候補block／cellの`target_id`、または`ref: CorrectionEvidence`の**どちらか一方**と、`status: confirmed | uncertain | partial`、`reason`です。図と同じ所有ページの実在対象だけを扱います。所属をbboxの重なりや近接から推測しません。

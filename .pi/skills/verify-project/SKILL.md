@@ -87,3 +87,7 @@ Mapの同節と[送信前準備・単一trial・人工直接確認](../../../doc
 実接続は公開process_command=None、既存アプリOAuth preflight/通常refresh/saveのみ。全予約前oauth/OAuth照合、ambient API key除外、新login/Pi auth参照・コピー/fallback禁止。cap=0を無認証dry-runにしない。人工直接確認は**実AUTH外の新sandbox**でdesignのcomplete→interruptを別Python invocationで実行し、公開保存/別process英語readback、同じ累計再読、開始/予約中断と無送信停止を観測する。実runtime到達assert拒否・人工OAuth metadataを使い、実認証/意味品質の保証にしない。
 
 代表consumer/専用module/既存trial/公開consumerと明示helper品質はdesignに従い、Root正式check/別invocation/全画像固定期待照合とReviewer gateを分ける。正当なheader不要復元0・正常内容不要指摘/変更0・局所不読保持・回復不要baseline保存/英語出力で成功停止。他7標本/実書籍/通常run-resume/OCR/日本語/全冊は未保証。旧全結果/元hash/mtime/全失敗を保持し、秘密や本文を公開せず、所有temp/人工credential/childだけcleanup/wait後に証拠を再読する。project trust後、新セッションか`/reload`、`/skill:verify-project PDF source evaluation preparation`または本ファイル明示readで再利用する。
+
+## 初回PDFの所有本文（#97）
+
+[Map「所有本文の採用・保存再読」](references/feature-map.md#所有本文の採用保存再読97)の二つの入口を別の新規private親で使う。指定2件の保存回答の閉じた再生と、人工CLI run／fresh resume（実Node/faux/no-network）は別の検査。コード3対照は論理改行の復元ではなく紙面の表示を検証する。固定期待・元画像・描画位置と英語fenceで各非空行全文と相対字下げを照合する。本文の語間はbounded hitでなく明示SPACEまたは別描画の実字送りと境界余白を調べる。差が追加空行数に限られる場合も、前後の位置QAを確認し、完全一致には数えない。書籍・正解を外部送信しない。旧標本・trial・固定期待は変更せず、Rootの独立画像確認と正式検査を代替しない。

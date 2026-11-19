@@ -22,6 +22,7 @@ from doc_translate.pdf import (
     PDFArtifact,
     PDFPageImage,
     PositiveInt,
+    _hash,
     _read_artifact,
     _store,
     load_pdf_draft,
@@ -29,6 +30,26 @@ from doc_translate.pdf import (
 from doc_translate.progress import Observer, emit, scoped_observer
 from doc_translate.snapshot import Contract, Nonempty, Sha256
 from doc_translate.workspace import workspace_lock
+
+ADOPTION_RULE = "printed-lines-v4"
+_RULE_VERSIONS = {
+    "owned-text-v1": 2,
+    "owned-ranges-v2": 3,
+    "owned-layout-v3": 4,
+    ADOPTION_RULE: 5,
+}
+
+
+class _UnknownAdoptionRule(ValueError):
+    pass
+
+
+def _rule_version(context):
+    if "adoption_rule" not in context:
+        return 1
+    rule = context["adoption_rule"]
+    return _RULE_VERSIONS.get(rule) if isinstance(rule, str) else None
+
 
 Visible = Annotated[str, Field(min_length=1, pattern=r"\S")]
 
@@ -208,7 +229,7 @@ class CorrectionAnswer(Contract):
 
 
 class PDFCorrectionChunk(Contract):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2, 3, 4, 5] = 1
     draft_sha256: Sha256
     owned_pages: list[PositiveInt]
     reference_pages: list[PositiveInt]
@@ -247,8 +268,8 @@ def _authorized_draft(workspace, digest, owned, reference, drafts=None):
                 pending.extend(
                     (value, f"{path}/{index}") for index, value in enumerate(node)
                 )
-        drafts[digest] = (draft, items)
-    draft, items = drafts[digest]
+        drafts[digest] = (draft, items, raw)
+    draft, items, raw = drafts[digest]
     if draft.document.format != "pdf" or draft.conversion_status != "success":
         raise ValueError("Correction requires a successful PDF draft")
     if not set(allowed) <= set(draft.target_pages):
@@ -259,7 +280,7 @@ def _authorized_draft(workspace, digest, owned, reference, drafts=None):
         if len(matches) != 1:
             raise ValueError("Each authorized page needs exactly one image")
         pages.extend(matches)
-    return draft, pages, items
+    return draft, pages, items, raw
 
 
 def _validate_evidence(evidence, owned, items):
@@ -448,7 +469,31 @@ def _overlaps(selector, evidence):
     return True
 
 
-def _make_chunk(answer, reference_pages, pages, run, problems=()):
+def _make_chunk(
+    answer, reference_pages, pages, run, problems, raw, context, workspace, document
+):
+    version = _rule_version(context)
+    if version is None:
+        raise _UnknownAdoptionRule("Unknown PDF adoption rule")
+    if version == 2:
+        from doc_translate.pdf_adoption import preserve_owned_text
+
+        answer = preserve_owned_text(answer, raw)
+    elif version >= 3:
+        from doc_translate.pdf_adoption import adopt_owned_ranges
+
+        answer = adopt_owned_ranges(
+            answer,
+            raw,
+            pages,
+            lambda: _read_artifact(
+                workspace,
+                PDFArtifact(artifact=document.artifact, sha256=document.sha256),
+            ),
+            lambda page: _read_artifact(workspace, page.image),
+            verify_layout=version >= 4,
+            printed_lines=version == 5,
+        )
     candidates = {block.block_id: block for block in answer.blocks}
     candidates.update(
         (cell.cell_id, cell)
@@ -560,6 +605,7 @@ def _make_chunk(answer, reference_pages, pages, run, problems=()):
         else:
             adopted.append(block)
     return PDFCorrectionChunk(
+        schema_version=version,
         draft_sha256=answer.draft_sha256,
         owned_pages=answer.owned_pages,
         reference_pages=reference_pages,
@@ -711,6 +757,7 @@ def _correction_request(digest, owned, reference, policy, projection):
         policy=policy,
         text=json.dumps(projection, ensure_ascii=False),
         context={
+            "adoption_rule": ADOPTION_RULE,
             "draft_sha256": digest,
             "owned_pages": [number for number in owned],
             "reference_pages": [number for number in reference],
@@ -756,13 +803,50 @@ def _repair_request(request, feedback):
     )
 
 
-def _matches_request(actual, request):
+def _matches_request(actual, request, *, load=False):
+    context = actual.get("context") if isinstance(actual, dict) else None
+    if not isinstance(context, dict):
+        return False
+    historical = "adoption_rule" not in context
+    if historical:
+        request = request.model_copy(
+            update={
+                "context": {
+                    key: value
+                    for key, value in request.context.items()
+                    if key != "adoption_rule"
+                }
+            }
+        )
+    elif not load or _rule_version(context) is not None:
+        # Match the rest of an orphan request first. Only a matching validated
+        # success reaches _make_chunk, which rejects an unknown rule.
+        request = request.model_copy(
+            update={
+                "context": {
+                    **request.context,
+                    "adoption_rule": context["adoption_rule"],
+                }
+            }
+        )
+    else:
+        return False
+
+    # JSON booleans and integers are different wire values (True == 1 in Python).
+    def matches(expected):
+        return json.dumps(actual, sort_keys=True) == json.dumps(
+            expected, sort_keys=True
+        )
+
     current = request.model_dump(mode="json")
     legacy = {**current, "context": dict(current["context"])}
     del legacy["context"]["page_results"]
-    if actual in (current, legacy):
+    if matches(current) or (historical and matches(legacy)):
         return True
-    context = actual.get("context") if isinstance(actual, dict) else None
+    if historical and load:
+        del legacy["context"]["figure_membership"]
+        if matches(legacy):
+            return True
     feedback = context.get("correction_feedback") if isinstance(context, dict) else None
     if not isinstance(feedback, dict):
         return False
@@ -774,12 +858,12 @@ def _matches_request(actual, request):
         and missing == sorted(set(missing))
         and set(missing) <= set(request.context["owned_pages"])
         and feedback == _PageCoverageError(missing).feedback
-        and actual == _repair_request(request, feedback).model_dump(mode="json")
+        and matches(_repair_request(request, feedback).model_dump(mode="json"))
     )
 
 
 def _saved_correction(
-    workspace, run, record, config, request, pages, items, projection
+    workspace, run, record, config, request, pages, items, projection, raw, document
 ):
     if not _matches_request(record.get("request"), request):
         return None
@@ -792,16 +876,29 @@ def _saved_correction(
         )
     except ValueError, KeyError, TypeError, IndexError, InferenceError:
         return None
-    chunk = _make_chunk(
-        answer, context["reference_pages"], pages, run, projection["problems"]
+    return _make_chunk(
+        answer,
+        context["reference_pages"],
+        pages,
+        run,
+        projection["problems"],
+        raw,
+        record["request"]["context"],
+        workspace,
+        document,
     )
-    return _store(
-        workspace, "corrections/pdf", "json", chunk.model_dump_json().encode()
-    ).sha256
 
 
 def _recover_pdf_correction(
-    workspace, path, draft_sha256, owned_pages, allowed_pages, policy, config, drafts
+    workspace,
+    path,
+    draft_sha256,
+    owned_pages,
+    allowed_pages,
+    policy,
+    config,
+    drafts,
+    claimed,
 ):
     """Probe one saved reply under its original scope without invoking a provider."""
     run = PDFArtifact(artifact=f"attempts/pdf-correction/{path.name}", sha256=path.stem)
@@ -815,6 +912,7 @@ def _recover_pdf_correction(
         if (
             context["draft_sha256"] != draft_sha256
             or not set(owned) <= set(owned_pages)
+            or (_rule_version(context) is not None and claimed.intersection(owned))
             or not set(reference) <= set(allowed_pages)
             or not owned
             or len(owned + reference) != len(set(owned + reference))
@@ -822,15 +920,23 @@ def _recover_pdf_correction(
             return None
     except ValueError, KeyError, TypeError:
         return None
-    _draft, pages, items = _authorized_draft(
+    _draft, pages, items, raw = _authorized_draft(
         workspace, draft_sha256, owned, reference, drafts
     )
     projection = _projection(items, owned + reference)
     request = _correction_request(draft_sha256, owned, reference, policy, projection)
-    digest = _saved_correction(
-        workspace, run, record, config, request, pages, items, projection
+    return _saved_correction(
+        workspace,
+        run,
+        record,
+        config,
+        request,
+        pages,
+        items,
+        projection,
+        raw,
+        _draft.document,
     )
-    return (digest, owned) if digest is not None else None
 
 
 def correct_pdf(
@@ -882,7 +988,7 @@ def _correct_pdf(
     )
     emit(observer, "correction", "validating")
     config = GenerationConfig.model_validate(config.model_dump())
-    _draft, pages, items = _authorized_draft(
+    _draft, pages, items, raw = _authorized_draft(
         workspace, draft_sha256, owned_pages, reference_pages
     )
     allowed = owned_pages + reference_pages
@@ -891,17 +997,49 @@ def _correct_pdf(
         draft_sha256, owned_pages, reference_pages, policy, projection
     )
     images = _images(workspace, pages)
+    pending = None
+    unknown = None
     for path in sorted((workspace / "attempts/pdf-correction").glob("*.json")):
         run = PDFArtifact(
             artifact=f"attempts/pdf-correction/{path.name}", sha256=path.stem
         )
         record = json.loads(_read_artifact(workspace, run))
-        recovered = _saved_correction(
-            workspace, run, record, config, request, pages, items, projection
-        )
-        if recovered is not None:
+        try:
+            recovered = _saved_correction(
+                workspace,
+                run,
+                record,
+                config,
+                request,
+                pages,
+                items,
+                projection,
+                raw,
+                _draft.document,
+            )
+        except _UnknownAdoptionRule as error:
+            # An already-published matching chunk is reuse, not orphan recovery.
+            unknown = error
+            continue
+        if recovered is None:
+            continue
+        data = recovered.model_dump_json().encode()
+        digest = _hash(data)
+        if (workspace / f"corrections/pdf/{digest}.json").exists():
+            _read_artifact(
+                workspace,
+                PDFArtifact(artifact=f"corrections/pdf/{digest}.json", sha256=digest),
+            )
             emit(observer, "correction", "reused")
-            return recovered
+            return digest
+        if pending is None:
+            pending = data
+    if unknown is not None:
+        raise unknown
+    if pending is not None:
+        digest = _store(workspace, "corrections/pdf", "json", pending).sha256
+        emit(observer, "correction", "reused")
+        return digest
     current_request = request
     for number in range(3):
         try:
@@ -949,7 +1087,15 @@ def _correct_pdf(
     emit(observer, "correction", "saving")
     run = _record(workspace, "validated", current_request, config, result.attempts)
     chunk = _make_chunk(
-        result.answer, reference_pages, pages, run, projection["problems"]
+        result.answer,
+        reference_pages,
+        pages,
+        run,
+        projection["problems"],
+        raw,
+        current_request.context,
+        workspace,
+        _draft.document,
     )
     return _store(
         workspace, "corrections/pdf", "json", chunk.model_dump_json().encode()
@@ -962,13 +1108,11 @@ def load_pdf_correction(workspace: Path, sha256: str) -> PDFCorrectionChunk:
 
 
 def _load_pdf_correction(workspace, sha256, drafts):
-    chunk = PDFCorrectionChunk.model_validate_json(
-        _read_artifact(
-            workspace,
-            PDFArtifact(artifact=f"corrections/pdf/{sha256}.json", sha256=sha256),
-        )
+    data = _read_artifact(
+        workspace, PDFArtifact(artifact=f"corrections/pdf/{sha256}.json", sha256=sha256)
     )
-    _draft, pages, items = _authorized_draft(
+    chunk = PDFCorrectionChunk.model_validate_json(data)
+    _draft, pages, items, raw = _authorized_draft(
         workspace, chunk.draft_sha256, chunk.owned_pages, chunk.reference_pages, drafts
     )
     record = json.loads(_read_artifact(workspace, chunk.run))
@@ -978,32 +1122,31 @@ def _load_pdf_correction(workspace, sha256, drafts):
     context = request.context
     if not isinstance(context, dict):
         raise TypeError("Correction request needs object context")
-    if (
-        request.stage != "correction"
-        or context["response_schema"] != CorrectionAnswer.model_json_schema()
-        or context["draft_sha256"] != chunk.draft_sha256
-        or context["owned_pages"] != chunk.owned_pages
-        or context["reference_pages"] != chunk.reference_pages
-        or record["request"]["text"] != json.dumps(projection, ensure_ascii=False)
-        or (
-            ("correction_feedback" in context or "coverage_correction" in context)
-            and not _matches_request(
-                record["request"],
-                _correction_request(
-                    chunk.draft_sha256,
-                    chunk.owned_pages,
-                    chunk.reference_pages,
-                    request.policy,
-                    projection,
-                ),
-            )
-        )
+    if not _matches_request(
+        record["request"],
+        _correction_request(
+            chunk.draft_sha256,
+            chunk.owned_pages,
+            chunk.reference_pages,
+            request.policy,
+            projection,
+        ),
+        load=True,
     ):
         raise ValueError("Saved correction differs from its authorized request")
     answer = _saved_answer(record, config, CorrectionAnswer, _images(workspace, pages))
     _validate_answer(answer, chunk.draft_sha256, chunk.owned_pages, items, pages)
-    if chunk != _make_chunk(
-        answer, chunk.reference_pages, pages, chunk.run, projection["problems"]
-    ):
+    reconstructed = _make_chunk(
+        answer,
+        chunk.reference_pages,
+        pages,
+        chunk.run,
+        projection["problems"],
+        raw,
+        context,
+        workspace,
+        _draft.document,
+    )
+    if reconstructed.model_dump_json().encode() != data:
         raise ValueError("Saved correction differs from validated owned results")
     return chunk

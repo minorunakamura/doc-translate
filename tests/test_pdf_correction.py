@@ -3,6 +3,8 @@
 import hashlib
 import json
 import shutil
+import subprocess
+import sys
 from io import BytesIO
 from pathlib import Path
 
@@ -189,11 +191,18 @@ def test_correct_pdf_reuses_legacy_success_without_resending_or_rewriting(
     record = json.loads(run_path.read_bytes())
     original_attempts = record["attempts"]
     # Synthesize the exact old base from a genuine helper success, not a fake reply.
+    del record["request"]["context"]["adoption_rule"]
     del record["request"]["context"]["page_results"]
+    chunk["schema_version"] = 1
     chunk["run"] = artifact(
         workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
     )
-    legacy = artifact(workspace, "corrections/pdf", "json", json.dumps(chunk).encode())
+    legacy = artifact(
+        workspace,
+        "corrections/pdf",
+        "json",
+        json.dumps(chunk, ensure_ascii=False, separators=(",", ":")).encode(),
+    )
     run_path.rename(run_path.with_suffix(".original"))
     path.rename(path.with_suffix(".original"))
     previous = {
@@ -528,12 +537,19 @@ def test_load_pdf_correction_accepts_legacy_request_without_membership_guidance(
     original = path.read_bytes()
     chunk = json.loads(original)
     record = json.loads((workspace / chunk["run"]["artifact"]).read_bytes())
+    del record["request"]["context"]["adoption_rule"]
     record["request"]["context"].pop("figure_membership", None)
     record["request"]["context"].pop("page_results", None)
+    chunk["schema_version"] = 1
     chunk["run"] = artifact(
         workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
     )
-    legacy = artifact(workspace, "corrections/pdf", "json", json.dumps(chunk).encode())
+    legacy = artifact(
+        workspace,
+        "corrections/pdf",
+        "json",
+        json.dumps(chunk, ensure_ascii=False, separators=(",", ":")).encode(),
+    )
     loaded = load_pdf_correction(workspace, legacy["sha256"])
     assert loaded.model_dump(mode="json") == chunk
     assert path.read_bytes() == original
@@ -1407,7 +1423,9 @@ def test_connection_evidence_obeys_authorization_and_raw_provenance(
     assert not list((draft[0] / "corrections/pdf").glob("*.json"))
 
 
-@pytest.mark.parametrize("base", ["current", "legacy"])
+@pytest.mark.parametrize(
+    "base", ["current", "legacy", "owned-text-v1", "owned-ranges-v2", "owned-layout-v3"]
+)
 def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
     tmp_path, draft, monkeypatch, base
 ):
@@ -1425,10 +1443,15 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
         patch.setattr(os, "replace", fail_replace)
         with pytest.raises(OSError, match="interrupted chunk save"):
             run(tmp_path, draft, answer(digest))
-    if base == "legacy":
+    if base != "current":
         path = next((workspace / "attempts/pdf-correction").glob("*.json"))
         record = json.loads(path.read_bytes())
-        del record["request"]["context"]["page_results"]
+        context = record["request"]["context"]
+        if base == "legacy":
+            del context["adoption_rule"]
+            del context["page_results"]
+        else:
+            context["adoption_rule"] = base
         artifact(
             workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
         )
@@ -1440,6 +1463,28 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
     # No helper may start even though no accepted chunk was saved yet.
     accepted = run(
         tmp_path, draft, answer(digest), before_send=lambda *_: pytest.fail("resent")
+    )
+    chunk = load_pdf_correction(workspace, accepted)
+    assert (
+        chunk.schema_version
+        == {
+            "legacy": 1,
+            "owned-text-v1": 2,
+            "owned-ranges-v2": 3,
+            "owned-layout-v3": 4,
+            "current": 5,
+        }[base]
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from pathlib import Path; from doc_translate.pdf_correction import load_pdf_correction; c=load_pdf_correction(Path(sys.argv[1]),sys.argv[2]); assert c.model_dump_json().encode()==(Path(sys.argv[1]) / 'corrections/pdf' / (sys.argv[2]+'.json')).read_bytes()",
+            str(workspace),
+            accepted,
+        ],
+        check=True,
     )
     assert load_pdf_correction(workspace, accepted).blocks[0].text == "Outside text"
     assert (tmp_path / "request.json").read_bytes() == sent
@@ -1479,6 +1524,7 @@ def test_correct_pdf_revalidates_orphan_result_and_actual_images(
     path = next((workspace / "attempts/pdf-correction").glob("*.json"))
     record = json.loads(path.read_bytes())
     if base == "legacy":
+        del record["request"]["context"]["adoption_rule"]
         del record["request"]["context"]["page_results"]
         legacy = artifact(
             workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
@@ -1537,12 +1583,17 @@ def test_correct_pdf_does_not_reuse_changed_actual_inputs(
         chunk = json.loads(path.read_bytes())
         run_path = workspace / chunk["run"]["artifact"]
         record = json.loads(run_path.read_bytes())
+        del record["request"]["context"]["adoption_rule"]
         del record["request"]["context"]["page_results"]
+        chunk["schema_version"] = 1
         chunk["run"] = artifact(
             workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
         )
         previous = artifact(
-            workspace, "corrections/pdf", "json", json.dumps(chunk).encode()
+            workspace,
+            "corrections/pdf",
+            "json",
+            json.dumps(chunk, ensure_ascii=False, separators=(",", ":")).encode(),
         )["sha256"]
         path.rename(path.with_suffix(".original"))
         run_path.rename(run_path.with_suffix(".original"))
@@ -1606,6 +1657,7 @@ def test_correct_pdf_does_not_normalize_other_legacy_request_differences(
     chunk = load_pdf_correction(workspace, accepted)
     path = workspace / chunk.run.artifact
     record = json.loads(path.read_bytes())
+    del record["request"]["context"]["adoption_rule"]
     del record["request"]["context"]["page_results"]
     context = record["request"]["context"]
     if change == "projection":
@@ -2070,3 +2122,1643 @@ def test_correct_pdf_only_reuses_exact_prescribed_coverage_repair(
     )
     assert sent == [True]
     assert load_pdf_correction(workspace, current).blocks[0].text == "Outside text"
+
+
+@pytest.mark.parametrize(
+    "proposed,mixed", [("180", False), ("180", True), ("1000", True), ("100.25", True)]
+)
+def test_partial_answer_keeps_owned_reading_order_in_translation_units(
+    tmp_path, draft, proposed, mixed
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.units import generate_translation_units
+
+    texts = []
+    for index, text in enumerate(
+        ["Use 100 items.", "Last.", "First.", "Missing step."]
+    ):
+        texts.append(
+            {
+                "self_ref": f"#/texts/{index}",
+                "label": "text",
+                "text": text,
+                "prov": [{"page_no": 1, "charspan": [0, len(text)]}],
+            }
+        )
+    raw = {
+        "texts": texts,
+        "body": {"children": [{"$ref": f"#/texts/{i}"} for i in (2, 3, 0, 1)]},
+    }
+    draft = rewrite_raw(draft, raw)
+    workspace, digest, _ = draft
+    reply = answer(digest)
+    reply["blocks"] = [
+        {
+            "kind": "body",
+            "block_id": str(i),
+            "text": text,
+            "evidence": [evidence(ref=f"#/texts/{i}")],
+        }
+        for i, text in [(2, "First."), (0, f"Use {proposed} items."), (1, "Last.")]
+    ]
+    if mixed:
+        reply["blocks"][1]["evidence"].append(evidence(ref=None))
+        reply["blocks"][1]["text"] += " Seal."
+    saved = run(tmp_path, draft, reply)
+    assert load_pdf_correction(workspace, saved).owned_pages == [1]
+    source = assemble_pdf_source(
+        workspace=workspace, chunk_sha256s=[saved], snapshot_id="ordered"
+    )
+    units = generate_translation_units(source)
+    assert [u.source_text for u in units] == [
+        "First.",
+        "Missing step.",
+        "Use ⟦=1⟧ items." + (" Seal." if mixed else ""),
+        "Last.",
+    ]
+    assert units[2].tokens[0].value == {"text": "100"}
+    assert any(
+        q.target_ids == [units[2].block_id]
+        and q.locations[0].format == "pdf"
+        and q.locations[0].page == 1
+        and proposed in q.reason
+        and "100" in q.reason
+        for q in source.uncertainties
+    )
+
+
+def test_saved_correction_uses_only_its_recorded_adoption_rule(tmp_path, draft):
+    workspace, digest, _ = draft
+    old = json.loads((ROOT / "tests/fixtures/pdf-correction-591086c.json").read_text())
+    record = artifact(
+        workspace, "attempts/pdf-correction", "json", old["record"].encode()
+    )
+    wanted = hashlib.sha256(old["chunk"].encode()).hexdigest()
+    accepted = run(
+        tmp_path, draft, answer(digest), before_send=lambda *_: pytest.fail("resent")
+    )
+    assert accepted == wanted
+    assert (
+        load_pdf_correction(workspace, accepted).blocks[0].text == "Historical wording."
+    )
+    assert (workspace / f"corrections/pdf/{wanted}.json").read_bytes() == old[
+        "chunk"
+    ].encode()
+    chunk = json.loads(old["chunk"])
+    unknown = json.loads(old["record"])
+    unknown["request"]["context"]["adoption_rule"] = "unknown"
+    chunk["run"] = artifact(
+        workspace, "attempts/pdf-correction", "json", json.dumps(unknown).encode()
+    )
+    bad = artifact(workspace, "corrections/pdf", "json", json.dumps(chunk).encode())
+    with pytest.raises(ValueError):
+        load_pdf_correction(workspace, bad["sha256"])
+    assert (workspace / record["artifact"]).read_bytes() == old["record"].encode()
+
+
+def prose_pdf(lines, font="Helvetica"):
+    """One self-authored text-layer page, in the fixture's 200 x 100 point space."""
+    content = b"".join(
+        f"BT /F 9 Tf {8 if not x else x[0]} {y} Td ".encode()
+        + (line if isinstance(line, bytes) else f"({line}) Tj".encode())
+        + b" ET\n"
+        for y, line, *x in lines
+    )
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Font << /F 4 0 R >> >> /Contents 5 0 R >>",
+        f"<< /Type /Font /Subtype /Type1 /BaseFont /{font} >>".encode(),
+        f"<< /Length {len(content)} >>\nstream\n".encode() + content + b"endstream",
+    ]
+    pdf = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, obj in enumerate(objects, 1):
+        offsets.append(len(pdf))
+        pdf.extend(f"{i} 0 obj\n".encode() + obj + b"\nendobj\n")
+    xref = len(pdf)
+    pdf.extend(b"xref\n0 6\n0000000000 65535 f \n")
+    for offset in offsets:
+        pdf.extend(f"{offset:010d} 00000 n \n".encode())
+    pdf.extend(
+        f"trailer << /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    )
+    return bytes(pdf)
+
+
+@pytest.mark.parametrize(
+    "lines,supported",
+    [
+        ([(65, "We plant mint.")], True),
+        ([(65, b"1 Tc (We plant) Tj"), (65, b"1 Tc (mint.) Tj", 57)], False),
+        ([(65, b"3 Tr (We plant mint.) Tj")], False),
+        ([(65, b"7 Tr (We plant mint.) Tj")], False),
+        ([(65, b"[(We plant) -320 (mint.)] TJ")], False),
+        ([(65, "We plant"), (65, "mint.", 46)], True),
+        ([(65, "We plant"), (65, "mint.", 42.515)], False),
+        ([(65, "We plantmint."), (15, "We plant mint.")], False),
+        ([(65, "plant mint and plant mint.")], False),
+        ([(65, "They plant mint.")], False),
+        ([(65, "We plant"), (55, "mint.")], False),
+    ],
+)
+def test_word_boundary_requires_unique_local_original(
+    tmp_path, draft, lines, supported
+):
+    check_word_boundary(
+        tmp_path, draft, lines, supported, "We plantmint.", "We plant mint.", "text"
+    )
+
+
+@pytest.mark.parametrize("label", ["text", "paragraph"])
+def test_sentence_initial_printed_space(tmp_path, draft, label):
+    check_word_boundary(
+        tmp_path, draft, [(65, "Plant mint.")], True, "Plantmint.", "Plant mint.", label
+    )
+
+
+@pytest.mark.parametrize(
+    "text,proposed",
+    [
+        ("Iagree.", "I agree."),
+        ("Version Aor B.", "Version A or B."),
+        ("Choice isB today.", "Choice is B today."),
+    ],
+)
+def test_printed_space_by_single_letter(tmp_path, draft, text, proposed):
+    check_word_boundary(tmp_path, draft, [(65, proposed)], True, text, proposed, "text")
+
+
+@pytest.mark.parametrize(
+    "original,proposed",
+    [
+        ("Set OutputName now.", "Set Output Name now."),
+        ("Read https://example.org/AAor now.", "Read https://example.org/AA or now."),
+        ("Keep `set Iagree now`.", "Keep `set I agree now`."),
+    ],
+)
+def test_printed_space_preserves_protected_literals(
+    tmp_path, draft, original, proposed
+):
+    # StandardEncoding maps 0301 to grave accent, not left single quote.
+    drawing = b"(" + proposed.encode().replace(b"`", rb"\301") + b") Tj"
+    check_word_boundary(
+        tmp_path, draft, [(65, drawing)], False, original, proposed, "text"
+    )
+
+
+def check_word_boundary(tmp_path, draft, lines, supported, text, proposed, label):
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.units import generate_translation_units
+
+    workspace, _, model = draft
+    model.document = model.document.model_copy(
+        update=artifact(workspace, "originals", "pdf", prose_pdf(lines))
+    )
+    raw = {
+        "body": {"children": [{"$ref": "#/texts/0"}]},
+        "texts": [
+            {
+                "self_ref": "#/texts/0",
+                "label": label,
+                "text": text,
+                "prov": [
+                    {
+                        "page_no": 1,
+                        "charspan": [0, len(text)],
+                        "bbox": {
+                            "l": 0,
+                            "t": 79,
+                            "r": 190,
+                            "b": 51,
+                            "coord_origin": "BOTTOMLEFT",
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    draft = rewrite_raw(draft, raw)
+    reply = answer(draft[1])
+    reply["blocks"] = reply["blocks"][:1]
+    reply["blocks"][0]["text"] = proposed
+    saved = run(tmp_path, draft, reply)
+    load_pdf_correction(workspace, saved)
+    source = assemble_pdf_source(
+        workspace=workspace, chunk_sha256s=[saved], snapshot_id="local"
+    )
+    (unit,) = generate_translation_units(source)
+    decoded = unit.source_text
+    for token in unit.tokens:
+        value = token.value["text"]
+        assert isinstance(value, str)
+        decoded = decoded.replace(token.start_marker, value)
+    assert decoded == (proposed if supported else text)
+    if supported:
+        assert not source.uncertainties
+    else:
+        assert any(
+            q.target_ids == [source.blocks[0].block_id]
+            and q.locations[0].format == "pdf"
+            and q.locations[0].page == 1
+            for q in source.uncertainties
+        )
+
+
+def test_owned_portions_keep_roles_between_proposal_blocks(tmp_path, draft):
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.units import generate_translation_units
+
+    texts = []
+    for i, (kind, text) in enumerate(
+        [
+            ("section_header", "Packing"),
+            ("text", "Pack. Seal."),
+            ("text", "Then"),
+            ("text", "wait."),
+            ("footnote", "Use gloves."),
+            ("code", "x = 3"),
+        ]
+    ):
+        texts.append(
+            {
+                "self_ref": f"#/texts/{i}",
+                "label": kind,
+                "level": 2,
+                "text": text,
+                "prov": [{"page_no": 1, "charspan": [0, len(text)]}],
+            }
+        )
+    draft = rewrite_raw(
+        draft,
+        {
+            "body": {"children": [{"$ref": n["self_ref"]} for n in texts]},
+            "texts": texts,
+        },
+    )
+    workspace, digest, _ = draft
+    reply = answer(digest)
+    reply["blocks"] = [
+        {
+            "kind": "body",
+            "block_id": "seal",
+            "text": "Seal.",
+            "evidence": [evidence(ref="#/texts/1", charspan=[6, 11])],
+        },
+        {
+            "kind": "body",
+            "block_id": "wait",
+            "text": "Then wait.",
+            "evidence": [evidence(ref="#/texts/2"), evidence(ref="#/texts/3")],
+        },
+    ]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(workspace, saved)
+    assert [(b.kind, b.text.strip()) for b in chunk.blocks] == [
+        ("heading", "Packing"),
+        ("body", "Pack."),
+        ("body", "Seal."),
+        ("body", "Then wait."),
+        ("footnote", "Use gloves."),
+        ("code", "x = 3"),
+    ]
+    source = assemble_pdf_source(
+        workspace=workspace, chunk_sha256s=[saved], snapshot_id="portions"
+    )
+    assert [u.source_text.strip() for u in generate_translation_units(source)] == [
+        "Packing",
+        "Pack.",
+        "Seal.",
+        "Then wait.",
+        "Use gloves.",
+    ]
+
+
+def test_rehashed_saved_chunk_cannot_omit_reconstructed_fields(tmp_path, draft):
+    workspace, digest, model = draft
+    saved = run(tmp_path, draft, answer(digest))
+    chunk = load_pdf_correction(workspace, saved)
+    data = chunk.model_dump(mode="json")
+    data["blocks"][0].pop("incoming")
+    altered = artifact(workspace, "corrections/pdf", "json", json.dumps(data).encode())
+    with pytest.raises(ValueError):
+        load_pdf_correction(workspace, altered["sha256"])
+    original = workspace / model.document.artifact
+    original.write_bytes(original.read_bytes() + b" ")
+    with pytest.raises(ValueError, match="SHA-256"):
+        load_pdf_correction(workspace, saved)
+
+
+def test_adjacent_extracted_code_lines_already_in_one_listing_are_not_repeated(
+    tmp_path, draft
+):
+    raw = {"texts": [], "body": {"children": []}}
+    for label, text in [
+        ("section_header", "select"),
+        ("list_item", "    result"),
+        ("text", "Fin."),
+    ]:
+        ref = f"#/texts/{len(raw['texts'])}"
+        raw["texts"].append(
+            {
+                "self_ref": ref,
+                "label": label,
+                "text": text,
+                "prov": [{"page_no": 1, "charspan": [0, len(text)]}],
+            }
+        )
+        raw["body"]["children"].append({"$ref": ref})
+    workspace, _, model = draft
+    model.document = model.document.model_copy(
+        update=artifact(
+            workspace,
+            "originals",
+            "pdf",
+            prose_pdf([(75, "select"), (50, "result", 29.6)], font="Courier"),
+        )
+    )
+    for n, y in zip(raw["texts"], (75, 50, 25), strict=True):
+        n["prov"][0]["bbox"] = {
+            "l": 0,
+            "r": 195,
+            "t": y + 10,
+            "b": y - 2,
+            "coord_origin": "BOTTOMLEFT",
+        }
+    draft = rewrite_raw(draft, raw)
+    reply = answer(draft[1])
+    reply["blocks"] = [
+        {
+            "kind": "code",
+            "block_id": "listing",
+            "text": "select\n    result",
+            "evidence": [evidence()],
+        }
+    ]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(draft[0], saved)
+    assert [(b.kind, b.text) for b in chunk.blocks] == [
+        ("code", "select\n    result"),
+        ("body", "Fin."),
+    ]
+    assert [e.ref for e in chunk.blocks[0].evidence] == ["#/texts/0", "#/texts/1"]
+
+
+@pytest.mark.parametrize("right", [5, 13])
+def test_picture_and_margin_claims_cannot_hide_located_outside_body(
+    tmp_path, draft, right
+):
+    raw = {
+        "body": {"children": [{"$ref": "#/texts/0"}]},
+        "texts": [
+            {
+                "self_ref": "#/texts/0",
+                "label": "text",
+                "text": "Outside text",
+                "prov": [
+                    {
+                        "page_no": 1,
+                        "charspan": [0, 12],
+                        "bbox": {
+                            "l": 110,
+                            "r": 160,
+                            "t": 80,
+                            "b": 70,
+                            "coord_origin": "BOTTOMLEFT",
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    draft = rewrite_raw(draft, raw)
+    reply = answer(draft[1])
+    reply["blocks"] = reply["blocks"][:1] + [
+        {
+            "kind": "picture",
+            "block_id": "figure",
+            "text": "",
+            "region": {"page": 1, "left": 0, "top": 0, "right": right, "bottom": 5},
+            "evidence": [evidence(ref=None)],
+            "caption_ids": [],
+            "members": [
+                {
+                    "ref": evidence(),
+                    "status": "confirmed",
+                    "reason": "Proposed internal",
+                }
+            ],
+        }
+    ]
+    reply["exclusions"] = [
+        {"text": "Outside text", "reason": "Proposed margin", "evidence": [evidence()]}
+    ]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(draft[0], saved)
+    assert not chunk.retained_blocks and not chunk.exclusions
+    assert any(b.kind == "body" and b.text == "Outside text" for b in chunk.blocks)
+    assert any(
+        "outside" in u.target_ids and u.evidence[0].ref == "#/texts/0"
+        for u in chunk.uncertainties
+    )
+
+
+@pytest.mark.parametrize(
+    "rule,version",
+    [("owned-text-v1", 2), ("owned-ranges-v2", 3), ("owned-layout-v3", 4)],
+)
+def test_rehash_cannot_switch_between_old_and_new_adoption_modes(
+    tmp_path, draft, rule, version
+):
+    draft, reply = listing_reply(
+        draft,
+        [(65, "return value")],
+        "return\nvalue" if version == 4 else "return value",
+        "return\nvalue",
+    )
+    workspace = draft[0]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(workspace, saved)
+    record = json.loads((workspace / chunk.run.artifact).read_bytes())
+    context = record["request"]["context"]
+    context["adoption_rule"] = rule
+    data = chunk.model_dump(mode="json")
+    data["run"] = artifact(
+        workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
+    )
+
+    def as_chunk():
+        return artifact(
+            workspace,
+            "corrections/pdf",
+            "json",
+            json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode(),
+        )["sha256"]
+
+    with pytest.raises(ValueError):
+        load_pdf_correction(workspace, as_chunk())
+    data["schema_version"] = version
+    # These versions kept the proposal even without a printed boundary.
+    data["blocks"][0]["text"] = "return\nvalue"
+    data["uncertainties"] = []
+    historical = as_chunk()
+    assert load_pdf_correction(workspace, historical).schema_version == version
+    context["owned_pages"] = [True]
+    data["run"] = artifact(
+        workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
+    )
+    with pytest.raises(ValueError):
+        load_pdf_correction(workspace, as_chunk())
+
+
+@pytest.mark.parametrize(
+    "case", ["single", "two", "offset", "barrier", "mark", "missing-box", "region"]
+)
+def test_image_only_paragraph_requires_one_printed_occurrence_between_anchors(
+    tmp_path, draft, case
+):
+    import pypdfium2 as pdfium
+
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.units import generate_translation_units
+
+    workspace, _, model = draft
+    rows = [(85, "Before"), (35, "Echo"), (15, "After")]
+    extra = {"two": [(65, "Echo")], "offset": [(65, "Echo", 110)]}.get(case, [])
+    printed = [rows[0], *extra, *rows[1:]]
+    if case == "mark":
+        printed.append((65, b"() Tj ET 30 64 8 4 re f BT"))
+    pdf = prose_pdf(printed)
+    model.document = model.document.model_copy(
+        update=artifact(workspace, "originals", "pdf", pdf)
+    )
+    with pdfium.PdfDocument(pdf) as original:
+        bitmap = original[0].render(scale=1)
+        image = BytesIO()
+        bitmap.to_pil().save(image, format="PNG")
+        bitmap.close()
+    page = model.pages[0]
+    page.image = PDFArtifact(
+        **artifact(workspace, "drafts/pdf/images", "png", image.getvalue())
+    )
+    page.width_pixels = 200
+    page.height_pixels = 100
+    page.scale_x = page.scale_y = 1
+    raw = {"body": {"children": []}, "texts": []}
+    for i, (y, text) in enumerate(rows):
+        ref = f"#/texts/{i}"
+        raw["body"]["children"].append({"$ref": ref})
+        raw["texts"].append(
+            {
+                "self_ref": ref,
+                "label": "text",
+                "text": text,
+                "prov": [
+                    {
+                        "page_no": 1,
+                        "charspan": [0, len(text)],
+                        "bbox": {
+                            "l": 5,
+                            "r": 80,
+                            "b": y - 3,
+                            "t": y + 10,
+                            "coord_origin": "BOTTOMLEFT",
+                        },
+                    }
+                ],
+            }
+        )
+    if case == "offset":
+        raw["texts"][0]["prov"][0]["bbox"]["b"] = 50
+    if case == "barrier":
+        raw["pictures"] = [{"self_ref": "#/pictures/0", "prov": [{"page_no": 1}]}]
+        raw["body"]["children"].insert(1, {"$ref": "#/pictures/0"})
+    if case == "missing-box":
+        del raw["texts"][0]["prov"][0]["bbox"]
+    draft = rewrite_raw(draft, raw)
+    reply = answer(draft[1])
+    reply["blocks"] = [
+        {
+            "block_id": str(i),
+            "kind": "body",
+            "text": text,
+            "evidence": [evidence(ref=None if i == 1 else f"#/texts/{i}")],
+        }
+        for i, (_, text) in enumerate(rows)
+    ]
+    if case == "region":
+        reply["blocks"].append(
+            {
+                "kind": "picture",
+                "block_id": "diagram",
+                "text": "",
+                "region": {"page": 1, "left": 20, "top": 40, "right": 50, "bottom": 55},
+                "caption_ids": [],
+                "members": [],
+                "evidence": [evidence(ref=None)],
+            }
+        )
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(workspace, saved)
+    source = assemble_pdf_source(
+        workspace=workspace, chunk_sha256s=[saved], snapshot_id="printed-occurrences"
+    )
+    assert [u.source_text for u in generate_translation_units(source)] == [
+        "Before",
+        "Echo",
+        *([] if case == "single" else ["Echo"]),
+        "After",
+    ]
+    if case == "single":
+        assert [e.ref for e in chunk.blocks[1].evidence] == [
+            None,
+            "#/texts/1",
+        ] and not source.uncertainties
+    else:
+        assert [b.evidence[0].ref for b in chunk.blocks if b.kind == "body"] == [
+            "#/texts/0",
+            None,
+            "#/texts/1",
+            "#/texts/2",
+        ]
+        assert any(
+            source.blocks[1].block_id in q.target_ids
+            and len(q.locations) == 2
+            and all(
+                loc.format == "pdf" and loc.extraction_ref == ref
+                for loc, ref in zip(q.locations, (None, "#/texts/1"), strict=True)
+            )
+            for q in source.uncertainties
+        )
+
+
+def test_concurrent_loads_use_their_own_original(tmp_path, draft):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    jobs = []
+    for i, supported in enumerate([False, True]):
+        case = tmp_path / f"job-{i}"
+        case.mkdir()
+        workspace = shutil.copytree(draft[0], case / "workspace")
+        model = draft[2].model_copy(deep=True)
+        original = "theseed"
+        proposed = "the seed"
+        model.document = model.document.model_copy(
+            update=artifact(
+                workspace,
+                "originals",
+                "pdf",
+                prose_pdf([(65, proposed if supported else original)]),
+            )
+        )
+        job = rewrite_raw(
+            (workspace, None, model),
+            {
+                "body": {"children": [{"$ref": "#/texts/0"}]},
+                "texts": [
+                    {
+                        "self_ref": "#/texts/0",
+                        "label": "text",
+                        "text": original,
+                        "prov": [
+                            {
+                                "page_no": 1,
+                                "charspan": [0, len(original)],
+                                "bbox": {
+                                    "l": 0,
+                                    "r": 120,
+                                    "t": 20,
+                                    "b": 50,
+                                    "coord_origin": "TOPLEFT",
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+        reply = answer(job[1])
+        reply["blocks"] = reply["blocks"][:1]
+        reply["blocks"][0]["text"] = proposed
+        jobs.append((workspace, run(case, job, reply)))
+
+    def texts(job):
+        return load_pdf_correction(*job).blocks[0].text
+
+    serial = list(map(texts, jobs))
+    assert serial == ["theseed", "the seed"]
+    start = Barrier(4)
+
+    def parallel(job):
+        start.wait(timeout=10)
+        return texts(job)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        assert list(pool.map(parallel, jobs * 2)) == serial * 2
+
+
+def test_two_coarse_refs_do_not_swallow_middle_owned_words(tmp_path, draft):
+    text = "First. Wait. Last."
+    draft = rewrite_raw(
+        draft,
+        {
+            "body": {"children": [{"$ref": "#/texts/0"}]},
+            "texts": [
+                {
+                    "self_ref": "#/texts/0",
+                    "label": "text",
+                    "text": text,
+                    "prov": [{"page_no": 1, "charspan": [0, len(text)]}],
+                }
+            ],
+        },
+    )
+    reply = answer(draft[1])
+    reply["blocks"] = [
+        {"kind": "body", "block_id": k, "text": t, "evidence": [evidence()]}
+        for k, t in [("start", "First."), ("end", "Last.")]
+    ]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(draft[0], saved)
+    assert [b.text.strip() for b in chunk.blocks] == ["First.", "Wait.", "Last."]
+
+
+def test_omitted_heading_between_two_cited_paragraphs_keeps_its_position(
+    tmp_path, draft
+):
+    raw = {"body": {"children": []}, "texts": []}
+    for label, text in [
+        ("text", "Begin."),
+        ("section_header", "Next"),
+        ("text", "Finish."),
+    ]:
+        ref = f"#/texts/{len(raw['texts'])}"
+        raw["texts"].append(
+            {
+                "self_ref": ref,
+                "label": label,
+                "text": text,
+                "prov": [{"page_no": 1, "charspan": [0, len(text)]}],
+            }
+        )
+        raw["body"]["children"].append({"$ref": ref})
+    draft = rewrite_raw(draft, raw)
+    reply = answer(draft[1])
+    reply["blocks"] = [
+        {
+            "kind": "body",
+            "block_id": "joined",
+            "text": "Begin. Finish.",
+            "evidence": [evidence(), evidence(ref="#/texts/2")],
+        }
+    ]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(draft[0], saved)
+    assert [(b.kind, b.text) for b in chunk.blocks] == [
+        ("body", "Begin."),
+        ("heading", "Next"),
+        ("body", "Finish."),
+    ]
+
+
+def later_unknown_record(workspace, record, known_hash):
+    # Vary only JSON whitespace until the unknown success sorts after the known one.
+    record["request"]["context"]["adoption_rule"] = "unknown"
+    data = json.dumps(record).encode()
+    while hashlib.sha256(data).hexdigest() <= known_hash:
+        data += b" "
+    return artifact(workspace, "attempts/pdf-correction", "json", data)
+
+
+def test_known_orphan_does_not_mask_unknown_success(tmp_path, draft):
+    ws, digest, _ = draft
+    saved = run(tmp_path, draft, answer(digest))
+    chunk = load_pdf_correction(ws, saved)
+    record = json.loads((ws / chunk.run.artifact).read_bytes())
+    later_unknown_record(ws, record, chunk.run.sha256)
+    sent = (tmp_path / "request.json.jsonl").read_bytes()
+    assert run(tmp_path, draft, answer(digest)) == saved  # already published
+    (ws / f"corrections/pdf/{saved}.json").unlink()
+    with pytest.raises(ValueError, match="Unknown PDF adoption rule"):
+        run(tmp_path, draft, answer(digest))
+    assert (
+        not list((ws / "corrections/pdf").glob("*.json"))
+        and (tmp_path / "request.json.jsonl").read_bytes() == sent
+    )
+
+
+def test_unknown_successful_orphan_refuses_only_its_request_before_launch(
+    tmp_path, draft
+):
+    workspace, digest, _ = draft
+    saved = run(tmp_path, draft, answer(digest))
+    chunk = load_pdf_correction(workspace, saved)
+    path = workspace / chunk.run.artifact
+    record = json.loads(path.read_bytes())
+    path.unlink()
+    (workspace / f"corrections/pdf/{saved}.json").unlink()
+    record["request"]["context"]["adoption_rule"] = "unrecognized"
+    orphan = artifact(
+        workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
+    )
+    sent = (tmp_path / "request.json.jsonl").read_bytes()
+    with pytest.raises(ValueError, match="Unknown PDF adoption rule"):
+        correct_pdf(
+            workspace=workspace,
+            draft_sha256=digest,
+            owned_pages=[1],
+            reference_pages=[2],
+            policy=record["request"]["policy"],
+            config=CONFIG,
+            process_command=[str(tmp_path / "must-not-launch")],
+        )
+    assert list((workspace / "attempts/pdf-correction").iterdir()) == [
+        workspace / orphan["artifact"]
+    ]
+    assert (tmp_path / "request.json.jsonl").read_bytes() == sent
+    assert (
+        load_pdf_correction(
+            workspace, run(tmp_path, draft, answer(digest), reference_pages=[])
+        ).reference_pages
+        == []
+    )
+    assert load_pdf_correction(
+        workspace,
+        run(
+            tmp_path,
+            draft,
+            answer(digest),
+            config=CONFIG.model_copy(
+                update={"options": GenerationOptions(maxTokens=128)}
+            ),
+        ),
+    ).owned_pages == [1]
+
+
+def listing_reply(draft, lines, original, proposed):
+    workspace, _, model = draft
+    model.document = model.document.model_copy(
+        update=artifact(workspace, "originals", "pdf", prose_pdf(lines, font="Courier"))
+    )
+    node = {
+        "self_ref": "#/texts/0",
+        "label": "code",
+        "text": original,
+        "prov": [
+            {
+                "page_no": 1,
+                "charspan": [0, len(original)],
+                "bbox": {
+                    "l": 5,
+                    "r": 195,
+                    "t": 95,
+                    "b": 5,
+                    "coord_origin": "BOTTOMLEFT",
+                },
+            }
+        ],
+    }
+    draft = rewrite_raw(
+        draft, {"body": {"children": [{"$ref": node["self_ref"]}]}, "texts": [node]}
+    )
+    reply = answer(draft[1])
+    reply["blocks"] = [
+        {
+            "kind": "code",
+            "block_id": "example",
+            "text": proposed,
+            "evidence": [evidence()],
+        }
+    ]
+    return draft, reply
+
+
+def listing_output(tmp_path, draft, lines, original, proposed):
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.render import render_document
+    from doc_translate.snapshot import save_source_snapshot
+    from doc_translate.units import generate_translation_units
+
+    draft, reply = listing_reply(draft, lines, original, proposed)
+    workspace = draft[0]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(workspace, saved)
+    source = assemble_pdf_source(
+        workspace=workspace, chunk_sha256s=[saved], snapshot_id="listing"
+    )
+    assert not generate_translation_units(source)
+    save_source_snapshot(workspace, source)
+    english = (
+        workspace / render_document(workspace)["artifacts"]["english"]
+    ).read_text()
+    assert english.count(f"```\n{chunk.blocks[0].text}\n```") == 1
+    return chunk.blocks[0].text, chunk.uncertainties
+
+
+def test_proposal_cannot_split_single_printed_code_line(tmp_path, draft):
+    text, qa = listing_output(
+        tmp_path, draft, [(65, "return value")], "return value", "return\n\nvalue"
+    )
+    assert text == "return value"
+    (difference,) = qa
+    assert difference.target_ids == ["example"]
+    assert [(e.ref, e.charspan) for e in difference.evidence] == [
+        ("#/texts/0", (0, 6)),
+        ("#/texts/0", (7, 12)),
+    ]
+
+
+def test_printed_listing_keeps_lines_without_guessing_additional_blank(tmp_path, draft):
+    text, qa = listing_output(
+        tmp_path,
+        draft,
+        [(65, "return"), (50, "value")],
+        "return value",
+        "return\n\nvalue",
+    )
+    assert text == "return\nvalue"
+    (difference,) = qa
+    assert difference.target_ids == ["example"] and len(difference.evidence) == 2
+    assert [e.charspan for e in difference.evidence] == [(0, 6), (7, 12)]
+
+
+def test_neighbor_matching_tokens_do_not_prove_listing_ownership(tmp_path, draft):
+    workspace, _, model = draft
+    model.document = model.document.model_copy(
+        update=artifact(
+            workspace,
+            "originals",
+            "pdf",
+            prose_pdf([(65, "return value")], font="Courier"),
+        )
+    )
+    nodes = [
+        {
+            "self_ref": f"#/texts/{i}",
+            "label": label,
+            "text": text,
+            "prov": [
+                {
+                    "page_no": 1,
+                    "charspan": [0, len(text)],
+                    "bbox": {
+                        "l": 0,
+                        "r": 195,
+                        "b": 55,
+                        "t": 85,
+                        "coord_origin": "BOTTOMLEFT",
+                    },
+                }
+            ],
+        }
+        for i, (label, text) in enumerate([("code", "return"), ("text", "value")])
+    ]
+    draft = rewrite_raw(
+        draft,
+        {
+            "body": {"children": [{"$ref": n["self_ref"]} for n in nodes]},
+            "texts": nodes,
+        },
+    )
+    reply = answer(draft[1])
+    reply["blocks"] = [
+        {
+            "kind": "code",
+            "block_id": "example",
+            "text": "return\nvalue",
+            "evidence": [evidence()],
+        }
+    ]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(workspace, saved)
+    assert [(b.kind, b.text) for b in chunk.blocks] == [
+        ("code", "return"),
+        ("body", "value"),
+    ]
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_nested_caption_and_intervening_table_keep_their_reading_order(
+    tmp_path, draft, nested
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.units import generate_translation_units
+
+    draft = form_draft(draft)
+    ws, _, model = draft
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+
+    def ref(s):
+        return {"$ref": s}
+
+    raw["body"] = {"children": list(map(ref, ["#/texts/0", "#/tables/0", "#/texts/6"]))}
+    raw["tables"][0]["children"] = [ref("#/texts/5")] if nested else []
+    raw["texts"][5]["label"] = "caption"
+    raw["texts"][6]["label"] = "text"
+    draft = rewrite_raw(draft, raw)
+    reply = form_answer(draft[1])
+    table = next(b for b in reply["blocks"] if b["kind"] == "table")
+    reply["blocks"] = [
+        {
+            **reply["blocks"][0],
+            "text": "Outside text Ambiguous",
+            "evidence": [evidence(), evidence(ref="#/texts/6")],
+        },
+        table,
+    ]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(ws, saved)
+    assert [(b.kind, b.text) for b in chunk.blocks] == [
+        ("body", "Outside text"),
+        ("table", ""),
+        *([("caption", "Figure 1. Form")] if nested else []),
+        ("body", "Ambiguous"),
+    ]
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="nested"
+    )
+    units = generate_translation_units(source)
+    assert [u.source_text for u in units][:3] == ["Outside text", "Name", "Value"]
+
+
+@pytest.mark.parametrize("joined", [False, True])
+def test_reading_order_inside_figure_is_not_new_independent_body(
+    tmp_path, draft, joined
+):
+    draft = form_draft(draft)
+    ws, _, model = draft
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    raw["body"] = {"children": [{"$ref": "#/pictures/0"}, {"$ref": "#/texts/0"}]}
+    raw["pictures"] = [
+        {
+            "self_ref": "#/pictures/0",
+            "prov": [{"page_no": 1}],
+            "children": [{"$ref": "#/texts/5"}, {"$ref": "#/texts/3"}],
+        }
+    ]
+    raw["texts"][3]["label"] = "text"
+    raw["texts"][5]["label"] = "caption"
+    draft = rewrite_raw(draft, raw)
+    reply = answer(draft[1])
+    fig = form_answer(draft[1])["blocks"][-1]
+    fig.update(evidence=[evidence(ref="#/pictures/0")], members=[], caption_ids=[])
+    reply["blocks"] = [fig, reply["blocks"][0]]
+    if joined:
+        reply["blocks"][1].update(
+            text="LOGO Outside text", evidence=[evidence(ref="#/texts/3"), evidence()]
+        )
+    chunk = load_pdf_correction(ws, run(tmp_path, draft, reply))
+    assert [(b.kind, b.text) for b in chunk.blocks] == [
+        ("picture", ""),
+        ("caption", "Figure 1. Form"),
+        ("body", "Outside text"),
+    ]
+
+
+def test_listing_preserves_extracted_blank_when_proposal_removes_it(tmp_path, draft):
+    text, qa = listing_output(
+        tmp_path, draft, [(65, "start"), (40, "stop")], "start\n\nstop", "start\nstop"
+    )
+    assert text == "start\n\nstop" and qa[0].target_ids == ["example"]
+
+
+def test_line_wrap_inside_literal_is_not_a_code_boundary(tmp_path, draft):
+    text, qa = listing_output(
+        tmp_path, draft, [(65, '"word'), (40, 'wrap"')], '"word wrap"', '"word\nwrap"'
+    )
+    assert text == '"word wrap"' and qa[0].target_ids == ["example"]
+
+
+def test_word_apostrophe_does_not_unprotect_a_later_literal_space(tmp_path, draft):
+    original = "# Don't use alpha.beta()\ns = 'red blue'"
+    proposal = "# Don't use alpha.\nbeta()\ns = 'red\nblue'"
+    text, qa = listing_output(
+        tmp_path,
+        draft,
+        [
+            (85, rb"(# Don\251t use alpha.) Tj"),
+            (65, r"beta\(\)"),
+            (45, rb"(s = \251red) Tj"),
+            (25, rb"(blue\251) Tj"),
+        ],
+        original,
+        proposal,
+    )
+    assert text == original
+    (difference,) = qa
+    assert difference.target_ids == ["example"]
+    end = original.index(" blue")
+    assert [(e.page, e.ref, e.charspan) for e in difference.evidence[-2:]] == [
+        (1, "#/texts/0", (original.index("s ="), end)),
+        (1, "#/texts/0", (end + 1, len(original))),
+    ]
+
+
+def test_listing_does_not_add_an_unprinted_indent(tmp_path, draft):
+    text, qa = listing_output(
+        tmp_path, draft, [(65, "start"), (40, "stop")], "start stop", "start\n stop"
+    )
+    assert text == "start stop" and qa[0].target_ids == ["example"]
+
+
+def test_verified_newline_does_not_cost_an_existing_blank_line(tmp_path, draft):
+    text, qa = listing_output(
+        tmp_path,
+        draft,
+        [(75, "start"), (55, "next"), (40, "stop")],
+        "start\n\nnext stop",
+        "start\n\n\nnext\nstop",
+    )
+    assert text == "start\n\nnext\nstop"
+    assert len(qa) == 1 and [e.charspan for e in qa[0].evidence] == [(0, 5), (7, 11)]
+
+
+def test_agreeing_code_still_requires_a_printed_boundary(tmp_path, draft):
+    text, qa = listing_output(
+        tmp_path, draft, [(65, "return value")], "return\nvalue", "return\nvalue"
+    )
+    assert text == "return\nvalue"
+    (difference,) = qa
+    assert difference.target_ids == ["example"]
+    assert [(e.page, e.ref, e.charspan) for e in difference.evidence] == [
+        (1, "#/texts/0", (0, 6)),
+        (1, "#/texts/0", (7, 12)),
+    ]
+
+
+def test_callout_tracks_printed_line_after_extra_blank_is_removed(tmp_path, draft):
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.render import render_document
+    from doc_translate.snapshot import save_source_snapshot
+
+    draft, reply = listing_reply(
+        draft,
+        [(70, "start"), (50, "middle"), (30, "end")],
+        "start middle end",
+        "start\n\nmiddle\nend",
+    )
+    reply["blocks"].append(
+        {
+            "kind": "callout",
+            "block_id": "note",
+            "marker": "*",
+            "lines": [3],
+            "code_id": "example",
+            "text": "Note.",
+            "evidence": [evidence(ref=None)],
+        }
+    )
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply)
+    load_pdf_correction(ws, saved)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="callout"
+    )
+    save_source_snapshot(ws, source)
+    english = (ws / render_document(ws)["artifacts"]["english"]).read_text()
+    assert "start\nmiddle\nend\n```" in english and "; lines 2): Note&#46;" in english
+
+
+@pytest.mark.parametrize(
+    "role,cited", [("footnote", False), ("caption", False), ("footnote", True)]
+)
+def test_independent_note_is_not_a_printed_code_continuation(
+    tmp_path, draft, role, cited
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.units import generate_translation_units
+
+    draft, reply = listing_reply(
+        draft, [(70, "start"), (50, "note")], "start", "start\nnote"
+    )
+    ws, _, model = draft
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    raw["texts"][0]["prov"][0]["bbox"]["b"] = 65
+    raw["texts"].append(
+        {
+            "self_ref": "#/texts/1",
+            "label": role,
+            "text": "note",
+            "prov": [
+                {
+                    "page_no": 1,
+                    "charspan": [0, 4],
+                    "bbox": {
+                        "l": 5,
+                        "r": 195,
+                        "t": 60,
+                        "b": 45,
+                        "coord_origin": "BOTTOMLEFT",
+                    },
+                }
+            ],
+        }
+    )
+    raw["body"]["children"].append({"$ref": "#/texts/1"})
+    if cited:
+        reply["blocks"][0]["evidence"].append(evidence(ref="#/texts/1"))
+    draft = rewrite_raw(draft, raw)
+    reply["draft_sha256"] = draft[1]
+    saved = run(tmp_path, draft, reply)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="notes"
+    )
+    assert [(b.kind, b.text) for b in source.blocks] == [
+        ("code", "start"),
+        (role, "note"),
+    ]
+    assert [u.source_text for u in generate_translation_units(source)] == ["note"]
+
+
+def test_image_caption_does_not_claim_equal_body_occurrence(tmp_path, draft):
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.units import generate_translation_units
+
+    ws, _, model = draft
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    raw["body"] = {"children": [{"$ref": "#/texts/0"}]}
+    draft = rewrite_raw(draft, raw)
+    reply = answer(draft[1])
+    reply["blocks"] = [
+        {
+            "kind": "caption",
+            "block_id": "image-caption",
+            "text": "Outside text",
+            "evidence": [evidence(ref=None)],
+        }
+    ]
+    saved = run(tmp_path, draft, reply)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="caption"
+    )
+    assert [(b.kind, b.text) for b in source.blocks] == [
+        ("caption", "Outside text"),
+        ("body", "Outside text"),
+    ]
+    assert [u.source_text for u in generate_translation_units(source)] == [
+        "Outside text"
+    ] * 2
+
+
+def test_printed_lines_keep_separator_between_same_item_provenances(tmp_path, draft):
+    draft, reply = listing_reply(
+        draft, [(70, "start"), (50, "stop")], "start\n\nstop", "start\n\nstop"
+    )
+    ws, _, model = draft
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    node = raw["texts"][0]
+    node["prov"] = [
+        {
+            "page_no": 1,
+            "charspan": span,
+            "bbox": {
+                "l": 5,
+                "r": 195,
+                "b": y - 2,
+                "t": y + 10,
+                "coord_origin": "BOTTOMLEFT",
+            },
+        }
+        for span, y in [([0, 5], 70), ([7, 11], 50)]
+    ]
+    draft = rewrite_raw(draft, raw)
+    reply["draft_sha256"] = draft[1]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(ws, saved)
+    assert chunk.blocks[0].text == "start\n\nstop" and not chunk.uncertainties
+
+
+def test_unopenable_verified_pdf_is_not_an_uncertain_listing(tmp_path, draft):
+    draft, reply = listing_reply(draft, [(65, "start")], "start", "start")
+    ws, _, model = draft
+    model.document = model.document.model_copy(
+        update=artifact(ws, "originals", "pdf", b"%PDF-1.4 broken")
+    )
+    draft = rewrite_raw(draft, json.loads((ws / model.raw.artifact).read_bytes()))
+    reply["draft_sha256"] = draft[1]
+    with pytest.raises(ValueError, match="original PDF"):
+        run(tmp_path, draft, reply)
+    assert not list((ws / "corrections/pdf").glob("*.json"))
+
+
+def test_verified_aligned_single_character_lines_need_no_indent_estimate(
+    tmp_path, draft
+):
+    text, qa = listing_output(tmp_path, draft, [(70, "x"), (50, "y")], "x y", "x\ny")
+    assert text == "x\ny" and not qa
+
+
+def test_image_only_code_without_owned_line_match_is_located_for_review(
+    tmp_path, draft
+):
+    reply = answer(draft[1])
+    reply["blocks"] = [
+        {
+            "kind": "code",
+            "block_id": "example",
+            "text": "start\nstop",
+            "evidence": [evidence(ref=None)],
+        }
+    ]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(draft[0], saved)
+    assert chunk.blocks[0].text == "start\nstop"
+    assert any(
+        q.target_ids == ["example"]
+        and q.evidence[0].page == 1
+        and q.evidence[0].position
+        for q in chunk.uncertainties
+    )
+
+
+def test_disjoint_code_claim_cannot_move_an_intervening_note(tmp_path, draft):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    draft, reply = listing_reply(
+        draft, [(70, "first"), (50, "note"), (30, "last")], "first", "first\nlast"
+    )
+    ws, _, model = draft
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    for i, (label, text) in enumerate([("footnote", "note"), ("code", "last")], 1):
+        ref = f"#/texts/{i}"
+        raw["texts"].append(
+            {
+                "self_ref": ref,
+                "label": label,
+                "text": text,
+                "prov": [{"page_no": 1, "charspan": [0, len(text)]}],
+            }
+        )
+        raw["body"]["children"].append({"$ref": ref})
+    draft = rewrite_raw(draft, raw)
+    reply["draft_sha256"] = draft[1]
+    reply["blocks"][0]["evidence"].append(evidence(ref="#/texts/2"))
+    saved = run(tmp_path, draft, reply)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="disjoint"
+    )
+    assert [(b.kind, b.text) for b in source.blocks] == [
+        ("code", "first"),
+        ("footnote", "note"),
+        ("code", "last"),
+    ]
+    assert any(
+        source.blocks[0].block_id in q.target_ids and len(q.locations) == 2
+        for q in source.uncertainties
+    )
+
+
+@pytest.mark.parametrize(
+    "across,image_evidence",
+    [(False, False), (True, False), (False, True), (True, True)],
+)
+def test_code_spans_separated_by_unowned_provenance_or_page_do_not_join(
+    tmp_path, draft, across, image_evidence
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.render import render_document
+    from doc_translate.snapshot import save_source_snapshot
+    from doc_translate.units import generate_translation_units
+
+    draft, reply = listing_reply(
+        draft, [(70, "start"), (50, "stop")], "startPRIVATEstop", "start\n\nstop"
+    )
+    ws, _, model = draft
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    node = raw["texts"][0]
+    box = node["prov"][0]["bbox"]
+    node["prov"] = [
+        {"page_no": 1, "charspan": [0, 5], "bbox": {**box, "b": 65}},
+        {"page_no": 3, "charspan": [5, 12]},
+        {"page_no": 2 if across else 1, "charspan": [12, 16], "bbox": {**box, "t": 60}},
+    ]
+    draft = rewrite_raw(draft, raw)
+    reply["draft_sha256"] = draft[1]
+    if across:
+        reply["owned_pages"] = [1, 2]
+        reply["blocks"][0]["evidence"].append(evidence(page=2))
+    if image_evidence:
+        reply["blocks"][0]["evidence"].append(
+            evidence(ref=None, position="in the margin")
+        )
+    saved = run(
+        tmp_path, draft, reply, owned_pages=reply["owned_pages"], reference_pages=[]
+    )
+    chunk = load_pdf_correction(ws, saved)
+    assert (
+        "PRIVATE" not in chunk.model_dump_json()
+        and b"PRIVATE" not in (ws / chunk.run.artifact).read_bytes()
+    )
+    assert [(b.kind, b.text) for b in chunk.blocks] == [
+        ("code", "start"),
+        ("code", "stop"),
+    ]
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="owned-spans"
+    )
+    if image_evidence:
+        assert all(e.ref is not None for b in chunk.blocks for e in b.evidence)
+        assert any(
+            q.target_ids
+            and any(e.ref is None and e.position == "in the margin" for e in q.evidence)
+            for q in chunk.uncertainties
+        )
+    assert not generate_translation_units(source)
+    save_source_snapshot(ws, source)
+    english = (ws / render_document(ws)["artifacts"]["english"]).read_text()
+    assert "PRIVATE" not in english and all(
+        english.count(f"```\n{word}\n```") == 1 for word in ("start", "stop")
+    )
+
+
+def test_equal_image_text_before_intervening_anchor_is_not_a_later_occurrence(
+    tmp_path, draft
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.units import generate_translation_units
+
+    ws, _, model = draft
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    raw["texts"] = raw["texts"][:2]
+    for node, text in zip(raw["texts"], ["Between", "Echo"], strict=True):
+        node.update(
+            text=text, orig=text, prov=[{"page_no": 1, "charspan": [0, len(text)]}]
+        )
+    raw["body"] = {"children": [{"$ref": n["self_ref"]} for n in raw["texts"]]}
+    draft = rewrite_raw(draft, raw)
+    reply = answer(draft[1])
+    reply["blocks"] = [
+        {
+            "kind": "body",
+            "block_id": "early",
+            "text": "Echo",
+            "evidence": [evidence(ref=None)],
+        },
+        {
+            "kind": "body",
+            "block_id": "anchor",
+            "text": "Between",
+            "evidence": [evidence()],
+        },
+    ]
+    saved = run(tmp_path, draft, reply)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="occurrences"
+    )
+    assert [u.source_text for u in generate_translation_units(source)] == [
+        "Echo",
+        "Between",
+        "Echo",
+    ]
+    assert any(source.blocks[0].block_id in q.target_ids for q in source.uncertainties)
+
+
+@pytest.mark.parametrize("label", ["footnote", "caption"])
+def test_sole_note_ref_is_not_a_code_example(tmp_path, draft, label):
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.units import generate_translation_units
+
+    draft, reply = listing_reply(draft, [(70, "Note")], "Note", "Code?")
+    ws, _, model = draft
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    raw["texts"][0]["label"] = label
+    draft = rewrite_raw(draft, raw)
+    reply["draft_sha256"] = draft[1]
+    saved = run(tmp_path, draft, reply)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="note"
+    )
+    assert [(b.kind, b.text) for b in source.blocks] == [(label, "Note")]
+    assert [u.source_text for u in generate_translation_units(source)] == [
+        "Note"
+    ] and any(q.target_ids == [source.blocks[0].block_id] for q in source.uncertainties)
+
+
+@pytest.mark.parametrize(
+    "lines,original,wanted",
+    [
+        ([(70, "start"), (50, "stop", 13.4)], "start\nstop", "start\n stop"),
+        ([(70, "alpha."), (50, "beta\\(\\)")], "alpha.beta()", "alpha.\nbeta()"),
+        (
+            [(70, rb"(# Don\251t use alpha.) Tj"), (50, "beta\\(\\)")],
+            "# Don't use alpha.beta()",
+            "# Don't use alpha.\nbeta()",
+        ),
+    ],
+)
+def test_printed_code_can_supply_boundary_or_indent_missing_from_extraction(
+    tmp_path, draft, lines, original, wanted
+):
+    text, qa = listing_output(tmp_path, draft, lines, original, wanted)
+    assert text == wanted and not qa
+
+
+@pytest.mark.parametrize(
+    "rule,version,signature",
+    [
+        (
+            "owned-text-v1",
+            2,
+            "b976164cfa20c2d993cbf9c84f4920910f098417036ad685884bc4963b544a2e",
+        ),
+        (
+            "owned-ranges-v2",
+            3,
+            "11fb3a10ba50bd17222d3c7168b3ccaa3d5608fca6639baa72ae56a2fdba467e",
+        ),
+        (
+            "owned-layout-v3",
+            4,
+            "efe32e18940cb4aae64646e436a8b8f7fc94f9033d5ec5d0034543ca70e53425",
+        ),
+    ],
+)
+def test_named_orphan_recovers_historical_bytes_without_resending(
+    tmp_path, draft, rule, version, signature
+):
+    draft, reply = listing_reply(
+        draft, [(65, "return value")], "return value", "return\nvalue"
+    )
+    ws, _, model = draft
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    raw["texts"].append(
+        {
+            "self_ref": "#/texts/1",
+            "label": "footnote",
+            "text": "Note.",
+            "prov": [{"page_no": 1, "charspan": [0, 5]}],
+        }
+    )
+    raw["body"]["children"].append({"$ref": "#/texts/1"})
+    draft = rewrite_raw(draft, raw)
+    reply["draft_sha256"] = draft[1]
+    new = run(tmp_path, draft, reply)
+    current = load_pdf_correction(ws, new)
+    path = ws / current.run.artifact
+    record = json.loads(path.read_bytes())
+    path.rename(path.with_suffix(".unrelated"))
+    record["request"]["context"]["adoption_rule"] = rule
+    old = artifact(ws, "attempts/pdf-correction", "json", json.dumps(record).encode())
+    sent = (tmp_path / "request.json.jsonl").read_bytes()
+    digest = run(tmp_path, draft, reply)
+    path = ws / f"corrections/pdf/{digest}.json"
+    original = path.read_bytes()
+    stat = path.stat().st_mtime_ns
+    chunk = load_pdf_correction(ws, digest)
+    assert chunk.schema_version == version
+    assert [(b.kind, b.text) for b in chunk.blocks] == [
+        ("code", "return\nvalue" if version < 4 else "return value")
+    ] + ([("footnote", "Note.")] if version >= 3 else [])
+    # Pin all serialized bytes except the real helper record digest (contains timings).
+    normalized = original.replace(old["sha256"].encode(), b"0" * 64)
+    assert hashlib.sha256(normalized).hexdigest() == signature
+    assert (
+        run(tmp_path, draft, reply) == digest
+        and path.read_bytes() == original
+        and path.stat().st_mtime_ns == stat
+    )
+    assert (tmp_path / "request.json.jsonl").read_bytes() == sent
+
+
+def test_unbacked_code_with_an_independently_claimed_note_preserves_located_qa(
+    tmp_path, draft
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    draft, reply = listing_reply(draft, [(65, "Note")], "Note", "Unbacked")
+    ws, _, model = draft
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    raw["texts"][0]["label"] = "footnote"
+    draft = rewrite_raw(draft, raw)
+    reply["draft_sha256"] = draft[1]
+    reply["blocks"].append(
+        {
+            "kind": "footnote",
+            "block_id": "note",
+            "text": "Note",
+            "evidence": [evidence()],
+            "target_id": "example",
+        }
+    )
+    reply["uncertainties"] = [
+        {
+            "reason": "Disputed listing",
+            "origin": "original",
+            "target_ids": ["example"],
+            "evidence": [evidence()],
+        }
+    ]
+    saved = run(tmp_path, draft, reply)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="independent"
+    )
+    assert [(b.kind, b.text) for b in source.blocks] == [("footnote", "Note")]
+    assert source.blocks[0].structure["target_id"] is None and any(
+        q.reason == "Disputed listing"
+        and q.locations[0].format == "pdf"
+        and q.locations[0].page == 1
+        for q in source.uncertainties
+    )
+
+
+def test_mixed_image_number_matches_lexical_number_not_identifier_digits(
+    tmp_path, draft
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.units import generate_translation_units
+
+    original = "Use v2 and 100 items."
+    draft = rewrite_raw(
+        draft,
+        {
+            "texts": [
+                {
+                    "self_ref": "#/texts/0",
+                    "label": "text",
+                    "text": original,
+                    "prov": [{"page_no": 1, "charspan": [0, len(original)]}],
+                }
+            ],
+            "body": {"children": [{"$ref": "#/texts/0"}]},
+        },
+    )
+    reply = answer(draft[1])
+    reply["blocks"] = reply["blocks"][:1]
+    block = reply["blocks"][0]
+    block.update(
+        text="Use v3 and 180 items. Use v2 and 180 items.",
+        evidence=[evidence(), evidence(ref=None)],
+    )
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply)
+    load_pdf_correction(ws, saved)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="mixed-version"
+    )
+    (unit,) = generate_translation_units(source)
+    decoded = unit.source_text
+    for token in unit.tokens:
+        value = token.value["text"]
+        assert isinstance(value, str)
+        decoded = decoded.replace(token.start_marker, value)
+    assert decoded == "Use v3 and 180 items. Use v2 and 100 items."
+    assert any(
+        unit.block_id in q.target_ids
+        and "180" in q.reason
+        and any(
+            loc.format == "pdf" and loc.extraction_ref == "#/texts/0"
+            for loc in q.locations
+        )
+        for q in source.uncertainties
+    )
+
+
+@pytest.mark.parametrize("mode", [3, 7])
+def test_nonpainting_code_does_not_corroborate_printed_lines(tmp_path, draft, mode):
+    lines = [
+        (70, f"{mode} Tr (first) Tj".encode()),
+        (50, f"{mode} Tr (last) Tj ET 8 40 60 30 re f BT".encode()),
+    ]
+    text, qa = listing_output(tmp_path, draft, lines, "first last", "first\nlast")
+    assert text == "first last" and any(q.target_ids == ["example"] for q in qa)
