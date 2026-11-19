@@ -1424,14 +1424,52 @@ def test_connection_evidence_obeys_authorization_and_raw_provenance(
 
 
 @pytest.mark.parametrize(
-    "base", ["current", "legacy", "owned-text-v1", "owned-ranges-v2", "owned-layout-v3"]
+    "base",
+    [
+        "current",
+        "legacy",
+        "owned-text-v1",
+        "owned-ranges-v2",
+        "owned-layout-v3",
+        "printed-lines-v4",
+        "printed-ranges-v5",
+        "printed-margin-v6",
+        "printed-separators-v7",
+        "printed-display-v8",
+    ],
 )
 def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
     tmp_path, draft, monkeypatch, base
 ):
     import os
 
-    workspace, digest, _ = draft
+    reply = answer(draft[1])
+    printed = base in (
+        "printed-lines-v4",
+        "printed-ranges-v5",
+        "printed-margin-v6",
+        "printed-separators-v7",
+        "printed-display-v8",
+        "current",
+    )
+    if base in ("printed-display-v8", "current"):
+        draft, reply = competing_listing_reply(draft)
+    elif base in ("printed-margin-v6", "printed-separators-v7"):
+        extra = "" if base == "printed-margin-v6" else "\n"
+        draft, reply = listing_reply(
+            draft,
+            [(75, 's = "red'), (55, 'blue"'), (35, "next")],
+            's = "red\nblue" next',
+            f'   s = "red\n{extra}   blue"\n   next',
+        )
+    elif printed:
+        draft, reply = listing_reply(
+            draft,
+            [(65, "above", 13.4), (45, "below")],
+            "above below",
+            "    above\n   below",
+        )
+    workspace, _, _ = draft
     replace = os.replace
 
     def fail_replace(src, dst):
@@ -1442,7 +1480,7 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
     with monkeypatch.context() as patch:
         patch.setattr(os, "replace", fail_replace)
         with pytest.raises(OSError, match="interrupted chunk save"):
-            run(tmp_path, draft, answer(digest))
+            run(tmp_path, draft, reply)
     if base != "current":
         path = next((workspace / "attempts/pdf-correction").glob("*.json"))
         record = json.loads(path.read_bytes())
@@ -1452,18 +1490,16 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
             del context["page_results"]
         else:
             context["adoption_rule"] = base
+        path.rename(path.with_suffix(".original"))
         artifact(
             workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
         )
-        path.rename(path.with_suffix(".original"))
     previous = {
         path: path.read_bytes() for path in workspace.rglob("*") if path.is_file()
     }
     sent = (tmp_path / "request.json").read_bytes()
     # No helper may start even though no accepted chunk was saved yet.
-    accepted = run(
-        tmp_path, draft, answer(digest), before_send=lambda *_: pytest.fail("resent")
-    )
+    accepted = run(tmp_path, draft, reply, before_send=lambda *_: pytest.fail("resent"))
     chunk = load_pdf_correction(workspace, accepted)
     assert (
         chunk.schema_version
@@ -1472,10 +1508,40 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
             "owned-text-v1": 2,
             "owned-ranges-v2": 3,
             "owned-layout-v3": 4,
-            "current": 5,
+            "printed-lines-v4": 5,
+            "printed-ranges-v5": 6,
+            "printed-margin-v6": 7,
+            "printed-separators-v7": 8,
+            "printed-display-v8": 9,
+            "current": 10,
         }[base]
     )
 
+    if printed:
+        assert (
+            chunk.blocks[0].text
+            == {
+                "printed-lines-v4": "above below",
+                "printed-ranges-v5": "above below",
+                "printed-margin-v6": 's = "red\nblue" next',
+                "printed-separators-v7": 's = "red\nblue" next',
+                "printed-display-v8": "left\nmiddle",
+                "current": "left",
+            }[base]
+        )
+    if base in ("printed-margin-v6", "printed-separators-v7", "printed-display-v8"):
+        # Original schema-7/8/9 writer fingerprints; only the timed run digest varies.
+        data = (workspace / f"corrections/pdf/{accepted}.json").read_bytes()
+        assert (
+            hashlib.sha256(
+                data.replace(chunk.run.sha256.encode(), b"0" * 64)
+            ).hexdigest()
+            == {
+                "printed-margin-v6": "b4c4d49119a0dff6c3df781936c8c3681bd1a91322562bdd8ffbb460600524a5",
+                "printed-display-v8": "15684158811aaae95841a23682ad79418e2f2ba3537d136e05bcbac7f641f757",
+                "printed-separators-v7": "af05368b04d9fe1f71186bb2589ce14a025c6aab7494848c4530893244e497f3",
+            }[base]
+        )
     subprocess.run(
         [
             sys.executable,
@@ -1486,13 +1552,14 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
         ],
         check=True,
     )
-    assert load_pdf_correction(workspace, accepted).blocks[0].text == "Outside text"
+    if not printed:
+        assert chunk.blocks[0].text == "Outside text"
     assert (tmp_path / "request.json").read_bytes() == sent
     assert (
         run(
             tmp_path,
             draft,
-            answer(digest),
+            reply,
             before_send=lambda *_: pytest.fail("resent"),
         )
         == accepted
@@ -2449,9 +2516,108 @@ def test_rehashed_saved_chunk_cannot_omit_reconstructed_fields(tmp_path, draft):
         load_pdf_correction(workspace, saved)
 
 
-def test_adjacent_extracted_code_lines_already_in_one_listing_are_not_repeated(
-    tmp_path, draft
+def competing_listing_reply(draft):
+    lines = [(75, "left"), (50, "middle"), (25, "right")]
+    draft, reply = listing_reply(draft, lines, "", "")
+    nodes = [
+        {
+            "self_ref": f"#/texts/{i}",
+            "label": "text" if i == 1 else "code",
+            "text": text,
+            "prov": [
+                {
+                    "page_no": 1,
+                    "charspan": [0, len(text)],
+                    "bbox": {
+                        "l": 0,
+                        "r": 100,
+                        "t": y + 10,
+                        "b": y - 2,
+                        "coord_origin": "BOTTOMLEFT",
+                    },
+                }
+            ],
+        }
+        for i, (y, text) in enumerate(lines)
+    ]
+    draft = rewrite_raw(
+        draft,
+        {
+            "body": {"children": [{"$ref": n["self_ref"]} for n in nodes]},
+            "texts": nodes,
+        },
+    )
+    reply.update(
+        draft_sha256=draft[1],
+        blocks=[
+            {
+                "kind": "code",
+                "block_id": nodes[i]["text"],
+                "text": text,
+                "evidence": [evidence(ref=nodes[i]["self_ref"])],
+            }
+            for i, text in [(0, "   left\n   middle"), (2, "   middle\n   right")]
+        ],
+    )
+    return draft, reply
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_competing_listings_keep_disputed_text_between_anchors(
+    tmp_path, draft, reverse
 ):
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.render import render_document
+    from doc_translate.snapshot import save_source_snapshot
+    from doc_translate.units import generate_translation_units
+
+    draft, reply = competing_listing_reply(draft)
+    if reverse:
+        reply["blocks"].reverse()
+    workspace = draft[0]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(workspace, saved)
+    assert [(b.kind, b.text) for b in chunk.blocks] == [
+        ("code", "left"),
+        ("body", "middle"),
+        ("code", "right"),
+    ]
+    (conflict,) = [
+        q for q in chunk.uncertainties if set(q.target_ids) == {"left", "right"}
+    ]
+    assert "competing" in conflict.reason.lower()
+    assert [(e.page, e.ref, e.charspan) for e in conflict.evidence] == [
+        (1, "#/texts/0", (0, 4)),
+        (1, "#/texts/1", (0, 6)),
+        (1, "#/texts/2", (0, 5)),
+    ]
+    source = assemble_pdf_source(
+        workspace=workspace, chunk_sha256s=[saved], snapshot_id="competing"
+    )
+    assert [u.source_text for u in generate_translation_units(source)] == ["middle"]
+    save_source_snapshot(workspace, source)
+    out = render_document(workspace)["artifacts"]
+    english = (workspace / out["english"]).read_text()
+    assert english.count("middle") == 1 and english.index(
+        "```\nleft\n```"
+    ) < english.index("middle") < english.index("```\nright\n```")
+    assert any(
+        q["reason"] == conflict.reason
+        and len(q["locations"]) == 3
+        and q["output_anchors"]
+        for q in json.loads((workspace / out["qa"]).read_bytes())["uncertainties"]
+    )
+
+
+@pytest.mark.parametrize("margin", ["", "   "])
+def test_adjacent_extracted_code_lines_already_in_one_listing_are_not_repeated(
+    tmp_path, draft, margin
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.render import render_document
+    from doc_translate.snapshot import save_source_snapshot
+    from doc_translate.units import generate_translation_units
+
     raw = {"texts": [], "body": {"children": []}}
     for label, text in [
         ("section_header", "select"),
@@ -2491,7 +2657,7 @@ def test_adjacent_extracted_code_lines_already_in_one_listing_are_not_repeated(
         {
             "kind": "code",
             "block_id": "listing",
-            "text": "select\n    result",
+            "text": f"{margin}select\n{margin}    result",
             "evidence": [evidence()],
         }
     ]
@@ -2502,6 +2668,16 @@ def test_adjacent_extracted_code_lines_already_in_one_listing_are_not_repeated(
         ("body", "Fin."),
     ]
     assert [e.ref for e in chunk.blocks[0].evidence] == ["#/texts/0", "#/texts/1"]
+    source = assemble_pdf_source(
+        workspace=workspace, chunk_sha256s=[saved], snapshot_id="adjacent"
+    )
+    (unit,) = generate_translation_units(source)
+    assert unit.block_id == source.blocks[1].block_id and unit.source_text == "Fin."
+    save_source_snapshot(workspace, source)
+    english = (
+        workspace / render_document(workspace)["artifacts"]["english"]
+    ).read_text()
+    assert english.count("```\nselect\n    result\n```") == 1
 
 
 @pytest.mark.parametrize("right", [5, 13])
@@ -2989,10 +3165,21 @@ def listing_output(tmp_path, draft, lines, original, proposed):
     )
     assert not generate_translation_units(source)
     save_source_snapshot(workspace, source)
-    english = (
-        workspace / render_document(workspace)["artifacts"]["english"]
-    ).read_text()
+    artifacts = render_document(workspace)["artifacts"]
+    english = (workspace / artifacts["english"]).read_text()
     assert english.count(f"```\n{chunk.blocks[0].text}\n```") == 1
+    rendered_qa = json.loads((workspace / artifacts["qa"]).read_bytes())[
+        "uncertainties"
+    ]
+    for issue in chunk.uncertainties:
+        assert any(
+            q["reason"] == issue.reason
+            and source.blocks[0].block_id in q["block_ids"]
+            and q["output_anchors"]
+            and [json.loads(l["evidence"]) for l in q["locations"]]
+            == [e.model_dump(mode="json") for e in issue.evidence]
+            for q in rendered_qa
+        )
     return chunk.blocks[0].text, chunk.uncertainties
 
 
@@ -3227,16 +3414,21 @@ def test_agreeing_code_still_requires_a_printed_boundary(tmp_path, draft):
     ]
 
 
-def test_callout_tracks_printed_line_after_extra_blank_is_removed(tmp_path, draft):
+@pytest.mark.parametrize("margin, verified", [("", True), ("   ", True), ("", False)])
+def test_callout_tracks_printed_line_after_extra_blank_is_removed(
+    tmp_path, draft, margin, verified
+):
     from doc_translate.pdf_source import assemble_pdf_source
     from doc_translate.render import render_document
     from doc_translate.snapshot import save_source_snapshot
 
     draft, reply = listing_reply(
         draft,
-        [(70, "start"), (50, "middle"), (30, "end")],
-        "start middle end",
-        "start\n\nmiddle\nend",
+        [(70, "start"), (50, "middle"), (30, "end")]
+        if verified
+        else [(70, "start middle end")],
+        "start middle end" if verified else "start\nmiddle\nend",
+        f"{margin}start\n\n{margin}middle\n{margin}end",
     )
     reply["blocks"].append(
         {
@@ -3257,7 +3449,12 @@ def test_callout_tracks_printed_line_after_extra_blank_is_removed(tmp_path, draf
     )
     save_source_snapshot(ws, source)
     english = (ws / render_document(ws)["artifacts"]["english"]).read_text()
-    assert "start\nmiddle\nend\n```" in english and "; lines 2): Note&#46;" in english
+    assert "start\nmiddle\nend\n```" in english
+    assert ("; lines 2): Note&#46;" in english) == verified
+    if not verified:
+        assert any(
+            "Retained as unlinked text" in q.reason for q in source.uncertainties
+        )
 
 
 @pytest.mark.parametrize(
@@ -3762,3 +3959,208 @@ def test_nonpainting_code_does_not_corroborate_printed_lines(tmp_path, draft, mo
     ]
     text, qa = listing_output(tmp_path, draft, lines, "first last", "first\nlast")
     assert text == "first last" and any(q.target_ids == ["example"] for q in qa)
+
+
+@pytest.mark.parametrize(
+    "boundary, indent, gap",
+    [
+        (" ", "", " "),
+        ("  ", "", " "),
+        ("  ", "  ", " "),
+        ("\n", "", " "),
+        ("\n", "  ", "\n\n"),
+    ],
+)
+def test_shared_printed_caption_and_listing_own_separate_lines(
+    tmp_path, draft, boundary, indent, gap
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.render import render_document
+    from doc_translate.snapshot import save_source_snapshot
+    from doc_translate.units import generate_translation_units
+
+    code = (
+        indent
+        + "start"
+        + (gap if gap != " " else "\n")
+        + ("value" if indent else "  value")
+    )
+    raw = "Sample" + boundary + indent + "start" + gap + "value"
+    draft, reply = listing_reply(
+        draft,
+        [
+            (80, "Sample"),
+            (65, "start", 18.8 if indent else 8),
+            (50, "value", 8 if indent else 18.8),
+        ],
+        raw,
+        code,
+    )
+    reply["blocks"].insert(
+        0,
+        {
+            "kind": "caption",
+            "block_id": "cap",
+            "text": "Sample",
+            "evidence": [evidence()],
+        },
+    )
+    ws = draft[0]
+    digest = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(ws, digest)
+    assert [(b.kind, b.text, b.evidence[0].charspan) for b in chunk.blocks] == [
+        ("caption", "Sample", (0, 6)),
+        ("code", code, (6 + len(boundary), len(raw))),
+    ]
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[digest], snapshot_id="split"
+    )
+    assert [u.source_text for u in generate_translation_units(source)] == ["Sample"]
+    save_source_snapshot(ws, source)
+    english = (ws / render_document(ws)["artifacts"]["english"]).read_text()
+    assert english.count("Sample") == 1 and english.index("Sample") < english.index(
+        f"```\n{code}\n```"
+    )
+
+
+def test_interleaved_list_label_and_body_keep_provenance_and_readable_words(
+    tmp_path, draft
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+    from doc_translate.render import render_document
+    from doc_translate.snapshot import save_source_snapshot
+    from doc_translate.units import generate_translation_units
+
+    draft, reply = listing_reply(
+        draft, [(85, "Red"), (65, "Use 100."), (45, "Blue"), (25, "Mix.")], "", ""
+    )
+
+    def prov(start, end, y):
+        return {
+            "page_no": 1,
+            "charspan": [start, end],
+            "bbox": {
+                "l": 8,
+                "r": 70,
+                "t": y + 8,
+                "b": y - 2,
+                "coord_origin": "BOTTOMLEFT",
+            },
+        }
+
+    nodes = [
+        {"self_ref": f"#/texts/{i}", "label": "text", "text": text, "prov": ps}
+        for i, (text, ps) in enumerate(
+            [
+                ("Red", [prov(0, 3, 85)]),
+                ("Blue Use 100.", [prov(0, 4, 45), prov(5, 13, 65)]),
+                ("Mix.", [prov(0, 4, 25)]),
+            ]
+        )
+    ]
+    draft = rewrite_raw(
+        draft,
+        {
+            "body": {"children": [{"$ref": n["self_ref"]} for n in nodes]},
+            "texts": nodes,
+        },
+    )
+    reply.update(
+        draft_sha256=draft[1],
+        blocks=[
+            {
+                "kind": "list",
+                "block_id": label,
+                "depth": 1,
+                "marker": label,
+                "text": text,
+                "evidence": ev,
+            }
+            for label, text, ev in [
+                (
+                    "Red",
+                    "Use 180.",
+                    [evidence(), evidence(ref="#/texts/1", charspan=[5, 13])],
+                ),
+                (
+                    "Blue",
+                    "Mix.",
+                    [evidence(ref="#/texts/1"), evidence(ref="#/texts/2")],
+                ),
+            ]
+        ],
+    )
+    ws = draft[0]
+    digest = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(ws, digest)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[digest], snapshot_id="word-labels"
+    )
+    assert [(b.kind, b.text) for b in chunk.blocks] == [
+        ("list", "Red Use 100."),
+        ("list", "Blue Mix."),
+    ]
+    assert any(
+        "180" in q.reason and (5, 13) in [e.charspan for e in q.evidence]
+        for q in chunk.uncertainties
+    )
+    first, second = generate_translation_units(source)
+    (number,) = first.tokens
+    assert isinstance(number.value["text"], str)
+    assert (
+        first.source_text.replace(number.start_marker, number.value["text"])
+        == "Red Use 100."
+    )
+    assert second.source_text == "Blue Mix."
+    save_source_snapshot(ws, source)
+    english = (ws / render_document(ws)["artifacts"]["english"]).read_text()
+    assert english.count("Red Use 100&#46;") == english.count("Blue Mix&#46;") == 1
+
+
+def test_unanchored_listing_displays_measured_relative_columns(tmp_path, draft):
+    text, qa = listing_output(
+        tmp_path,
+        draft,
+        [(75, "middle", 13.4), (55, "left"), (35, " literal")],
+        "middle left  literal",
+        "    middle\n\n   left\n    literal",
+    )
+    assert text == " middle\nleft\n literal"
+    (margin,) = [q for q in qa if "common margin" in q.reason]
+    assert margin.target_ids == ["example"]
+    assert [(e.page, e.ref, e.charspan) for e in margin.evidence] == [
+        (1, "#/texts/0", (0, 6)),
+        (1, "#/texts/0", (7, 11)),
+        (1, "#/texts/0", (13, 20)),
+    ]
+    (blank,) = [q for q in qa if "blank-line count" in q.reason]
+    assert blank.evidence == margin.evidence[:2]
+
+
+@pytest.mark.parametrize("extra", ["", "\n"])
+def test_common_margin_does_not_hide_an_existing_literal_line_break(
+    tmp_path, draft, extra
+):
+    text, qa = listing_output(
+        tmp_path,
+        draft,
+        [(75, 's = "red'), (55, 'blue"'), (35, "next")],
+        's = "red\nblue" next',
+        f'   s = "red\n{extra}   blue"\n   next',
+    )
+    assert text == 's = "red\nblue"\nnext'
+    (margin,) = [q for q in qa if "common margin" in q.reason]
+    assert "3 spaces shallower" in margin.reason and len(margin.evidence) == 3
+    blanks = [q.evidence for q in qa if "blank-line count" in q.reason]
+    assert blanks == ([margin.evidence[:2]] if extra else [])
+
+
+def test_common_margin_cannot_explain_a_single_displaced_line(tmp_path, draft):
+    text, qa = listing_output(
+        tmp_path,
+        draft,
+        [(75, "ab", 13.4), (55, "cd"), (35, "ef", 18.8)],
+        "ab cd ef",
+        "    ab\n   cd\n    ef",
+    )
+    assert text == "ab cd ef" and qa[0].target_ids == ["example"]

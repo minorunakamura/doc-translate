@@ -488,7 +488,7 @@ def _layout_candidate(original, proposal):
     )
 
 
-def _printed_candidate(original, proposal):
+def _printed_candidate(original, proposal, *, relative_margin=False):
     # This comparison only nominates candidates. The local glyph runs must
     # separately prove every proposed nonempty line and its indentation.
     source = list(re.finditer(r"(\s*)(\S|$)", original))
@@ -502,7 +502,16 @@ def _printed_candidate(original, proposal):
         a, char = token.groups()
         if char != other:
             return False
-        if a != b:
+        if (
+            relative_margin
+            and token.start() == 0
+            and re.fullmatch(" *", a)
+            and re.fullmatch(" *", b)
+            and len(b) >= len(a)
+        ):
+            # The first printed line can itself start to the right of the fragment origin.
+            pass
+        elif a != b:
             if (a and quotes != {None}) or not char:
                 return False
             if not (a == " " and re.fullmatch(" +", b)):
@@ -591,12 +600,28 @@ def _line_origins(textpage, local, bounds, *, printed_lines):
     return result
 
 
-def _listing_layout(parts, proposal, page, read_original, *, printed_lines):
+def _listing_layout(
+    parts,
+    proposal,
+    page,
+    read_original,
+    *,
+    printed_lines,
+    relative_margin,
+    layout_version,
+    caption=None,
+):
     """Validate proposed lines individually against the complete local text runs."""
-    candidate = _printed_candidate if printed_lines else _layout_candidate
-    if not candidate(_joined(parts), proposal) or any(
+    original = _joined(parts)
+
+    def candidate(text):
+        if printed_lines:
+            return _printed_candidate(original, text, relative_margin=relative_margin)
+        return _layout_candidate(original, text)
+
+    if (layout_version < 8 and not candidate(proposal)) or any(
         p.rank[0] != page.page
-        or [p.start, p.end] != p.prov["charspan"]
+        or (caption is None and [p.start, p.end] != p.prov["charspan"])
         or "bbox" not in p.prov
         for p in parts
     ):
@@ -614,6 +639,16 @@ def _listing_layout(parts, proposal, page, read_original, *, printed_lines):
         return None
     rows = []
     for part_index, (part, origins) in enumerate(zip(parts, printed, strict=True)):
+        if caption is not None:
+            # The bounding box is shared: locate both roles in one complete native run.
+            if not (
+                len(parts) == 1
+                and len(origins) >= 2
+                and origins[0][0] == caption
+                and origins[0][2] > origins[1][2]
+            ):
+                return None
+            origins = origins[1:]
         cursor = 0
         for line, x, y, steps in origins:
             content = line.lstrip(" ")
@@ -647,6 +682,20 @@ def _listing_layout(parts, proposal, page, read_original, *, printed_lines):
         wanted != row[0] for (wanted, _), row in zip(proposed, rows, strict=True)
     )
     if measure_indent and (pitch is None or pitch <= 0):
+        return None
+    # The leftmost *drawn run* defines the display origin; literal spaces in
+    # the run are not part of the proposed shift. Check every origin below.
+    common = min(
+        len(wanted) - len(row[0])
+        for (wanted, _), row in zip(proposed, rows, strict=True)
+    )
+    if common < 0 or (common and (not relative_margin or len(rows) < 2)):
+        return None
+    # Check protected separators in the displayed columns: a shared proposal
+    # prefix is not a change inside an already extracted multiline literal.
+    if layout_version == 8 and not candidate(
+        "".join(line[common:] + after for line, after in proposed)
+    ):
         return None
     margin = None
     previous_y = None
@@ -684,13 +733,19 @@ def _listing_layout(parts, proposal, page, read_original, *, printed_lines):
                         [rows[i - 1][4], ev],
                     )
                 )
-        adopted.append(wanted)
+        adopted.append(wanted[common:])
         previous_y = y
-    if proposed[-1][1] or not any(
-        a == b[0] for (a, _), b in zip(proposed, rows, strict=True)
-    ):
+    display = "".join(adopted)
+    if proposed[-1][1] or ((common or layout_version >= 9) and not candidate(display)):
         return None
-    return "".join(adopted), unknown
+    if common:
+        unknown.append(
+            (
+                f"Unverified common margin: measured line starts at pitch {pitch:.3f} pt; displayed relative to the leftmost drawn run, {common} spaces shallower than proposed on every line. The page does not establish the source file's absolute indentation.",
+                [row[4] for row in rows],
+            )
+        )
+    return display, unknown, common
 
 
 def _disputed_lines(parts, proposal):
@@ -842,7 +897,17 @@ def _single_printed_occurrence(parts, page, read_original, read_image, figures):
     return ink.getbbox() is None
 
 
-def _bind_neighbors(blocks, targets, ranges, ranks, layout=None, image_owner=None):
+def _bind_neighbors(
+    blocks,
+    targets,
+    ranges,
+    ranks,
+    layout=None,
+    image_owner=None,
+    *,
+    display_windows=False,
+    report_conflict=None,
+):
     extra_evidence = defaultdict(list)
     # Page-image evidence can describe a complete extraction item without a ref.
     # Bind only a one-to-one full-text match on that page.
@@ -865,6 +930,17 @@ def _bind_neighbors(blocks, targets, ranges, ranks, layout=None, image_owner=Non
             ranges[i] = (part, key)
             ranks[key] = part.rank
             extra_evidence[key].append(part.evidence())
+
+    def bind(key, left, right):
+        for i in range(left, right + 1):
+            part, owner = ranges[i]
+            if owner is None:
+                extra_evidence[key].append(part.evidence())
+                ranges[i] = (part, key)
+        ranks[key] = ranges[left][0].rank
+
+    pending = {}
+    claims = defaultdict(set)
     # Extend a listing anchor only when a unique contiguous same-page
     # window accounts for the entire listing, including token boundaries.
     for key, block in targets.items():
@@ -878,6 +954,8 @@ def _bind_neighbors(blocks, targets, ranges, ranks, layout=None, image_owner=Non
         if any(k != key or p.rank[0] != page for p, k in ranges[first : last + 1]):
             continue
         windows = []
+        # Only nominate a window; its complete printed layout must prove the extension.
+        content = "".join(block.text.split()) if display_windows else None
         left = first
         while True:
             right = last
@@ -892,7 +970,12 @@ def _bind_neighbors(blocks, targets, ranges, ranks, layout=None, image_owner=Non
                     if layout
                     else _line_formatting
                 )
-                if original == block.text or candidate(original, block.text):
+                matches = (
+                    "".join(original.split()) == content
+                    if display_windows
+                    else original == block.text or candidate(original, block.text)
+                )
+                if matches:
                     parts = [p for p, _ in ranges[left : right + 1]]
                     if (
                         layout is None
@@ -912,19 +995,120 @@ def _bind_neighbors(blocks, targets, ranges, ranks, layout=None, image_owner=Non
             left -= 1
             if left < 0 or ranges[left][1] or ranges[left][0].rank[0] != page:
                 break
-        if len(windows) == 1:
-            left, right = windows[0]
+        if report_conflict is None:
+            if len(windows) == 1:
+                bind(key, *windows[0])
+            continue
+        # Compare all verified windows against the same ownership state before binding.
+        for left, right in windows:
             for i in range(left, right + 1):
-                part, owner = ranges[i]
-                if owner is None:
-                    extra_evidence[key].append(part.evidence())
-                    ranges[i] = (part, key)
-            ranks[key] = ranges[left][0].rank
+                if ranges[i][1] is None:
+                    claims[i].add(key)
+        if len(windows) == 1:
+            pending[key] = windows[0]
+    if report_conflict is None:
+        return extra_evidence
+    disputed = set()
+    for i in sorted(claims):
+        keys = claims[i]
+        if len(keys) > 1:
+            disputed.update(keys)
+            report_conflict(
+                "Competing code listings claim the same extraction range; retained original ownership",
+                sorted(keys),
+                [
+                    part.evidence()
+                    for j, (part, owner) in enumerate(ranges)
+                    if j == i or owner in keys
+                ],
+            )
+    for key, window in pending.items():
+        if key not in disputed:
+            bind(key, *window)
     return extra_evidence
 
 
+def _place_word_label_lists(ranges, blocks, ranks, pages, containers):
+    # Only an uninterrupted run of already assigned label/body pairs. The
+    # correction order and the disjoint vertical bands must independently agree.
+    labels = {
+        b.block_id: b for b in blocks if isinstance(b, ListBlock) and b.marker.isalpha()
+    }
+    for listed, group in itertools.groupby(
+        enumerate(ranges), lambda row: row[1][1] in labels
+    ):
+        if not listed:
+            continue
+        rows = list(group)
+        pairs = defaultdict(list)
+        for _, (part, key) in rows:
+            pairs[key].append(part)
+        if any(len(parts) != 2 for parts in pairs.values()):
+            continue
+        ordered = []
+        for key, block in labels.items():
+            if key not in pairs:
+                continue
+            parts = pairs[key]
+            label = [p for p in parts if p.text == block.marker]
+            if len(label) != 1:
+                break
+            ordered.extend(
+                (p, key)
+                for p in [label[0], next(p for p in parts if p is not label[0])]
+            )
+        if len(ordered) != len(rows) or ordered == [r for _, r in rows]:
+            continue
+        page = ordered[0][0].rank[0]
+        orders = {p.order for p, _ in ordered}
+        if len(orders) != max(orders) - min(orders) + 1 or any(
+            containers[o] for o in orders
+        ):
+            continue
+        bottom = 0
+        lefts = {}
+        for i, (p, key) in enumerate(ordered):
+            if p.rank[0] != page or tuple(p.prov["charspan"]) != (p.start, p.end):
+                break
+            try:
+                box = _DraftBox.model_validate(p.prov.get("bbox"))
+            except ValueError:
+                break
+            height = pages[page].height_points
+            t, b = (
+                (height - box.t, height - box.b)
+                if box.coord_origin == "BOTTOMLEFT"
+                else (box.t, box.b)
+            )
+            if not (
+                bottom <= t < b <= height
+                and 0 <= box.l < box.r <= pages[page].width_points
+                and isclose(lefts.setdefault(i % 2, box.l), box.l, abs_tol=0.02)
+            ):
+                break
+            bottom = b
+        else:
+            positions = sorted(p.rank for _, (p, _) in rows)
+            for index, ((_, key), rank) in enumerate(
+                zip(ordered, positions, strict=True)
+            ):
+                if index % 2 == 0:
+                    ranks[key] = rank
+            ranges[rows[0][0] : rows[-1][0] + 1] = ordered
+
+
 def adopt_owned_ranges(
-    answer, raw, pages, read_original, read_image, *, verify_layout, printed_lines
+    answer,
+    raw,
+    pages,
+    read_original,
+    read_image,
+    *,
+    verify_layout,
+    printed_lines,
+    printed_ranges,
+    relative_margin,
+    layout_version,
 ):
     by_page = {p.page: p for p in pages}
     issues = list(answer.uncertainties)
@@ -942,6 +1126,8 @@ def adopt_owned_ranges(
     for key, item in targets.items():
         for e in item.evidence:
             selectors[e.page, e.ref].append((key, e))
+
+    shared_captions = {}
 
     def issue(reason, keys, evidence):
         issues.append(
@@ -1041,6 +1227,73 @@ def adopt_owned_ranges(
                     continue
             body_refs.add((page, ref))
             start, end = span
+            split = {}
+            if (
+                printed_ranges
+                and not container
+                and node["label"] == "code"
+                and len(entries) == 2
+                and len(node["prov"]) == 1
+            ):
+                (cap_key, cap_ev), (code_key, code_ev) = entries
+                caption, code = targets[cap_key], targets[code_key]
+                if (
+                    getattr(caption, "kind", None) == "caption"
+                    and isinstance(code, CodeBlock)
+                    and all(
+                        len(block.evidence) == 1 and ev.charspan is None
+                        for block, ev in ((caption, cap_ev), (code, code_ev))
+                    )
+                    and caption.text
+                    and text.startswith(caption.text, start, end)
+                    and text.count(caption.text, start, end) == 1
+                ):
+                    boundary = start + len(caption.text)
+                    tail = text[boundary:end]
+                    flat_gap = (
+                        re.match(r" +(?=\S)", tail) if layout_version >= 10 else None
+                    )
+                    if flat_gap:
+                        tail = tail[flat_gap.end() :]
+                    elif layout_version >= 9:
+                        # Only the caption-to-code separator is outside code ownership.
+                        tail = re.sub(r"^(?: *\r?\n| )", "", tail, count=1)
+                    else:
+                        tail = tail.lstrip(" ")
+                    part = _Portion(order, node, prov, end - len(tail), end)
+                    checked = (
+                        _listing_layout(
+                            [part],
+                            code.text,
+                            by_page[page],
+                            read_original,
+                            printed_lines=True,
+                            relative_margin=relative_margin,
+                            layout_version=layout_version,
+                            caption=caption.text,
+                        )
+                        if tail
+                        else None
+                    )
+                    if checked is not None:
+                        if flat_gap:
+                            # One space separates the roles. Keep as code only the
+                            # remaining suffix supported by the measured first column.
+                            display = checked[0]
+                            indent = len(display) - len(display.lstrip(" "))
+                            part.start -= min(flat_gap.end() - 1, indent)
+                        split = {
+                            cap_key: (start, boundary),
+                            code_key: (part.start, end),
+                        }
+                        shared_captions[code_key] = caption.text
+                        for key, ev in entries:
+                            block = targets[key]
+                            a, b = split[key]
+                            selected = ev.model_copy(update={"charspan": (a, b)})
+                            blocks[blocks.index(block)] = targets[key] = (
+                                block.model_copy(update={"evidence": [selected]})
+                            )
             claims = []
             for key, e in entries:
                 if (
@@ -1056,7 +1309,32 @@ def adopt_owned_ranges(
                     detached[key].append(e)
                     continue
                 a, b = e.charspan or span
-                if e.charspan is None and len({k for k, _ in entries}) > 1:
+                if key in split:
+                    a, b = split[key]
+                    ranks[key] = (page, order, a)
+                elif e.charspan is None and len({k for k, _ in entries}) > 1:
+                    item = targets[key]
+                    if (
+                        printed_ranges
+                        and isinstance(item, ListBlock)
+                        and item.marker.isalpha()
+                        and len(item.evidence) == 2
+                        and item.evidence[0].ref == ref
+                        and item.evidence[1].ref != ref
+                    ):
+                        matches = [
+                            p
+                            for p in node["prov"]
+                            if p["page_no"] == page
+                            and text[slice(*p["charspan"])] == item.marker
+                        ]
+                        if len(matches) == 1:
+                            if matches[0] is not prov:
+                                continue
+                            narrow = e.model_copy(update={"charspan": (start, end)})
+                            blocks[blocks.index(item)] = targets[key] = item.model_copy(
+                                update={"evidence": [narrow, item.evidence[1]]}
+                            )
                     proposal = targets[key].text
                     pos = text.find(proposal, start, end)
                     if (
@@ -1078,6 +1356,9 @@ def adopt_owned_ranges(
                 if key is not None:
                     ranges.append((_Portion(order, node, prov, a, b), key))
                 cursor = b
+
+    if printed_ranges:
+        _place_word_label_lists(ranges, blocks, ranks, by_page, containers)
 
     unsupported = set()
     for key, notes in detached.items():
@@ -1129,7 +1410,7 @@ def adopt_owned_ranges(
             for q in issues
         ]
 
-    def layout(parts, proposal):
+    def layout(parts, proposal, caption=None):
         if separated(parts) or (
             printed_lines
             and any(p.node["label"] in ("footnote", "caption") for p in parts)
@@ -1141,6 +1422,9 @@ def adopt_owned_ranges(
             by_page[parts[0].rank[0]],
             read_original,
             printed_lines=printed_lines,
+            relative_margin=relative_margin,
+            layout_version=layout_version,
+            caption=caption,
         )
 
     def separated(parts, *, code=True):
@@ -1224,6 +1508,8 @@ def adopt_owned_ranges(
         ranks,
         layout if verify_layout else None,
         image_owner if printed_lines else None,
+        display_windows=layout_version >= 9,
+        report_conflict=issue if layout_version >= 10 else None,
     )
     # Joining non-adjacent body refs would move intervening material. Keep each
     # evidenced fragment at its own rank, without inventing a continuation.
@@ -1335,6 +1621,7 @@ def adopt_owned_ranges(
             portions[owner].append(part)
             prev = None
     replacements = {}
+    verified_margins = {}
     for key, parts in portions.items():
         item = targets[key]
         original = _joined(parts)
@@ -1343,9 +1630,10 @@ def adopt_owned_ranges(
         ):
             continue
         if verify_layout and isinstance(item, CodeBlock):
-            checked = layout(parts, item.text)
+            checked = layout(parts, item.text, shared_captions.get(key))
             if checked is not None:
-                text, differences = checked
+                text, differences, common = checked
+                verified_margins[key] = common
                 replacements[key] = item.model_copy(update={"text": text})
                 for reason, evidence in differences:
                     issue(reason, [key], evidence)
@@ -1502,9 +1790,14 @@ def adopt_owned_ranges(
             if proposed != adopted:
                 before = [i for i, line in enumerate(proposed, 1) if line.strip()]
                 after = [i for i, line in enumerate(adopted, 1) if line.strip()]
-                if all(n in before for n in b.lines) and [
-                    proposed[n - 1] for n in before
-                ] == [adopted[n - 1] for n in after]:
+                # Never infer a shift by stripping each line of a fallback extraction.
+                shift = verified_margins.get(b.code_id) if layout_version >= 9 else 0
+                if (
+                    shift is not None
+                    and all(n in before for n in b.lines)
+                    and [proposed[n - 1] for n in before]
+                    == [" " * shift + adopted[n - 1] for n in after]
+                ):
                     b = b.model_copy(
                         update={"lines": [after[before.index(n)] for n in b.lines]}
                     )
