@@ -410,7 +410,7 @@ def _validate_pdf_source(workspace, source, baseline):
                         raise ValueError(
                             "Cell extraction evidence needs one original draft"
                         )
-                    draft, _, items = _authorized_draft(
+                    draft, _, items, _ = _authorized_draft(
                         workspace, next(iter(candidates)), [evidence.page], [], drafts
                     )
                     if draft.document != source.document:
@@ -429,7 +429,7 @@ def _validate_pdf_source(workspace, source, baseline):
             raise ValueError("Source location outside adopted PDF ownership")
         if location.extraction_ref is None:
             continue
-        draft, _, items = _authorized_draft(
+        draft, _, items, _ = _authorized_draft(
             workspace, location.extraction_snapshot, [location.page], [], drafts
         )
         if draft.document != source.document:

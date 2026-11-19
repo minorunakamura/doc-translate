@@ -291,6 +291,12 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 - 全content kind、見出し／list階層、code改行／callout、空cell／span、除外理由・原本欠損、不正ref／wrong-page ref／cell／span、所有外出力、owned画像欠落、rawの安全なspan投影とclipしない省略、bbox重なりだけで本文を消さないことを検査します。
 - raw itemの部分所属／共有ref／不確実cellと全table所属の矛盾で外側を削除しないこと、旧chunk保持・chunk保存失敗前のattempt保存、各artifactのhash不正、load時のdomain／送信許可再検証、writer排他を検査します。save障害注入はOSの`replace`境界だけです。
 
+#### 所有本文の保存境界（#97）
+
+標準依存 `pypdfium2==5.14.0` はDoclingを起動しないfresh loadでも同じ局所PDF根拠を読むためのものです。native PDFiumはthread-safeではないため、原本のopen／局所read／closeだけをlock内に置き、推論や他jobの検証は直列化しません。wheelのmetadataにあるBSD-3-Clause／Apache-2.0と、対象platformのPDFium・同梱依存の`licenses/data/*/BUILD_LICENSES`も確認してください。lock更新だけを配布条件の確認済みとはしません。
+
+[verify-projectの所有本文手順](.pi/skills/verify-project/references/feature-map.md#所有本文の採用保存再読97)で、保存回答の無送信再生と人工CLI run／resumeを別々に行います。同じ案でも原本が異なる場合の採否、別描画の余白と同一描画内の調整、紙面の非空行・相対字下げと英語fence、追加空行だけの両側QA、旧4方式（方式なしも含む）のbyte保持、未知方式のorphanがresumeのpreflightより前に停止することを区別して検査します。focusedは下記signal wrapperで補正・source・units・render・run／resume・候補採用。正式core／PDF／型・wheel・隔離core導入／licenseは上記の影響選定と配布検査に従い、共有envをsyncしません。
+
 #### Issue #46／#47：全所有結果・coverage限定訂正・厳密再利用の再現
 
 公開保存／指示／互換性の契約は上記artifact契約、利用回数・課金非保証・既存workspace復旧案内は[usage](docs/reference/usage.md#ページ欠落が残る既存pdfの復旧確認)に集約します。合成入力だけで欠落→訂正成功、3generate上限、全記録・無送信回収とCLIへの接続を確認します。既存環境とbuild済みhelperを使い、install／sync／model取得はしません。helperが不在／古ければ止めて環境更新の許可を確認します。

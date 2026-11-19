@@ -134,6 +134,7 @@ def extend_pdf_input(conversion, last_page):
     """Extend the self-authored converter input, retaining the 1800px backend."""
     from docling_core.types.doc import (
         BoundingBox,
+        ContentLayer,
         DocItemLabel,
         ImageRef,
         ProvenanceItem,
@@ -149,13 +150,14 @@ def extend_pdf_input(conversion, last_page):
         )
         text = f"ONLY_PAGE_{page}_TEXT"
         conversion.document.add_text(
-            label=DocItemLabel.TEXT,
+            label=DocItemLabel.PAGE_HEADER,
+            content_layer=ContentLayer.FURNITURE,
             text=text,
             orig=text,
             prov=ProvenanceItem(
                 page_no=page,
                 charspan=(0, len(text)),
-                bbox=BoundingBox(l=10, t=80, r=100, b=60, coord_origin="BOTTOMLEFT"),
+                bbox=BoundingBox(l=10, t=99, r=100, b=94, coord_origin="BOTTOMLEFT"),
             ),
         )
     conversion.input.page_count = last_page
@@ -615,7 +617,9 @@ def test_resume_pdf_fills_failed_ownership_without_acquisition_or_resending_acce
     assert len(requests(tmp_path)) == count
 
 
-@pytest.mark.parametrize("base", ["current", "legacy", "repaired"])
+@pytest.mark.parametrize(
+    "base", ["current", "legacy", "repaired", "unknown", "known-first", "unrelated"]
+)
 def test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages(
     tmp_path, pdf_input, local_models, capsys, monkeypatch, base
 ):
@@ -654,6 +658,49 @@ def test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages(
             )
         assert stopped.value.code == 1
     capsys.readouterr()
+    if base in ("unknown", "known-first", "unrelated"):
+        from test_pdf_correction import artifact, later_unknown_record
+
+        directory = workspace / "attempts/pdf-correction"
+        for path in directory.glob("*.json"):
+            record = json.loads(path.read_bytes())
+            if record["status"] == "validated" and record["request"]["context"][
+                "owned_pages"
+            ] == [4, 5, 6]:
+                if base == "known-first":
+                    later_unknown_record(workspace, record, path.stem)
+                    break
+                record["request"]["context"]["adoption_rule"] = "unknown"
+                if base == "unknown":
+                    path.rename(path.with_suffix(".original"))
+                else:
+                    record["request"]["policy"] += " (other request)"
+                artifact(
+                    workspace,
+                    "attempts/pdf-correction",
+                    "json",
+                    json.dumps(record).encode(),
+                )
+                break
+        else:
+            pytest.fail("missing successful orphan")
+    if base in ("unknown", "known-first"):
+        before = {
+            p: (p.read_bytes(), p.stat().st_mtime_ns) for p in directory.iterdir()
+        }
+        sent = requests(tmp_path)
+        with pytest.raises(SystemExit) as stopped:
+            main(
+                ["resume", "--json", str(workspace)],
+                process_command=[str(tmp_path / "must-not-launch")],
+            )
+        assert stopped.value.code == 2 and "Unknown PDF adoption rule" in str(
+            capsys.readouterr()
+        )
+        assert sent == requests(tmp_path) and before == {
+            p: (p.read_bytes(), p.stat().st_mtime_ns) for p in directory.iterdir()
+        }
+        return
     if base == "legacy":
         from test_pdf_correction import artifact
 
@@ -661,6 +708,7 @@ def test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages(
         old_runs = {}
         for path in list((workspace / "attempts/pdf-correction").glob("*.json")):
             record = json.loads(path.read_bytes())
+            del record["request"]["context"]["adoption_rule"]
             del record["request"]["context"]["page_results"]
             old_runs[path.stem] = artifact(
                 workspace,
@@ -672,9 +720,13 @@ def test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages(
         old_chunks = {}
         for path in list((workspace / "corrections/pdf").glob("*.json")):
             chunk = json.loads(path.read_bytes())
+            chunk["schema_version"] = 1
             chunk["run"] = old_runs[chunk["run"]["sha256"]]
             old_chunks[path.stem] = artifact(
-                workspace, "corrections/pdf", "json", json.dumps(chunk).encode()
+                workspace,
+                "corrections/pdf",
+                "json",
+                json.dumps(chunk, ensure_ascii=False, separators=(",", ":")).encode(),
             )["sha256"]
             path.rename(path.with_suffix(".original"))
         manifest_path = workspace / "run.json"

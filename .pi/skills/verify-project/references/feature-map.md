@@ -1119,3 +1119,54 @@ repository rootから既存Pythonで起動する入口・正確なshell・入力
 無送信直接操作はdesignの新sandbox（実AUTH外）でcompleteとinterruptを**別Python invocation**として実行する。既存実Node/faux/no-network・人工OAuth metadata、実runtime到達assert拒否の下で公開保存/別process英語readbackを確認し、累計2/4→3/5を次Pythonで再読、開始/予約中断4/6→無送信停止・安全marker保持を観測する。人工消費を実累計へ混ぜない。専用回帰では上限/全retry/0送信/保存不能/並行/版binding/保護対象拒否と既存exclusions/page-local/legacy/auth/storageを確認する。人工成立は実認証・意味品質の証明でない。
 
 証拠は各新規0700親にcommand/exit/版/diff/観測/未確認と開始・予約・完了・分類・hashを保持。秘密/本文/画像を公開せず、所有temp/人工credential/childだけcleanup/wait後に全保持証拠を再読する。Root正式check/別invocation/全画像固定期待照合、Reviewer独立判断は別。正常不要指摘/変更0、正当な2header不要復元0、局所不読保持・回復不要baseline保存/英語出力で停止。他7標本/実書籍/全冊/通常run-resume/実OCR/日本語は未保証。
+
+## 所有本文の採用・保存再読（#97）
+
+標本準備・保存記録と詳細検査の制約を維持する。以下は**この2 chunkの無送信再生だけ**（実送信・認証・通常runではない）。新規0700親で、既存workspaceの保存回答とprojection・PNG hash・座標・所有範囲を照合する局所pipeを使う。旧attemptやchunkを新workspaceへ入れない。別processで再読・組立・units／英語出力後にだけ固定goldと比較。本文・画像・エラー値を出さず、作ったworkspace/childだけ回収し、証拠を再読する。
+
+```sh
+set -eu
+umask 077
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+E=$(mktemp -d "$PWD/work/adoption-book-XXXXXXXX")
+git rev-parse HEAD > "$E/revision"; git status --short -- . ':!work' > "$E/dirty"
+python .pi/skills/verify-project/scripts/pdf_adoption_replay.py "$E/proof" > "$E/result.json"
+```
+
+期待：50項目の各所有spanが正しい役割で原順に1回。翻訳対象は実unit、codeは英語renderに残る。9対照は個別に構造／出典／順／回数が一致し、76の行末hyphenはDocling＋位置QA、78は同一行の前後文脈と`local_differences[].word_boundary_drawing`の明示SPACEまたは別描画・同じfont/変換・通常字送り後の余白と局所揺れを確認。bounded hitだけでは不可。コード3件は`control_evidence[].lines`で固定行と出力行、字下げ・出典span・原本での行頭・字送り・行内の全文と英語fenceを比較する。著者の論理改行は判定しない。追加空行数は非空行の一致と別判定。非空行の不一致は不可。固定と追加空行数だけが異なる場合は、前後両方の位置QAも照合し、`blank_count_uncertain`を完全一致と別に数える。間隔から空行数を決めない。`proof/{inputs,observations,hashes}.json`で元資料hash/mtimeとcleanup後の結果を確認。PDF画像・各対照をRootが直接確認することは省略しない。外部trial markerにはアクセスしない。
+
+別の人工実操作：上記export・umaskの後、工程・所有ページ進捗のCLI fixture（既存PDF extra/実Node/faux/no-networkのみ）を使う。自作PDF＋人工converterの所有本文をあえて答えない。未所有の本文も置き、所有根拠と偶然のページcoverageを区別する。実モデル・OCRの品質保証ではない。
+
+```sh
+E=$(mktemp -d "$PWD/work/adoption-cli-XXXXXXXX"); export E
+python - <<'PY'
+import hashlib,json,os,shutil,signal,subprocess,sys,tempfile
+from pathlib import Path
+from doc_translate.snapshot import load_source_snapshot
+from doc_translate.units import generate_translation_units
+signal.signal(signal.SIGINT,signal.default_int_handler)
+e=Path(os.environ['E']); root=Path.cwd(); entry=root/'.pi/skills/verify-project/scripts/pdf_progress_fixture.py'
+proof=[]; reports=[]
+with tempfile.TemporaryDirectory(dir=e) as tmp:
+ for concurrency in (1,2):
+    case=Path(tmp)/str(concurrency);case.mkdir();fix=case/'fixture';ws=case/'ws';log=case/'requests';cfg=case/'settings';cfg.write_text('{}')
+    helper=[shutil.which('node'),str(root/'ai/tests/run-process.mjs'),str(case/'faux-only'),str(cfg),str(log)]
+    prefix=[sys.executable,str(entry),'--omitted-prose','--fixture-dir',str(fix),'--helper',json.dumps(helper),'--']
+    def invoke(args):
+        r=subprocess.run(prefix+args,capture_output=True,check=False);assert r.returncode==0
+        assert json.loads(r.stdout)['processing']['status']=='completed'
+    invoke(['run','--json',str(fix/'own.pdf'),'--workspace',str(ws),'--pages','2-7','--reference-pages','8-8','--artifacts-path',str(fix/'models'),'--provider','faux','--model','text','--thinking','off','--correction-model','vision','--correction-concurrency',str(concurrency)])
+    def immutable():return {p.relative_to(ws):hashlib.sha256(p.read_bytes()).hexdigest() for d in ('originals','drafts','corrections','attempts','snapshots') for p in (ws/d).rglob('*') if p.is_file()}
+    before=immutable();sent=log.read_bytes();requests=[json.loads(json.loads(line)['messages'][1]['content'][0]['text']) for line in sent.splitlines()]
+    actual=[unit['source_text'] for r in requests if not r['context'].get('phase') and 'owned_pages' not in r['context'] for unit in json.loads(r['text'])]
+    texts=[b.text for b in load_source_snapshot(ws).blocks];wanted=[t for n in range(2,8) for t in ([f'Page {n} source.']+({2:['Pack the parcel.'],7:['Seal the parcel.']}.get(n,[])))]
+    assert texts==wanted and all(actual.count(t)==1 for t in ('Pack the parcel.','Seal the parcel.')) and not any('Return the parcel.' in t or 'ONLY_PAGE_' in t for t in actual)
+    for path in (ws/'attempts/pdf-correction').glob('*.json'):
+        r=json.loads(path.read_bytes());answer=json.loads(r['attempts'][-1]['final']['message']['content'][0]['text']);assert not any('parcel' in b['text'] for b in answer['blocks'])
+    proof.append([u.source_text for u in generate_translation_units(load_source_snapshot(ws))]);invoke(['resume','--json',str(ws)]);assert log.read_bytes()==sent and immutable()==before
+    reports.append(dict(concurrency=concurrency,units=len(actual),immutable=len(before),resume_sends=0))
+assert proof[0]==proof[1];f=e/'results.json';f.write_text(json.dumps(reports));assert json.loads(f.read_bytes())==reports
+PY
+```
+
+版・dirty・command/exitと未確認事項は各親に残す。上記に加え、異なるhashの原本・同一ref/座標での局所語区切りの直列/並列比較は`tests/test_pdf_correction.py -k concurrent_loads`、旧byteは`-k recorded_adoption_rule`を開発ガイドのsignal wrapperで別途検査する。

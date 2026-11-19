@@ -780,7 +780,7 @@ def _pdf_source(
     cancelled,
     observer=None,
 ) -> SourceSnapshot:
-    from doc_translate.pdf import PDF_VERSIONS, acquire_pdf, load_pdf_draft
+    from doc_translate.pdf import PDF_VERSIONS, _store, acquire_pdf, load_pdf_draft
     from doc_translate.pdf_correction import (
         _correct_pdf,
         _load_pdf_correction,
@@ -872,6 +872,10 @@ def _pdf_source(
             accepted.append(digest)
             ownership[digest] = chunk.owned_pages
             covered.update(chunk.owned_pages)
+    # Do not publish a known orphan until all unknown successes applicable to
+    # the originally pending scope have been validated.
+    orphans = []
+    claimed = set()
     for path in sorted((workspace / "attempts/pdf-correction").glob("*.json")):
         recovered = _recover_pdf_correction(
             workspace,
@@ -882,12 +886,18 @@ def _pdf_source(
             CORRECTION_POLICY,
             manifest.correction,
             drafts,
+            claimed,
         )
         if recovered is not None:
-            digest, owned = recovered
-            accepted.append(digest)
-            ownership[digest] = owned
-            covered.update(owned)
+            orphans.append(recovered)
+            claimed.update(recovered.owned_pages)
+    for chunk in orphans:
+        digest = _store(
+            workspace, "corrections/pdf", "json", chunk.model_dump_json().encode()
+        ).sha256
+        accepted.append(digest)
+        ownership[digest] = chunk.owned_pages
+        covered.update(chunk.owned_pages)
     manifest.chunk_sha256s = sorted(accepted, key=lambda digest: min(ownership[digest]))
     manifest.corrected_pages = sorted(covered)
     manifest.failed_pages = []

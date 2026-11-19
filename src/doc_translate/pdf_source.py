@@ -71,9 +71,9 @@ def assemble_pdf_source(
     owned = [page for _, chunk in chunks for page in chunk.owned_pages]
     if len(owned) != len(set(owned)):
         raise ValueError("PDF source chunks have overlapping ownership")
-    raw_items = {digest: items for digest, (_draft, items) in drafts.items()}
+    raw_items = {digest: items for digest, (_draft, items, _raw) in drafts.items()}
     document = next(iter(drafts.values()))[0].document
-    if any(draft.document != document for draft, _items in drafts.values()):
+    if any(draft.document != document for draft, _items, _raw in drafts.values()):
         raise ValueError("PDF source chunks must use the same original document")
     chunks.sort(key=lambda item: min(item[1].owned_pages))
     originals = {}
