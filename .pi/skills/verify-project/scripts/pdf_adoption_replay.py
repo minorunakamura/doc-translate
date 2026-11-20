@@ -603,7 +603,7 @@ def compare(workspace, digests, historical, gold):
     }
 
 
-def replay(output, *, listings=False, roles=False, connections=False):
+def replay(output, *, listings=False, roles=False, connections=False, bodies=False):
     from doc_translate.inference import GenerationConfig
     from doc_translate.pdf_correction import correct_pdf, load_pdf_correction
 
@@ -617,6 +617,9 @@ def replay(output, *, listings=False, roles=False, connections=False):
 
     if connections:
         seeds = [SEED, SEED.parent / "seed-111", SEED.parent / "seed-181"]
+
+    if bodies:
+        seeds = [SEED.parent / f"seed-{n}" for n in (61, 111, 211)]
 
     def read(path, h=None):
         assert path == path.resolve() and (
@@ -635,8 +638,19 @@ def replay(output, *, listings=False, roles=False, connections=False):
         for seed in seeds:
             rows = json.loads(read(seed / "correspondence.json"))
             group = list(dict.fromkeys(h for row in rows for h, _ in row["fragments"]))
+            if bodies:
+                start = (61, 121, 211)[seeds.index(seed)]
+                group = [
+                    h
+                    for h in group
+                    if json.loads(read(BOOK / f"corrections/pdf/{h}.json", h))[
+                        "owned_pages"
+                    ][0]
+                    == start
+                ]
+                assert len(group) == 1
             old_ids.extend(group[:1] if connections and seed == SEED else group)
-            if not (roles or connections):
+            if not (roles or connections or bodies):
                 read(seed / "current-source.json")
         scopes = [
             list(range(n, n + 5)) for n in ((111, 116, 121) if listings else (71, 76))
@@ -647,6 +661,8 @@ def replay(output, *, listings=False, roles=False, connections=False):
             scopes = [list(range(n, n + 5)) for n in (71, 111, 116, 121, 181, 186)]
         if listings:
             scopes.append([346])
+        if bodies:
+            scopes = [list(range(n, n + 5)) for n in (61, 121, 211)]
         assert len(old_ids) == len(scopes)
         read(BOOK / ".writer.lock")
         with tempfile.TemporaryDirectory(dir=output, prefix="isolated-") as tmp:
@@ -708,7 +724,7 @@ def replay(output, *, listings=False, roles=False, connections=False):
                     )
                 )
                 assert record_path.with_suffix(".sent").is_file()
-                if roles or connections:
+                if roles or connections or bodies:
                     h = digests[-1]
                     stored = json.loads(
                         checked(workspace / f"corrections/pdf/{h}.json", h)
@@ -722,7 +738,7 @@ def replay(output, *, listings=False, roles=False, connections=False):
                         and attempt["final"] == record["attempts"][-1]["final"]
                     )
             # Gold never enters the wire, request, or workspace. Compare in a fresh process.
-            if not (listings or roles or connections):
+            if not (listings or roles or connections or bodies):
                 hashes = json.loads(read(FINAL / "hashes.json"))
                 fixed = json.loads(
                     read(
@@ -738,7 +754,9 @@ def replay(output, *, listings=False, roles=False, connections=False):
                 [
                     sys.executable,
                     SCRIPT,
-                    "capture-99"
+                    "capture-100"
+                    if bodies
+                    else "capture-99"
                     if connections
                     else "compare-108"
                     if roles
@@ -757,7 +775,7 @@ def replay(output, *, listings=False, roles=False, connections=False):
                 raise AssertionError("fresh comparison failed")
             observations = json.loads(
                 (parent / "listing-observations.json").read_bytes()
-                if listings or roles or connections
+                if listings or roles or connections or bodies
                 else result.stdout
             )
             if listings or roles:
@@ -773,7 +791,7 @@ def replay(output, *, listings=False, roles=False, connections=False):
             )
         write_json(output / "inputs.json", inventory)
     finish(output, observations)
-    if listings or roles or connections:
+    if listings or roles or connections or bodies:
         print(json.dumps({"chunks": len(digests)}))
         return
     print(
@@ -798,7 +816,14 @@ if __name__ == "__main__":
     sys.addaudithook(deny_network)
     if not __debug__:
         raise RuntimeError("Assertions required")
-    if sys.argv[1] in ("wire", "compare", "compare-98", "compare-108", "capture-99"):
+    if sys.argv[1] in (
+        "wire",
+        "compare",
+        "compare-98",
+        "compare-108",
+        "capture-99",
+        "capture-100",
+    ):
         target = Path(sys.argv[2])
         parent = target.parent
         assert (
@@ -855,6 +880,16 @@ if __name__ == "__main__":
             target.parent / "listing-observations.json",
             capture(target, sys.argv[3:9], sys.argv[9:]),
         )
+    elif sys.argv[1] == "capture-100":
+        from pdf_connection_comparison import capture
+
+        assert target.name == "new" and not (target / "source-snapshot.json").exists()
+        write_json(
+            target.parent / "listing-observations.json",
+            capture(target, sys.argv[3:6], sys.argv[6:], bodies=True),
+        )
+    elif sys.argv[1] == "--bodies":
+        replay(Path(sys.argv[2]), bodies=True)
     elif sys.argv[1] == "--connections":
         replay(Path(sys.argv[2]), connections=True)
     elif sys.argv[1] == "--roles":

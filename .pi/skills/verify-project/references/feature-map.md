@@ -1139,7 +1139,8 @@ python .pi/skills/verify-project/scripts/pdf_adoption_replay.py "$E/proof" > "$E
 
 ```sh
 E=$(mktemp -d "$PWD/work/adoption-cli-XXXXXXXX"); export E
-python - <<'PY'
+git rev-parse HEAD >"$E/revision"; git status --short >"$E/dirty"
+python - <<'PY' >"$E/cli.log" 2>&1 || { echo $? >"$E/cli.exit"; exit 1; }
 import hashlib,json,os,shutil,signal,subprocess,sys,tempfile
 from pathlib import Path
 from doc_translate.snapshot import load_source_snapshot
@@ -1148,29 +1149,43 @@ signal.signal(signal.SIGINT,signal.default_int_handler)
 e=Path(os.environ['E']); root=Path.cwd(); entry=root/'.pi/skills/verify-project/scripts/pdf_progress_fixture.py'
 proof=[]; reports=[]
 with tempfile.TemporaryDirectory(dir=e) as tmp:
- for concurrency in (1,2):
-    case=Path(tmp)/str(concurrency);case.mkdir();fix=case/'fixture';ws=case/'ws';log=case/'requests';cfg=case/'settings';cfg.write_text('{}')
+ for label in ([1,2,'symbol'] if os.environ.get("CHECK_BODY_SYMBOL")=="1" else [1,2]):
+    concurrency = 1 if label=="symbol" else label
+    case=Path(tmp)/str(label);case.mkdir();fix=case/'fixture';ws=case/'ws';log=case/'requests';cfg=case/'settings';cfg.write_text('{}')
+    if label=='symbol':
+        cfg.write_text(json.dumps({'correction_blocks':[{'block_id':'parcel','kind':'body','text':'Pack the— parcel.','evidence':[{'page':2,'ref':parcel_ref,'position':'below','reason':'Unverified suggestion'}]}]}))
     helper=[shutil.which('node'),str(root/'ai/tests/run-process.mjs'),str(case/'faux-only'),str(cfg),str(log)]
     prefix=[sys.executable,str(entry),'--omitted-prose','--fixture-dir',str(fix),'--helper',json.dumps(helper),'--']
     def invoke(args):
         r=subprocess.run(prefix+args,capture_output=True,check=False);assert r.returncode==0
         assert json.loads(r.stdout)['processing']['status']=='completed'
-    invoke(['run','--json',str(fix/'own.pdf'),'--workspace',str(ws),'--pages','2-7','--reference-pages','8-8','--artifacts-path',str(fix/'models'),'--provider','faux','--model','text','--thinking','off','--correction-model','vision','--correction-concurrency',str(concurrency)])
+    invoke(['run','--json',str(fix/'own.pdf'),'--workspace',str(ws),'--pages','2-2' if label=='symbol' else '2-7','--reference-pages','8-8','--artifacts-path',str(fix/'models'),'--provider','faux','--model','text','--thinking','off','--correction-model','vision','--correction-concurrency',str(concurrency)])
     def immutable():return {p.relative_to(ws):(hashlib.sha256(p.read_bytes()).hexdigest(),p.stat().st_mtime_ns) for d in ('originals','drafts','corrections','attempts','snapshots') for p in (ws/d).rglob('*') if p.is_file()}
-    before=immutable();(e/f'inputs-{concurrency}.json').write_text(json.dumps({str(k):v for k,v in before.items()}));sent=log.read_bytes();requests=[json.loads(json.loads(line)['messages'][1]['content'][0]['text']) for line in sent.splitlines()]
+    before=immutable();(e/f'inputs-{label}.json').write_text(json.dumps({str(k):v for k,v in before.items()}));sent=log.read_bytes();requests=[json.loads(json.loads(line)['messages'][1]['content'][0]['text']) for line in sent.splitlines()]
     actual=[unit['source_text'] for r in requests if not r['context'].get('phase') and 'owned_pages' not in r['context'] for unit in json.loads(r['text'])]
+    if label=='symbol':
+        source=load_source_snapshot(ws); (b,)=source.blocks
+        assert actual==[b.text]==['Pack the parcel.']
+        (q,)=[q for q in source.uncertainties if q.stage=='pdf_correction' and q.target_ids==[b.block_id]]
+        assert 'Insertion' in q.reason and all(l.format=='pdf' and l.page==2 and l.extraction_ref==parcel_ref for l in q.locations)
+        assert [json.loads(l.evidence)['charspan'] for l in q.locations]==[[7,8],[8,9]]
+        (rec,)=(ws/'attempts/pdf-correction').glob('*.json'); response=json.loads(rec.read_bytes()); assert json.loads(response['attempts'][-1]['final']['message']['content'][0]['text'])['blocks'][0]['text']=='Pack the— parcel.'
+        invoke(['resume','--json',str(ws)]);assert log.read_bytes()==sent and immutable()==before
+        reports.append(dict(control=label,actual=actual,qa=q.model_dump(mode='json'),resume_sends=0));continue
     texts=[b.text for b in load_source_snapshot(ws).blocks];wanted=[t for n in range(2,8) for t in ([f'Page {n} source.']+({2:['Pack the parcel.'],7:['Seal the parcel.']}.get(n,[])))]
     assert texts==wanted and all(actual.count(t)==1 for t in ('Pack the parcel.','Seal the parcel.')) and not any('Return the parcel.' in t or 'ONLY_PAGE_' in t for t in actual)
     source=load_source_snapshot(ws)
     for n,text in ((2,'Pack the parcel.'),(7,'Seal the parcel.')):
         (block,)=[b for b in source.blocks if b.text==text]
         assert any(block.block_id in q.target_ids and any(l.format=='pdf' and l.page==n and l.extraction_ref for l in q.locations) for q in source.uncertainties)
+    parcel_ref=next(b for b in source.blocks if b.text=='Pack the parcel.').locations[0].extraction_ref
     for path in (ws/'attempts/pdf-correction').glob('*.json'):
         r=json.loads(path.read_bytes());answer=json.loads(r['attempts'][-1]['final']['message']['content'][0]['text']);assert not any('parcel' in b['text'] for b in answer['blocks'])
     proof.append([u.source_text for u in generate_translation_units(load_source_snapshot(ws))]);invoke(['resume','--json',str(ws)]);assert log.read_bytes()==sent and immutable()==before
     reports.append(dict(concurrency=concurrency,units=len(actual),immutable=len(before),resume_sends=0))
 assert proof[0]==proof[1];f=e/'results.json';f.write_text(json.dumps(reports));assert json.loads(f.read_bytes())==reports
 PY
+echo 0 >"$E/cli.exit"
 ```
 
 版・dirty・command/exitと未確認事項は各親に残す。上記に加え、異なるhashの原本・同一ref/座標での局所語区切りの直列/並列比較は`tests/test_pdf_correction.py -k concurrent_loads`、旧byteは`-k recorded_adoption_rule`を開発ガイドのsignal wrapperで別途検査する。
@@ -1247,6 +1262,8 @@ PY
 
 ## 所有コード全文の保存とページ間接続（#99）
 
+適用版は `074e642`（schema 13）。#100の3 chunk検証には次節を使う。
+
 [第3版Plan](../../../../docs/plans/pdf-initial-source-preservation-99-r3.md)の6 chunkだけを扱う。上記#97/#98/#108の原資料・固定見本・閉じたpipe・原本照合を再利用する。過去版単独の `--listings`／`--roles` の期待を新方式に読み替えない。原資料はread-only。既存PDF環境、repository rootで実行する。出力内容・比較エラーはprivateに保存し、画面には出さない。
 
 ```sh
@@ -1271,3 +1288,29 @@ echo 0 >"$E/score.exit"
 所有開始71・111・116・121・181・186を未編集回答から同じschema 13で保存する。`proof/inputs.json`は旧資料のhash/mtime、`observations.json`はfresh load→公開assemble→実units／英語の記録。固定期待はその後の独立採点にだけ使う。`score.json`の`listings.lines`・`roles.printed_evidence`で実際の描画行・採用した行・位置・行内space・区切りを照合。特に118は16＋1非空行と有効な末尾を各1回保存し、無効refの行には擬似spanを付けない。118の絶対字下げQAは出力anchorと17行それぞれのref・span・行原点、空行QAは境界の前後それぞれの行原点で区別して採点する。`connections.series` は5必須系列と追加系列のfragments・locations→英語fence、周囲のunitと出力順の照合。字下げ・追加空行の残差は `indent_delta`／`blank_delta`、未証明の位置はQA。独立脚注・caption target・190の警告は`roles`、73→74の分離・出典・失敗checkは`connections.refused`を見る。6回答にcalloutがなければ、行移動は既存の公開人工回帰で別に確認する。
 
 人工CLI run→fresh resumeは別の新規0700親で#97の実操作を使う。旧方式を移行・再送せず、方式に応じて保持する試験は `tests/test_pdf_correction.py` の保存再読・既知／未知orphan、接続の人工拒否例とcalloutは `tests/test_pdf_source.py`。旧成果を新しい版の合格として数えない。command/exit・未達と残差を保存し、自作一時物だけcleanupして証拠を再読する。Rootの直接操作・原画像確認・正式check・独立reviewは別。
+
+## 本文記号と接続・図の別採点（#100）
+
+[#100 Plan](../../../../docs/plans/pdf-initial-source-preservation-100.md)の3範囲のみ。#99と同じread-only原資料・private条件で、`--bodies` は所有開始61・121・211の検証済み回答をそれぞれ一度だけ独立したpipeで渡す。旧attempt/chunk・採点用資料を新しいworkspaceへ入れない。既存PDF環境、repository rootからforegroundで実行する。書籍の本文・画像・回答・エラーやscore JSONを画面に出さない。
+
+```sh
+set -eu
+umask 077
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+E=$(mktemp -d "$PWD/work/body-figures-XXXXXXXX")
+git rev-parse HEAD >"$E/revision"; git status --short >"$E/dirty"
+S=.pi/skills/verify-project/scripts
+printf '%s\n' "python $S/pdf_adoption_replay.py --bodies $E/proof" >"$E/replay.command"
+python "$S/pdf_adoption_replay.py" --bodies "$E/proof" >"$E/replay.log" 2>"$E/replay.err" || { echo $? >"$E/replay.exit"; exit 1; }; echo 0 >"$E/replay.exit"
+printf '%s\n' "python $S/pdf_body_comparison.py $E/proof" >"$E/score.command"
+python "$S/pdf_body_comparison.py" "$E/proof" >"$E/score.log" 2>"$E/score.err" || { echo $? >"$E/score.exit"; exit 1; }; echo 0 >"$E/score.exit"
+test -s "$E/scoring/score.json" && test ! -s "$E/scoring/error.log"
+```
+
+`proof/observations.json` は別processの公開load→assemble→実units→render。採点器は同じ親に未作成の `scoring/` を排他的に作り、詳細と例外はその中だけに保存する。`-O` は不可。採点器のみの再検査では既存 `proof/` を別の新規0700親 `$E` にコピーし、再生せず上記 `score.command` 以降を実行する（製品の再生合格ではない）。`scoring/score.json` の `cases` と原画像を次の順で直接照合する。
+
+- rawと補正案の左右別々のpage/ref/span → schema 14の新規保存・再読 → sourceの最初の位置と2 fragments/locations → 保護tokenの順・復号実unit → `english.md` の実anchor区間。64→65は3置換、123→124は1挿入、213→214は無変更。固定全文が各1回。差ごとの `witness` で原本描画位置を確認する。61→62は独立した脚注・見出し・本文3件を越えず、両端の位置QAと失敗checkが必要。
+- 図は旧提案中の2断片の間、新規保存では右断片の後。原画像と出力の前後本文、注記・captionの対象、非対象blockの相対順を照合する。図のref/member・元ページ・領域、英語の実img先 `proof/assets/`、内部文字が本文として再出力されていないことを確認。特に214は枠・内部の全内容を含む切り抜きを比較する。これらの3図は独立した白地の帯にあり、ページの同じ高さで左右や帯の上下へ描画が漏れていないことも調べる。出力後のPNG全画素照合を人工unitや接続件数で代用しない。
+- 別の新規0700親で `export CHECK_BODY_SYMBOL=1` として#97節の「別の人工実操作」を実行する。既存の省略対照に加えて、原本に根拠のない記号挿入案を渡し、翻訳requestが抽出文字のまま、QAが両隣を指し、fresh resumeで追加送信0・旧immutableのhash/mtime不変であることを確認する。終了後 `unset CHECK_BODY_SYMBOL`。実AI・実認証・追加retry・全冊処理・修復はしない。
+
+各親にcommand/exit・revision/dirty・期待と実測・残差を残す。`isolated-*`／人工一時workspace・childの回収後、`inputs.json` の元資料のhash/mtime、`proof/hashes.json` の保存物・crop、および `scoring/score.json` とCLI結果を再読する。原資料や既存の検証親を削除せず、失敗や未確認を件数による成功に読み替えない。Rootは別の新規親で最終差分を独立に直接確認する。

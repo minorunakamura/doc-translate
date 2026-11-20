@@ -92,6 +92,13 @@ _LITERAL = re.compile(
 )
 
 
+def _literal_spans(text: str):
+    for match in _LITERAL.finditer(text):
+        literal = match.group().rstrip(".,;:!?)")
+        if literal:
+            yield match.start(), match.start() + len(literal)
+
+
 class _Inline:
     def __init__(self):
         self.parts: list[str] = []
@@ -119,13 +126,10 @@ class _Inline:
                     self.parts.append(piece)
 
         offset = 0
-        for match in _LITERAL.finditer(text):
-            literal = match.group().rstrip(".,;:!?)")
-            if not literal:
-                continue
-            prose(text[offset : match.start()])
-            self.token("literal", {"text": literal})
-            offset = match.start() + len(literal)
+        for start, end in _literal_spans(text):
+            prose(text[offset:start])
+            self.token("literal", {"text": text[start:end]})
+            offset = end
         prose(text[offset:])
 
     @property

@@ -1062,3 +1062,25 @@ def test_declined_code_head_does_not_reverse_same_page_proposal_order(tmp_path, 
     }
     digest = accept(tmp_path, draft, [proposal, left], [1], [])
     assert_separate(assemble(draft, [digest]), [left, right])
+
+
+def test_punctuation_witness_is_not_a_continuation_target(tmp_path, draft):
+    from test_pdf_correction import punctuation_reply
+
+    draft, reply = punctuation_reply(draft, "supported")
+    whole = reply["blocks"][0]
+    other = evidence(ref=None, position="lower right")
+    whole["outgoing"] = {"target": other, "mode": "space"}
+    reply["blocks"].append(
+        {
+            "kind": "body",
+            "block_id": "second",
+            "text": "Other fragment.",
+            "evidence": [other],
+            "incoming": {"target": evidence(charspan=[4, 5]), "mode": "space"},
+        }
+    )
+    saved = run(tmp_path, draft, reply, reference_pages=[])
+    source = assemble(draft, [saved])
+    assert [b.text for b in source.blocks] == ["Mint–leaf tea— now.", "Other fragment."]
+    assert any(c.name == "pdf_connection" and not c.passed for c in source.checks)
