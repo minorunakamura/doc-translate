@@ -36,7 +36,14 @@ def wire(path, digest):
     """Only private pipes; no runtime/provider/auth, no second invocation."""
     from doc_translate.pdf_correction import ADOPTION_RULE
 
-    assert path.name in {"0.json", "1.json", "2.json", "3.json"} and all(
+    assert path.name in {
+        "0.json",
+        "1.json",
+        "2.json",
+        "3.json",
+        "4.json",
+        "5.json",
+    } and all(
         stat.S_ISFIFO(os.fstat(stream.fileno()).st_mode)
         for stream in (sys.stdin, sys.stdout)
     )
@@ -91,6 +98,7 @@ def listing_evidence(
     caption=None,
     footnote=None,
     relative=False,
+    drawn=False,
 ):
     """Compare each printed line and each separator, independently of adoption."""
     import ctypes
@@ -138,6 +146,8 @@ def listing_evidence(
                 cursor += len(caption)
                 index += len(first)
             end = prov["charspan"][1]
+            has_span = 0 <= cursor < end <= len(n["text"])
+            assert has_span or drawn
             if footnote is not None:
                 assert lines.pop().rstrip("\r\n") == footnote and n["text"][
                     :end
@@ -145,10 +155,14 @@ def listing_evidence(
                 end -= len(footnote) + 1
             for physical in lines:
                 line = physical.rstrip("\r\n")
-                start = n["text"].index(line, cursor)
-                gap = n["text"][cursor:start]
-                assert not gap.strip()
-                cursor = start + len(line)
+                span = None
+                gap = ""
+                if has_span:
+                    start = n["text"].index(line, cursor)
+                    gap = n["text"][cursor:start]
+                    assert not gap.strip()
+                    cursor = start + len(line)
+                    span = [start, cursor]
 
                 def origin(i):
                     x, y = ctypes.c_double(), ctypes.c_double()
@@ -171,9 +185,9 @@ def listing_evidence(
                     )
                     assert box["l"] - 0.02 <= cx <= box["r"] + 0.02
                 assert not rows or rows[-1][5] > y
-                rows.append((line, e.ref, [start, cursor], gap, x, y, step))
+                rows.append((line, e.ref, span, gap, x, y, step))
                 index += len(physical)
-            assert cursor == end
+            assert not has_span or cursor == end
     margin = min(r[4] for r in rows)
     pitch = next(r[-1] for r in rows if r[-1])
     comparisons = []
@@ -200,15 +214,37 @@ def listing_evidence(
                 for q in source.uncertainties
                 if source_block.block_id in q.target_ids
                 and "blank-line count" in q.reason
-                and f"proposed {sep!r}, adopted {actual_sep!r}" in q.reason
+                and (drawn or f"proposed {sep!r}, adopted {actual_sep!r}" in q.reason)
                 and [
                     (l.extraction_ref, json.loads(l.evidence)["charspan"])
                     for l in q.locations
                     if l.format == "pdf" and l.page == page
                 ]
                 == adjacent
+                and (
+                    not drawn
+                    or [json.loads(l.evidence)["position"] for l in q.locations]
+                    == [
+                        f"line origin ({row[4]:.3f}, {row[5]:.3f}) pt, bottom-left"
+                        for row in rows[i : i + 2]
+                    ]
+                )
             ]
             assert len(qa) == 1
+        if drawn:
+            (ev,) = [
+                e
+                for e in block.evidence
+                if e.page == page
+                and e.ref == ref
+                and e.position == f"line origin ({x:.3f}, {y:.3f}) pt, bottom-left"
+            ]
+            assert ev.model_dump(mode="json")["charspan"] == span and any(
+                loc.page == page
+                and loc.extraction_ref == ref
+                and json.loads(loc.evidence) == ev.model_dump(mode="json")
+                for loc in source_block.locations
+            )
         comparisons.append(
             {
                 "line": i + 1,
@@ -567,7 +603,7 @@ def compare(workspace, digests, historical, gold):
     }
 
 
-def replay(output, *, listings=False, roles=False):
+def replay(output, *, listings=False, roles=False, connections=False):
     from doc_translate.inference import GenerationConfig
     from doc_translate.pdf_correction import correct_pdf, load_pdf_correction
 
@@ -578,6 +614,9 @@ def replay(output, *, listings=False, roles=False):
 
     if roles:
         seeds = [SEED.parent / "seed-181"]
+
+    if connections:
+        seeds = [SEED, SEED.parent / "seed-111", SEED.parent / "seed-181"]
 
     def read(path, h=None):
         assert path == path.resolve() and (
@@ -595,16 +634,17 @@ def replay(output, *, listings=False, roles=False):
         old_ids = []
         for seed in seeds:
             rows = json.loads(read(seed / "correspondence.json"))
-            old_ids.extend(
-                dict.fromkeys(h for row in rows for h, _ in row["fragments"])
-            )
-            if not roles:
+            group = list(dict.fromkeys(h for row in rows for h, _ in row["fragments"]))
+            old_ids.extend(group[:1] if connections and seed == SEED else group)
+            if not (roles or connections):
                 read(seed / "current-source.json")
         scopes = [
             list(range(n, n + 5)) for n in ((111, 116, 121) if listings else (71, 76))
         ]
         if roles:
             scopes = [list(range(n, n + 5)) for n in (181, 186)]
+        if connections:
+            scopes = [list(range(n, n + 5)) for n in (71, 111, 116, 121, 181, 186)]
         if listings:
             scopes.append([346])
         assert len(old_ids) == len(scopes)
@@ -668,7 +708,7 @@ def replay(output, *, listings=False, roles=False):
                     )
                 )
                 assert record_path.with_suffix(".sent").is_file()
-                if roles:
+                if roles or connections:
                     h = digests[-1]
                     stored = json.loads(
                         checked(workspace / f"corrections/pdf/{h}.json", h)
@@ -682,7 +722,7 @@ def replay(output, *, listings=False, roles=False):
                         and attempt["final"] == record["attempts"][-1]["final"]
                     )
             # Gold never enters the wire, request, or workspace. Compare in a fresh process.
-            if not (listings or roles):
+            if not (listings or roles or connections):
                 hashes = json.loads(read(FINAL / "hashes.json"))
                 fixed = json.loads(
                     read(
@@ -698,7 +738,13 @@ def replay(output, *, listings=False, roles=False):
                 [
                     sys.executable,
                     SCRIPT,
-                    "compare-108" if roles else "compare-98" if listings else "compare",
+                    "capture-99"
+                    if connections
+                    else "compare-108"
+                    if roles
+                    else "compare-98"
+                    if listings
+                    else "compare",
                     str(workspace),
                     *digests,
                     *old_ids,
@@ -711,7 +757,7 @@ def replay(output, *, listings=False, roles=False):
                 raise AssertionError("fresh comparison failed")
             observations = json.loads(
                 (parent / "listing-observations.json").read_bytes()
-                if listings or roles
+                if listings or roles or connections
                 else result.stdout
             )
             if listings or roles:
@@ -727,7 +773,7 @@ def replay(output, *, listings=False, roles=False):
             )
         write_json(output / "inputs.json", inventory)
     finish(output, observations)
-    if listings or roles:
+    if listings or roles or connections:
         print(json.dumps({"chunks": len(digests)}))
         return
     print(
@@ -752,7 +798,7 @@ if __name__ == "__main__":
     sys.addaudithook(deny_network)
     if not __debug__:
         raise RuntimeError("Assertions required")
-    if sys.argv[1] in ("wire", "compare", "compare-98", "compare-108"):
+    if sys.argv[1] in ("wire", "compare", "compare-98", "compare-108", "capture-99"):
         target = Path(sys.argv[2])
         parent = target.parent
         assert (
@@ -801,6 +847,16 @@ if __name__ == "__main__":
             target.parent / "listing-observations.json",
             compare_roles(target, sys.argv[3:5], sys.argv[5:]),
         )
+    elif sys.argv[1] == "capture-99":
+        from pdf_connection_comparison import capture
+
+        assert target.name == "new" and not (target / "source-snapshot.json").exists()
+        write_json(
+            target.parent / "listing-observations.json",
+            capture(target, sys.argv[3:9], sys.argv[9:]),
+        )
+    elif sys.argv[1] == "--connections":
+        replay(Path(sys.argv[2]), connections=True)
     elif sys.argv[1] == "--roles":
         replay(Path(sys.argv[2]), roles=True)
     elif sys.argv[1] == "--listings":

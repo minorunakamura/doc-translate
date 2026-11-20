@@ -31,7 +31,7 @@ from doc_translate.progress import Observer, emit, scoped_observer
 from doc_translate.snapshot import Contract, Nonempty, Sha256
 from doc_translate.workspace import workspace_lock
 
-ADOPTION_RULE = "printed-roles-v10"
+ADOPTION_RULE = "drawn-code-v12"
 _RULE_VERSIONS = {
     "owned-text-v1": 2,
     "owned-ranges-v2": 3,
@@ -42,7 +42,9 @@ _RULE_VERSIONS = {
     "printed-separators-v7": 8,
     "printed-display-v8": 9,
     "printed-ownership-v9": 10,
-    ADOPTION_RULE: 11,
+    "printed-roles-v10": 11,
+    "reciprocal-code-v11": 12,
+    ADOPTION_RULE: 13,
 }
 
 
@@ -235,7 +237,7 @@ class CorrectionAnswer(Contract):
 
 
 class PDFCorrectionChunk(Contract):
-    schema_version: Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] = 1
+    schema_version: Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] = 1
     draft_sha256: Sha256
     owned_pages: list[PositiveInt]
     reference_pages: list[PositiveInt]
@@ -476,7 +478,16 @@ def _overlaps(selector, evidence):
 
 
 def _make_chunk(
-    answer, reference_pages, pages, run, problems, raw, context, workspace, document
+    answer,
+    reference_pages,
+    pages,
+    run,
+    problems,
+    raw,
+    items,
+    context,
+    workspace,
+    document,
 ):
     version = _rule_version(context)
     if version is None:
@@ -497,6 +508,7 @@ def _make_chunk(
                 PDFArtifact(artifact=document.artifact, sha256=document.sha256),
             ),
             lambda page: _read_artifact(workspace, page.image),
+            items=items,
             verify_layout=version >= 4,
             printed_lines=version >= 5,
             printed_ranges=version >= 6,
@@ -892,6 +904,7 @@ def _saved_correction(
         run,
         projection["problems"],
         raw,
+        items,
         record["request"]["context"],
         workspace,
         document,
@@ -1102,6 +1115,7 @@ def _correct_pdf(
         run,
         projection["problems"],
         raw,
+        items,
         current_request.context,
         workspace,
         _draft.document,
@@ -1117,6 +1131,11 @@ def load_pdf_correction(workspace: Path, sha256: str) -> PDFCorrectionChunk:
 
 
 def _load_pdf_correction(workspace, sha256, drafts):
+    chunk, _ = _validated_correction(workspace, sha256, drafts)
+    return chunk
+
+
+def _validated_correction(workspace, sha256, drafts):
     data = _read_artifact(
         workspace, PDFArtifact(artifact=f"corrections/pdf/{sha256}.json", sha256=sha256)
     )
@@ -1152,10 +1171,11 @@ def _load_pdf_correction(workspace, sha256, drafts):
         chunk.run,
         projection["problems"],
         raw,
+        items,
         context,
         workspace,
         _draft.document,
     )
     if reconstructed.model_dump_json().encode() != data:
         raise ValueError("Saved correction differs from validated owned results")
-    return chunk
+    return chunk, answer

@@ -1,9 +1,10 @@
 """Assemble validated owned PDF chunks; saving/adoption remains the caller's job."""
 
+from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
 
-from doc_translate.pdf_correction import _load_pdf_correction
+from doc_translate.pdf_correction import _validated_correction
 from doc_translate.snapshot import (
     MachineCheck,
     PDFLocation,
@@ -63,12 +64,12 @@ def assemble_pdf_source(
     """
     drafts = {}
     chunks = [
-        (digest, _load_pdf_correction(workspace, digest, drafts))
+        (digest, *_validated_correction(workspace, digest, drafts))
         for digest in chunk_sha256s
     ]
     if not chunks:
         raise ValueError("At least one accepted PDF correction chunk is required")
-    owned = [page for _, chunk in chunks for page in chunk.owned_pages]
+    owned = [page for _, chunk, _ in chunks for page in chunk.owned_pages]
     if len(owned) != len(set(owned)):
         raise ValueError("PDF source chunks have overlapping ownership")
     raw_items = {digest: items for digest, (_draft, items, _raw) in drafts.items()}
@@ -83,7 +84,15 @@ def assemble_pdf_source(
     block_drafts = {}
     uncertainties = []
     checks = []
-    for digest, chunk in chunks:
+    code_proposals = {}
+    linked_proposals = {}
+    drawn_proposal_order = {}
+    for digest, chunk, answer in chunks:
+        # Adoption preserves the validated local ID of a linked code proposal;
+        # newly allocated/split fragments never inherit continuations.
+        proposed = {
+            b.block_id: (i, b) for i, b in enumerate(answer.blocks) if b.kind == "code"
+        }
         draft_sha256 = chunk.draft_sha256
         ids = {}
         for block in [*chunk.blocks, *chunk.retained_blocks]:
@@ -95,6 +104,13 @@ def assemble_pdf_source(
         for block in chunk.blocks:
             key = ids[block.block_id]
             originals[key] = block
+            if block.kind == "code" and (block.incoming or block.outgoing):
+                rank, proposal = proposed[block.block_id]
+                linked_proposals[key] = proposal
+                if chunk.schema_version in (12, 13):
+                    code_proposals[key] = proposal
+                if chunk.schema_version == 13:
+                    drawn_proposal_order[key] = rank
             block_drafts[key] = draft_sha256
             structure = block.model_dump(
                 mode="json", exclude={"block_id", "text", "evidence"}
@@ -225,6 +241,53 @@ def assemble_pdf_source(
             )
         else:
             structures[key]["parent_id"] = parent_id
+    # Count distinct reciprocal partners on the immutable reading order, before
+    # allowing any intervening block (or another selected edge) to affect it.
+    forward = defaultdict(list)
+    backward = defaultdict(list)
+    index = {key: i for i, key in enumerate(order)}
+
+    def points_to(link, key, other):
+        if link is None or link.mode != "newline" or link.target is None:
+            return False
+        return all(
+            any(
+                _matches(
+                    link.target,
+                    e,
+                    raw_items[block_drafts[key]],
+                    raw_items[block_drafts[other]],
+                )
+                for e in part.evidence
+            )
+            for part in (linked_proposals[other], originals[other])
+        )
+
+    def ordered_proposals(left, right):
+        if left not in drawn_proposal_order and right not in drawn_proposal_order:
+            return True
+        last = max(e.page for e in linked_proposals[left].evidence)
+        first = min(e.page for e in linked_proposals[right].evidence)
+        # A shared owned page means one chunk, so both ranks are in the same answer.
+        return last < first or (
+            last == first and drawn_proposal_order[left] < drawn_proposal_order[right]
+        )
+
+    for left, proposal in code_proposals.items():
+        if not proposal.outgoing:
+            continue
+        for right, partner in code_proposals.items():
+            if (
+                index[left] < index[right]
+                and ordered_proposals(left, right)
+                and proposal.language == partner.language
+                and max(e.page for e in originals[left].evidence)
+                <= min(e.page for e in originals[right].evidence)
+                and points_to(proposal.outgoing, left, right)
+                and points_to(partner.incoming, right, left)
+            ):
+                forward[left].append(right)
+                backward[right].append(left)
     edges = {}
     for key, block in originals.items():
         for direction in ("incoming", "outgoing"):
@@ -232,6 +295,25 @@ def assemble_pdf_source(
             if link is None:
                 continue
             matches = candidates(link.target, key)
+            if key in code_proposals and not (
+                len(matches) == 1 and matches[0] not in code_proposals
+            ):
+                # A mixed boundary still requires the old unique raw target on both ends.
+                incoming = direction == "incoming"
+                partners, reverse = (
+                    (backward, forward) if incoming else (forward, backward)
+                )
+                if len(partners[key]) == 1 and reverse[partners[key][0]] == [key]:
+                    other = partners[key][0]
+                    start, end = (other, key) if incoming else (key, other)
+                    if all(
+                        originals[k].kind == "footnote"
+                        for k in order[index[start] + 1 : index[end]]
+                    ):
+                        edges[start] = (end, "newline")
+                        continue
+                problem(f"Unresolved {direction} code continuation", [key])
+                continue
             if len(matches) != 1:
                 problem(
                     f"Unresolved {direction} continuation: {len(matches)} owned candidates",
@@ -258,6 +340,17 @@ def assemble_pdf_source(
                 and candidates(reciprocal.target, other_key) == [key]
                 and block.kind == other.kind
                 and same_structure
+                and (
+                    (
+                        key not in drawn_proposal_order
+                        and other_key not in drawn_proposal_order
+                    )
+                    or (
+                        ordered_proposals(start, end)
+                        and points_to(link, key, other_key)
+                        and points_to(reciprocal, other_key, key)
+                    )
+                )
                 and (
                     (prose and link.mode == "space")
                     or (

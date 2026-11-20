@@ -569,9 +569,9 @@ for block in chunk.blocks:
 
 除外は`text/reason/evidence`を保持します。uncertaintyは`reason/target_ids/evidence/origin`を持ち、originは`original/processing/undetermined`です。空のtarget配列はページやraw取得全体の問題に使用できます。未知IDは拒否します。空uncertainty配列は内容reviewの承認ではありません。
 
-### 所有本文の採否（#97・#98）
+### 所有本文の採否とコードの接続（#97・#98・#108・#99）
 
-`correct_pdf` は生回答をattemptへ保存し、それとは別に採用chunkを作ります。新しい `request.context.adoption_rule = "printed-roles-v10"`（chunk schema 11）は、draftの読順・所有page・有効な文字範囲をblock／cellの出典と照合します。案が欠いた読める範囲を、見出し・本文・脚注・コード等の位置と役割に戻し、図内文字や参照ページを独立本文に足しません。既知の同一itemの所有部分を保持する規則で、別item間の新しい跨ページ接続や表再構築はしません。
+`correct_pdf` は生回答をattemptへ保存し、それとは別に採用chunkを作ります。採用方式は `request.context.adoption_rule` に記録します。新規補正は `drawn-code-v12`（chunk schema 13）です。補正は、draftの読順・所有page・有効な文字範囲をblock／cellの出典と照合します。案が欠いた読める範囲を、見出し・本文・脚注・コード等の位置と役割に戻し、図内文字や参照ページを独立本文に足しません。chunkは所有部分を保存します。別itemとのページ間接続は後段の組立で判定し、表を再構築しません。
 
 通常本文で案の差が局所的な語間SPACEだけなら、draftのSHA-256を検証した**その原本byte列**を、所有ページのprovenance bbox内だけで照合します。同一出現・同一行の実文字SPACE、または別描画間で通常の字送りを越え、周囲の字間の揺れでは説明できない余白だけを採用します。生成SPACEや描画の分割だけでは採用しません。一意の裏付けがない区切りや行末hyphen、数字などの読みの不一致は抽出文字を採り、両者の違いと位置を要確認に残します。不確かな所属は推測しません。hash不一致は照合失敗であり、文字層のないPDFと同じ扱いにしません。
 
@@ -589,7 +589,11 @@ schema 10では、captionとコードの間が改行のないSPACE列なら、�
 
 schema 11では、抽出上は一つのコード欄でも、対応する原本描画行とDoclingの可読範囲が一意に分かれる場合、独立した脚注や対応するコードを指すcaptionを元位置に残します。新しく共有範囲を救済する場合、captionは元の案がその局所コードを指すこと、番号付き脚注は同じ描画行に独立した番号表記があることを確かめます。別書体だけでコード行を脚注にしたり、所属不明の繰返しを本文にしたりしません。範囲の所属とコード整形の照合は別です。元の回答・targetは変えず採用側の出典を絞り、裏付けられない行・字下げは抽出文字と位置付きQAに戻します。所属が競合したままなら保存しません。ページ間の接続規則は変更しません。
 
-`load_pdf_correction`・成功再利用・未採用attempt回収も記録された方式で再構成します。方式なし（schema 1）は旧回答の採用、`owned-text-v1`（schema 2）と`owned-ranges-v2`（schema 3）、`owned-layout-v3`（schema 4）、`printed-lines-v4`（schema 5、印刷行）、`printed-ranges-v5`（schema 6、caption等の局所所有）、`printed-margin-v6`（schema 7、共通余白）、`printed-separators-v7`（schema 8、提案の共通余白を除く区切り照合）、`printed-display-v8`（schema 9、最終表示による照合）、`printed-ownership-v9`（schema 10）はそれぞれ当時の採否をbyte単位で維持します。新方式へ移行・再送せず、方式値と実入力、再構成した保存内容を検証します。未知の方式のchunk、方式取り違え、再hashだけした不一致chunkは読めません。今回の要求・設定に該当する検証済み成功attemptの方式が未知なら、回収時にエラーとし、新規送信には進みません。
+schema 12（`reciprocal-code-v11`）以降のコード接続は、両端の検証済み元提案と採用断片がともに相手のtargetに合うことを要求します。出典・selector・`newline`・言語・ページ順と読順が相互に合う相手を先に数え、両端で唯一の対についてだけ間のblockを調べます。独立脚注は元位置に残し、本文や別コード・captionを飛び越えません。採用時に得た出典だけで元の誤targetを救済せず、拒否は両断片と位置付きQA・失敗checkに残します。
+
+schema 13では、所有コード案のrefに無効な文字範囲がある場合、範囲を丸めたり `orig` を原文にしたりしません。同じ所有欄の連続した出典と競合しない境界を確かめ、検証済み原本PDFの描画行・各文字の可視性をページ画像と照合します。有効な部分、案の全非空行・行内空白と一致した描画を元順で一度だけ採用し、page・ref・行頭の原本座標を保存します。無効な文字範囲にはcharspanを付けません。字下げや追加空行の不確かさは文字欠落と区別して位置付きQAに残します。裏付けられない場合は確実な範囲だけを残し、無効refだけの未確認案は生回答には残っても採用コードにはなりません。送信するprojectionや原本・画像hashの検査は変更しません。
+
+`load_pdf_correction`・成功再利用・未採用attempt回収も記録された方式で再構成します。方式なし（schema 1）は旧回答の採用、`owned-text-v1`（schema 2）と`owned-ranges-v2`（schema 3）、`owned-layout-v3`（schema 4）、`printed-lines-v4`（schema 5、印刷行）、`printed-ranges-v5`（schema 6、caption等の局所所有）、`printed-margin-v6`（schema 7、共通余白）、`printed-separators-v7`（schema 8、提案の共通余白を除く区切り照合）、`printed-display-v8`（schema 9、最終表示による照合）、`printed-ownership-v9`（schema 10）、`printed-roles-v10`（schema 11）、`reciprocal-code-v11`（schema 12）はそれぞれ当時の採否をbyte単位で維持します。新方式へ移行・再送せず、方式値と実入力、再構成した保存内容を検証します。未知の方式のchunk、方式取り違え、再hashだけした不一致chunkは読めません。今回の要求・設定に該当する検証済み成功attemptの方式が未知なら、回収時にエラーとし、新規送信には進みません。
 
 ### 図の所属と採用結果
 

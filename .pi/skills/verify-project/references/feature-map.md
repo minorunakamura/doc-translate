@@ -1177,6 +1177,8 @@ PY
 
 ## コード断片・表の閉じた再生（#98）
 
+この単独手順の適用版は `48da115`（schema 11）。現作業は下の #99 節を使い、この旧コマンドは追加実行しない。
+
 [第3版Plan](../../../../docs/plans/pdf-initial-source-preservation-98-r3.md)で許可した4 chunk限定。標本準備・保存記録・直前の#97節と同じoffline前提。書籍のrun／resume、旧成功の移行、実AI・追加retry・認証・外部trial markerへのアクセスはしない。repository rootで次を実行する。入力・画像・英語・QA・stderrはprivateでのみ扱い、`observations.json`を端末にdumpしない。
 
 ```sh
@@ -1214,6 +1216,8 @@ PY
 
 ## コードの共有出典と独立した注記（#108）
 
+この単独手順の適用版は `48da115`（schema 11）。現作業は下の #99 節を使い、この旧コマンドは追加実行しない。
+
 #97／#98と同じprivate条件。repo rootから既存PDF環境で次をforeground実行する。`--roles`の入力は所有開始181・186の2件だけ。元workspaceを復旧・移行せず、未編集回答の全体を1回だけ各正規pipeへ渡す。生の英語・回答・画像・エラー値を表示／送信しない。
 
 ```sh
@@ -1240,3 +1244,30 @@ PY
 `pdf_role_comparison.py`はfresh load→assemble→実units・英語出力後にだけ固定資料を使う。seed-181画像の全画素を検証原本の同じページ・scaleの描画と照合し、共有bboxの描画行全文を、各役割の出典範囲・caption target・順序と実units／英語anchorの出力に対応付ける。181/182/186のコードは各charspanの抽出全文（空白・改行込み）と、それを採るQAの理由・全行の位置・対象anchorを照合。185脚注、187captionと各コード、183本文と周囲、190のfilenameの元警告・位置を確認する。共有箇所の6ページでは、固定資料の元blockをbindingで英語anchorに対応させ、相対順が変わっていないことを確認する。間に新しく回復したblockがあっても除去しない。`printed_evidence`で185/186・187/188の対象断片の全表示行・字下げ・区切りを原本の字送りと比較し、同じ2回答の185/188にある追加空行は`blank_boundaries`で各境界前後の位置と実QAを照合する。2組の固定コードとの照合は断片の順序と可読内容についてであり、接続・字下げの完全復元とはしない。`observations.json`の`shared`と`blocks`は元位置と出力の対応、`inputs.json`は元資料のhashとmtime。
 
 別の新規0700親で#97「別の人工実操作」を実行し、実翻訳入力・位置QA、fresh resume送信0・旧immutable不変を記録する。各親へrevision/dirty・command/exit・期待/観測/未達を記録し、所有一時workspace・childのみ回収後、証拠を再読。Rootの別親での独立照合・正式検査は別である。
+
+## 所有コード全文の保存とページ間接続（#99）
+
+[第3版Plan](../../../../docs/plans/pdf-initial-source-preservation-99-r3.md)の6 chunkだけを扱う。上記#97/#98/#108の原資料・固定見本・閉じたpipe・原本照合を再利用する。過去版単独の `--listings`／`--roles` の期待を新方式に読み替えない。原資料はread-only。既存PDF環境、repository rootで実行する。出力内容・比較エラーはprivateに保存し、画面には出さない。
+
+```sh
+set -eu
+umask 077
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+E=$(mktemp -d "$PWD/work/connections-XXXXXXXX"); export E
+git rev-parse HEAD >"$E/revision"; git status --short >"$E/dirty"
+python .pi/skills/verify-project/scripts/pdf_adoption_replay.py --connections "$E/proof" >"$E/replay.log" 2>"$E/replay.err" || { echo $? >"$E/replay.exit"; exit 1; }; echo 0 >"$E/replay.exit"
+PYTHONPATH="$PWD/.pi/skills/verify-project/scripts" python - <<'PY' >"$E/score.log" 2>"$E/score.err" || { echo $? >"$E/score.exit"; exit 1; }
+import json, os, sys
+from pathlib import Path
+from pdf_adoption_replay import deny_network
+sys.addaudithook(deny_network)
+from pdf_connection_comparison import score
+e = Path(os.environ['E']); p=e/'proof'; assert not list(p.glob('isolated-*'))
+expected = json.dumps(score(p)); f=e/'score.json'; f.write_text(expected); assert json.loads(f.read_bytes()) == json.loads(expected)
+PY
+echo 0 >"$E/score.exit"
+```
+
+所有開始71・111・116・121・181・186を未編集回答から同じschema 13で保存する。`proof/inputs.json`は旧資料のhash/mtime、`observations.json`はfresh load→公開assemble→実units／英語の記録。固定期待はその後の独立採点にだけ使う。`score.json`の`listings.lines`・`roles.printed_evidence`で実際の描画行・採用した行・位置・行内space・区切りを照合。特に118は16＋1非空行と有効な末尾を各1回保存し、無効refの行には擬似spanを付けない。118の絶対字下げQAは出力anchorと17行それぞれのref・span・行原点、空行QAは境界の前後それぞれの行原点で区別して採点する。`connections.series` は5必須系列と追加系列のfragments・locations→英語fence、周囲のunitと出力順の照合。字下げ・追加空行の残差は `indent_delta`／`blank_delta`、未証明の位置はQA。独立脚注・caption target・190の警告は`roles`、73→74の分離・出典・失敗checkは`connections.refused`を見る。6回答にcalloutがなければ、行移動は既存の公開人工回帰で別に確認する。
+
+人工CLI run→fresh resumeは別の新規0700親で#97の実操作を使う。旧方式を移行・再送せず、方式に応じて保持する試験は `tests/test_pdf_correction.py` の保存再読・既知／未知orphan、接続の人工拒否例とcalloutは `tests/test_pdf_source.py`。旧成果を新しい版の合格として数えない。command/exit・未達と残差を保存し、自作一時物だけcleanupして証拠を再読する。Rootの直接操作・原画像確認・正式check・独立reviewは別。

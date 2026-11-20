@@ -1513,7 +1513,7 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
             "printed-margin-v6": 7,
             "printed-separators-v7": 8,
             "printed-display-v8": 9,
-            "current": 11,
+            "current": 13,
         }[base]
     )
 
@@ -3815,6 +3815,16 @@ def test_printed_code_can_supply_boundary_or_indent_missing_from_extraction(
             "efe32e18940cb4aae64646e436a8b8f7fc94f9033d5ec5d0034543ca70e53425",
         ),
         (
+            "reciprocal-code-v11",
+            12,
+            "5e76b7ffb259c92923369b4c2c15d65e91af3fc7cb8d921b5185f32ff5f7e755",
+        ),
+        (
+            "printed-roles-v10",
+            11,
+            "de604c4931e05bbb33e8a864112723b22ed0e490c1cd736814a5ca5d16b2c20c",
+        ),
+        (
             "printed-ownership-v9",
             10,
             "01613b5dead18d96cdd443cc9ab1a43576558eee15da34121249d27472510ed5",
@@ -4519,4 +4529,218 @@ def test_explicit_literal_listing_narrows_the_bare_footnote_ref(tmp_path, draft)
     ]
     assert not any(
         "Line boundary or indentation" in q.reason for q in source.uncertainties
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "visible",
+        "hidden",
+        "shared drawing",
+        "adjacent column",
+        "different space",
+        "interior tab",
+        "cropped line",
+        "rounded image",
+        "crlf edges",
+        "crlf tail",
+        "tail selector",
+        "disjoint figure",
+        "overlapping figure",
+        "member of figure",
+        "overlapping ink",
+        "only invalid",
+        "only invalid hidden",
+        "hidden with empty tail",
+        "hidden with extra position",
+    ],
+)
+def test_listing_with_invalid_span_requires_visible_rows_before_valid_tail(
+    tmp_path, draft, case
+):
+    import pypdfium2 as pdfium
+
+    lines = [
+        (70, b"3 Tr (set value) Tj" if "hidden" in case else "set value"),
+        (58, "end", 13.4),
+        (46, "next", 124 if case == "adjacent column" else 8),
+    ]
+    if case == "cropped line":
+        lines[2] = (46, "next;", 35)
+        # Absolute origin differs, but the proposal matches the visible substring.
+        lines[1] = (58, "end", 35)
+    if case == "overlapping ink":
+        lines[:1] = [(70, b"1 g (h) Tj"), (70, b"0 g (M) Tj", 10)]
+    if case == "crlf tail":
+        lines.append((34, "stop", 13.4))
+    draft, reply = listing_reply(draft, lines, "damaged", "set value\n end\nnext")
+    ws, _, model = draft
+    scale = 2.255 if case == "rounded image" else 1
+    with pdfium.PdfDocument(ws / model.document.artifact) as pdf:
+        buffer = BytesIO()
+        image = pdf[0].render(scale=scale).to_pil()
+        image.save(buffer, format="PNG")
+    page = model.pages[0]
+    page.image = PDFArtifact(
+        **artifact(ws, "drafts/pdf/images", "png", buffer.getvalue())
+    )
+    page.width_pixels, page.height_pixels = image.size
+    page.scale_x, page.scale_y = image.width / 200, image.height / 100
+    page.rendering["render_scale"] = scale
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    first = raw["texts"][0]["prov"][0]
+    first.update(charspan=[0, 99], bbox={**first["bbox"], "b": 56, "t": 79})
+    tail = "#/texts/1"
+    raw["texts"].append(
+        {
+            "self_ref": tail,
+            "label": "code",
+            "text": "next",
+            "prov": [
+                {
+                    "page_no": 1,
+                    "charspan": [0, 4],
+                    "bbox": {**first["bbox"], "b": 43, "t": 54},
+                }
+            ],
+        }
+    )
+    if case == "crlf tail":
+        raw["texts"][1]["text"] = "next\r\nstop"
+        raw["texts"][1]["prov"][0].update(
+            charspan=[0, 10], bbox={**first["bbox"], "b": 31, "t": 54}
+        )
+        reply["blocks"][0]["text"] += "\n stop"
+    raw["body"]["children"].append({"$ref": tail})
+    if case.endswith("figure"):
+        fig = "#/pictures/0"
+        raw["pictures"] = [
+            {
+                "self_ref": fig,
+                "label": "picture",
+                "prov": [{"page_no": 1, "bbox": {**first["bbox"], "b": 5, "t": 15}}],
+            }
+        ]
+        raw["body"]["children"].append({"$ref": fig})
+        reply["blocks"].append(
+            {
+                "kind": "picture",
+                "block_id": "fig",
+                "text": "",
+                "evidence": [evidence(ref=fig)],
+                "region": {
+                    "page": 1,
+                    "left": 10,
+                    "right": 60,
+                    "top": 30 if case == "overlapping figure" else 85,
+                    "bottom": 95,
+                },
+                "caption_ids": [],
+                "members": [
+                    {
+                        "target_id": "example",
+                        "status": "uncertain",
+                        "reason": "may belong",
+                    }
+                ]
+                if case == "member of figure"
+                else [],
+            }
+        )
+    if case == "shared drawing":
+        raw["texts"].append(
+            {
+                "self_ref": "#/texts/2",
+                "label": "caption",
+                "text": "set value",
+                "prov": [{**first, "charspan": [0, 9]}],
+            }
+        )
+        raw["body"]["children"].append({"$ref": "#/texts/2"})
+        reply["blocks"].append(
+            {
+                "block_id": "caption",
+                "kind": "caption",
+                "text": "set value",
+                "evidence": [evidence(ref="#/texts/2")],
+            }
+        )
+    if case == "cropped line":
+        # Both reads end at the same cropped edge, just before the semicolon.
+        first["bbox"]["r"] = raw["texts"][1]["prov"][0]["bbox"]["r"] = 56.5
+    if case.startswith("only invalid"):
+        raw["texts"][1]["prov"][0]["charspan"] = [0, 70]
+    if case.startswith("hidden with"):
+        raw["texts"][1].update(text="")
+        raw["texts"][1]["prov"][0]["charspan"] = [0, 0]
+    if case == "cropped line":
+        reply["blocks"][0]["text"] = "set value\n     end\n     next"
+    if case == "overlapping ink":
+        reply["blocks"][0]["text"] = "hM\n end\nnext"
+    if case == "crlf edges":
+        reply["blocks"][0]["text"] = "\r\n\t\r\nset value\r\n end\r\nnext\r\n\t\r\n"
+    if case == "interior tab":
+        reply["blocks"][0]["text"] = "set\tvalue\n end\nnext"
+    if case == "different space":
+        reply["blocks"][0]["text"] = "set  value\n end\nnext"
+    draft = rewrite_raw(draft, raw)
+    reply["draft_sha256"] = draft[1]
+    reply["blocks"][0]["evidence"].append(
+        evidence(ref=None if case == "hidden with extra position" else tail)
+    )
+    if case == "tail selector":
+        reply["blocks"][0]["evidence"][-1]["charspan"] = [0, 4]
+    chunk = load_pdf_correction(ws, run(tmp_path, draft, reply))
+    examples = [b for b in chunk.blocks if b.kind == "code"]
+    if case == "only invalid hidden" or case.startswith("hidden with"):
+        assert examples == []
+    elif case == "crlf tail":
+        (example,) = examples
+        assert example.text == "set value\n end\nnext\r\n stop"
+        origins = [e for e in example.evidence if e.position.startswith("line origin")]
+        assert [(e.ref, e.charspan) for e in origins] == [
+            ("#/texts/0", None),
+            ("#/texts/0", None),
+            (tail, (0, 4)),
+            (tail, (6, 10)),
+        ]
+        assert any(
+            "separator" in q.reason and q.evidence == origins[-2:]
+            for q in chunk.uncertainties
+        )
+    else:
+        (example,) = examples
+        assert example.text == (
+            "set value\n end\nnext"
+            if case
+            in (
+                "visible",
+                "only invalid",
+                "rounded image",
+                "tail selector",
+                "disjoint figure",
+                "crlf edges",
+            )
+            else "next"
+        )
+        if case == "crlf edges":
+            origins = [
+                e for e in example.evidence if e.position.startswith("line origin")
+            ]
+            assert [
+                q.evidence
+                for q in chunk.uncertainties
+                if "blank-line count" in q.reason
+            ] == [[origins[0]], [origins[-1]]]
+            assert any(
+                "separator" in q.reason and q.evidence == origins[:2]
+                for q in chunk.uncertainties
+            )
+        if case == "only invalid":
+            assert any(e.position.startswith("line origin") for e in example.evidence)
+    assert any(
+        e.ref == "#/texts/0" and e.charspan is None
+        for q in chunk.uncertainties
+        for e in q.evidence
     )
