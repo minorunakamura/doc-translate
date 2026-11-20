@@ -3,9 +3,11 @@
 import ctypes
 import itertools
 import re
+import unicodedata
 from collections import defaultdict
 from contextlib import closing
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from io import BytesIO
 from math import ceil, floor, isclose
 from threading import Lock
@@ -176,7 +178,9 @@ def _word_pair(original, proposed, printed_lines):
     return None
 
 
-def _local_text(provenances, page, read_original, inspect, *, strict_pdf):
+def _local_text(
+    provenances, page, read_original, inspect, *, strict_pdf, verify_page=False
+):
     import pypdfium2 as pdfium
 
     try:
@@ -189,15 +193,18 @@ def _local_text(provenances, page, read_original, inspect, *, strict_pdf):
         try:
             with pdfium.PdfDocument(data) as pdf:
                 if page.page > len(pdf):
+                    if verify_page:
+                        raise ValueError("Original PDF has no such page")
                     return None
                 p = pdf[page.page - 1]
                 width, height = p.get_size()
-                if (
-                    p.get_rotation()
-                    or p.get_bbox()[:2] != (0, 0)
-                    or not isclose(width, page.width_points, abs_tol=0.01)
-                    or not isclose(height, page.height_points, abs_tol=0.01)
+                if p.get_rotation() or p.get_bbox()[:2] != (0, 0):
+                    return None
+                if not isclose(width, page.width_points, abs_tol=0.01) or not isclose(
+                    height, page.height_points, abs_tol=0.01
                 ):
+                    if verify_page:
+                        raise ValueError("Inconsistent original page geometry")
                     return None
                 tp = p.get_textpage()
                 result = []
@@ -650,13 +657,9 @@ def _line_origins(
     return result
 
 
-def _drawn_listing(item, nodes, valid, page, read_original, read_image):
-    """Corroborate complete, adjacent item boxes, never an offset into invalid text."""
-    import pypdfium2 as pdfium
-    import pypdfium2.raw as native
-    from PIL import Image, ImageChops, ImageStat
+def _page_ink(page, read_image):
+    from PIL import Image
 
-    provs = [n["prov"][0] for n in nodes]
     sx, sy = page.scale_x, page.scale_y
     with Image.open(BytesIO(read_image(page))) as im:
         scale = page.rendering.get("render_scale", sx if sx == sy else None)
@@ -676,88 +679,315 @@ def _drawn_listing(item, nodes, valid, page, read_original, read_image):
             return None
         image = im.convert("L")
 
+    return image
+
+
+def _visible_glyphs(tp, bounds, glyphs, page, image):
+    import pypdfium2 as pdfium
+    import pypdfium2.raw as native
+    from PIL import Image, ImageChops, ImageStat
+
+    sx, sy = page.scale_x, page.scale_y
+
+    # Rendering the verified buffer with and without the selected drawing
+    # distinguishes visible glyphs from hidden, overpainted or clipped text.
+    def paint():
+        # Render straight onto the recorded integer canvas; do not resample the PNG.
+        with closing(
+            pdfium.PdfBitmap.new_native(*image.size, native.FPDFBitmap_BGR)
+        ) as bitmap:
+            bitmap.fill_rect((255, 255, 255, 255), 0, 0, *image.size)
+            native.FPDF_RenderPageBitmap(bitmap, tp.page, 0, 0, *image.size, 0, 0)
+            return bitmap.to_pil().convert("L")
+
+    painted = paint()
+    objects = {ctypes.cast(o, ctypes.c_void_p).value: o for _, o, _ in glyphs}
+
+    def pixels(bounds):
+        l, b, r, t = bounds
+        return (
+            floor(l * sx),
+            floor((page.height_points - t) * sy),
+            ceil(r * sx),
+            ceil((page.height_points - b) * sy),
+        )
+
+    # Suppressing a text object also suppresses its other glyphs. Shared
+    # pixels cannot witness which glyph supplied the missing ink.
+    boxes = defaultdict(dict)
+    for i in range(tp.count_chars()):
+        obj = ctypes.cast(native.FPDFText_GetTextObject(tp, i), ctypes.c_void_p).value
+        if obj in objects and not chr(native.FPDFText_GetUnicode(tp, i)).isspace():
+            boxes[obj][i] = pixels(tp.get_charbox(i))
+
+    active = None
+    hidden = None
+    for i, obj, (l, b, r, t) in glyphs:
+        key = ctypes.cast(obj, ctypes.c_void_p).value
+        if key != active:
+            if not native.FPDFPageObj_SetIsActive(obj, False):
+                return None
+            hidden = paint()
+            if not native.FPDFPageObj_SetIsActive(obj, True):
+                return None
+            active = key
+        if not (
+            bounds[0] <= (l + r) / 2 <= bounds[2]
+            and bounds[1] <= (b + t) / 2 <= bounds[3]
+        ):
+            return False
+        box = boxes[key][i]
+        if box[0] >= box[2] or box[1] >= box[3]:
+            return False
+        # The immutable page image must also carry ink at this glyph.
+        ink = image.crop(box)
+
+        exclusive = Image.new("L", ink.size, 255)
+        for j, (left, top, right, bottom) in boxes[key].items():
+            if (
+                i != j
+                and left < box[2]
+                and box[0] < right
+                and top < box[3]
+                and box[1] < bottom
+            ):
+                exclusive.paste(
+                    0,
+                    (left - box[0], top - box[1], right - box[0], bottom - box[1]),
+                )
+
+        def distance(render, ink=ink, box=box, mask=exclusive):
+            return ImageStat.Stat(
+                ImageChops.difference(ink, render.crop(box)), mask=mask
+            ).sum[0]
+
+        if distance(painted) >= distance(hidden):
+            return False
+    return True
+
+
+def _page_box(prov, page):
+    box = _DraftBox.model_validate(prov.get("bbox"))
+    b, t = (
+        (box.b, box.t)
+        if box.coord_origin == "BOTTOMLEFT"
+        else (page.height_points - box.b, page.height_points - box.t)
+    )
+    return box.l, b, box.r, t
+
+
+def _body_punctuation(
+    part, item, page, read_original, read_image, independent, items, issue
+):
+    """Resolve one-character punctuation edits against the entire owned occurrence."""
+    import pypdfium2.raw as native
+
+    from doc_translate.units import _literal_spans
+
+    original = part.text
+    changes = [
+        op[1:]
+        for op in SequenceMatcher(
+            None, original, item.text, autojunk=False
+        ).get_opcodes()
+        if op[0] != "equal"
+    ]
+    edits = [(i, j, item.text[k:l]) for i, j, k, l in changes]
+    punctuation = {
+        i
+        for i, j, new in edits
+        if j - i <= 1
+        and len(new) == 1
+        and all(unicodedata.category(c).startswith("P") for c in original[i:j] + new)
+    }
+    if not punctuation:
+        return None
+    eligible = {
+        i
+        for i, j, k, l in changes
+        if i in punctuation
+        and 0 < i <= j < len(original)
+        and original[i - 1] != item.text[k:l] != original[j]
+        and not (original[i - 1].isdigit() and original[j].isdigit())
+        and not any(
+            a < end and start < b
+            for text, start, end in ((original, i, j), (item.text, k, l))
+            for a, b in _literal_spans(text)
+        )
+    }
+
+    def inspect(tp, local, bounds):
+        # Generated line wraps / discretionary hyphens establish context only.
+        # Prefer the full provenance, never search for an isolated proposed glyph.
+        local = local.replace("\x02", "").replace("\r\n", "\n")
+
+        def pattern(text):
+            return r"\n?".join("[ \\n]" if c == " " else re.escape(c) for c in text)
+
+        pieces = []
+        cursor = 0
+        for i, j, new in edits:
+            pieces.extend(
+                [
+                    pattern(original[cursor:i]),
+                    "("
+                    + (re.escape(new) + "|" if i in punctuation else "")
+                    + re.escape(original[i:j])
+                    + ")",
+                ]
+            )
+            cursor = j
+        pieces.append(pattern(original[cursor:]))
+        match = re.fullmatch(r"\n?".join(pieces), local)
+        try:
+            for node in items.values():
+                for other in node["prov"]:
+                    if other is part.prov or other["page_no"] != page.page:
+                        continue
+                    l, b, r, t = _page_box(other, page)
+                    if (
+                        l < bounds[2]
+                        and bounds[0] < r
+                        and b < bounds[3]
+                        and bounds[1] < t
+                    ):
+                        return {}
+        except ValueError:
+            return {}
+        glyphs = []
+        for n in range(tp.count_chars()):
+            c = chr(native.FPDFText_GetUnicode(tp, n))
+            if c.isspace() or c == "\x02":
+                continue
+            l, b, r, t = box = tp.get_charbox(n)
+            if (
+                bounds[0] <= (l + r) / 2 <= bounds[2]
+                and bounds[1] <= (b + t) / 2 <= bounds[3]
+            ):
+                obj = native.FPDFText_GetTextObject(tp, n)
+                if native.FPDFText_IsGenerated(tp, n) != 0 or not _paints_text(obj):
+                    return {}
+                glyphs.append((c, (n, obj, box)))
+        if "".join(c for c, _ in glyphs) != "".join(local.split()):
+            return {}
+        image = _page_ink(page, read_image)
+        if image is None:
+            raise ValueError("Inconsistent original page image geometry")
+        located = {}
+        for g, (i, j, new) in enumerate(edits, 1):
+            if i not in eligible:
+                continue
+            if match:
+                if match[g] != new:
+                    continue
+                offset = match.start(g)
+            else:
+                # Bind two unique flanking words at the same provenance edge.
+                # A hit elsewhere in the box (even of the whole phrase) is not proof.
+                left = re.search(r"(\w+)([^\w]*)$", original[:i])
+                right = re.match(r"([^\w]*)(\w+)", original[j:])
+                if (
+                    not left
+                    or not right
+                    or any(
+                        len(re.findall(r"\b" + re.escape(word) + r"\b", text)) != 1
+                        for word in (left[1], right[2])
+                        for text in (original, item.text, local)
+                    )
+                ):
+                    continue
+                # Whole words here (no wrapping inside an anchor) so uniqueness
+                # and the position lookup count the same occurrences.
+                anchor = r"\b" + re.escape(left[0] + new + right[0]) + r"\b"
+                proposed = re.search(anchor, item.text)
+                found = re.search(anchor, local)
+                if (
+                    not proposed
+                    or proposed.start() + len(left[0]) != changes[g - 1][2]
+                    or not found
+                ):
+                    continue
+                if (
+                    local[: found.start()] != original[: left.start()]
+                    and local[found.end() :] != original[j + right.end() :]
+                ):
+                    continue
+                offset = found.start() + len(left[0])
+            pos = len("".join(local[:offset].split()))
+            if not 0 < pos < len(glyphs) - 1:
+                continue
+            _, glyph = glyphs[pos]
+            context = [row for _, row in glyphs[pos - 1 : pos + 2]]
+            visible = _visible_glyphs(tp, bounds, context, page, image)
+            if visible is None:
+                raise ValueError("Unable to verify original text drawing")
+            if visible:
+                located[i] = ", ".join(f"{x:.3f}" for x in glyph[2])
+        return located
+
+    located = {}
+    if eligible and independent:
+        result = _local_text(
+            [part.prov], page, read_original, inspect, strict_pdf=True, verify_page=True
+        )
+        if result:
+            (located,) = result
+    adopted = []
+    evidence = list(item.evidence)
+    cursor = 0
+    for i, j, new in edits:
+        before = original[i:j]
+        spans = (
+            [(i, j)]
+            if before
+            else [(x, x + 1) for x in (i - 1, i) if 0 <= x < len(original)]
+        )
+        reason = (
+            f"{before!r} → {new!r}"
+            if before
+            else f"Insertion of {new!r} between extraction characters"
+        )
+        selected = []
+        for a, b in spans:
+            span = (part.start + a, part.start + b)
+            position = f"characters {span[0]}:{span[1]}"
+            if i in located:
+                position += f"; glyph bbox ({located[i]}) pt, bottom-left"
+            selected.append(
+                part.evidence().model_copy(
+                    update={"charspan": span, "position": position, "reason": reason}
+                )
+            )
+        adopted.extend([original[cursor:i], new if i in located else before])
+        cursor = j
+        if i in located:
+            evidence.extend(selected)
+        else:
+            issue(
+                f"{reason} not corroborated at this location; retained extraction",
+                [item.block_id],
+                selected,
+            )
+    return item.model_copy(
+        update={"text": "".join(adopted) + original[cursor:], "evidence": evidence}
+    )
+
+
+def _drawn_listing(item, nodes, valid, page, read_original, read_image):
+    """Corroborate complete, adjacent item boxes, never an offset into invalid text."""
+    provs = [n["prov"][0] for n in nodes]
+    image = _page_ink(page, read_image)
+    if image is None:
+        return None
+
     def inspect(tp, local, bounds):
         glyphs = []
         rows = _line_origins(tp, local, bounds, printed_lines=True, glyphs=glyphs)
         if not rows or not glyphs:
             return None
 
-        # Rendering the verified buffer with and without the selected drawing
-        # distinguishes visible glyphs from hidden, overpainted or clipped text.
-        def paint():
-            # Render straight onto the recorded integer canvas; do not resample the PNG.
-            with closing(
-                pdfium.PdfBitmap.new_native(*image.size, native.FPDFBitmap_BGR)
-            ) as bitmap:
-                bitmap.fill_rect((255, 255, 255, 255), 0, 0, *image.size)
-                native.FPDF_RenderPageBitmap(bitmap, tp.page, 0, 0, *image.size, 0, 0)
-                return bitmap.to_pil().convert("L")
-
-        painted = paint()
-        objects = {ctypes.cast(o, ctypes.c_void_p).value: o for _, o, _ in glyphs}
-
-        def pixels(bounds):
-            l, b, r, t = bounds
-            return (
-                floor(l * sx),
-                floor((page.height_points - t) * sy),
-                ceil(r * sx),
-                ceil((page.height_points - b) * sy),
-            )
-
-        # Suppressing a text object also suppresses its other glyphs. Shared
-        # pixels cannot witness which glyph supplied the missing ink.
-        boxes = defaultdict(dict)
-        for i in range(tp.count_chars()):
-            obj = ctypes.cast(
-                native.FPDFText_GetTextObject(tp, i), ctypes.c_void_p
-            ).value
-            if obj in objects and not chr(native.FPDFText_GetUnicode(tp, i)).isspace():
-                boxes[obj][i] = pixels(tp.get_charbox(i))
-
-        active = None
-        hidden = None
-        for i, obj, (l, b, r, t) in glyphs:
-            key = ctypes.cast(obj, ctypes.c_void_p).value
-            if key != active:
-                if not native.FPDFPageObj_SetIsActive(obj, False):
-                    return None
-                hidden = paint()
-                if not native.FPDFPageObj_SetIsActive(obj, True):
-                    return None
-                active = key
-            if not (
-                bounds[0] <= (l + r) / 2 <= bounds[2]
-                and bounds[1] <= (b + t) / 2 <= bounds[3]
-            ):
-                return None
-            box = boxes[key][i]
-            if box[0] >= box[2] or box[1] >= box[3]:
-                return None
-            # The immutable page image must also carry ink at this glyph.
-            ink = image.crop(box)
-
-            exclusive = Image.new("L", ink.size, 255)
-            for j, (left, top, right, bottom) in boxes[key].items():
-                if (
-                    i != j
-                    and left < box[2]
-                    and box[0] < right
-                    and top < box[3]
-                    and box[1] < bottom
-                ):
-                    exclusive.paste(
-                        0,
-                        (left - box[0], top - box[1], right - box[0], bottom - box[1]),
-                    )
-
-            def distance(render, ink=ink, box=box, mask=exclusive):
-                return ImageStat.Stat(
-                    ImageChops.difference(ink, render.crop(box)), mask=mask
-                ).sum[0]
-
-            if distance(painted) >= distance(hidden):
-                return None
+        if not _visible_glyphs(tp, bounds, glyphs, page, image):
+            return None
         drawn_x = min(b[0] for _, _, b in glyphs), max(b[2] for _, _, b in glyphs)
         return rows, bounds, drawn_x
 
@@ -1565,7 +1795,7 @@ def adopt_owned_ranges(
     invalid_listing_refs = {
         (e.page, e.ref)
         for b in answer.blocks
-        if layout_version == 13 and isinstance(b, CodeBlock)
+        if layout_version >= 13 and isinstance(b, CodeBlock)
         for e in b.evidence
         if e.ref and isinstance((node := items[e.ref]).get("text"), str)
         if any(
@@ -1620,7 +1850,7 @@ def adopt_owned_ranges(
                 for p in node["prov"]
                 if p is not prov
             ):
-                if layout_version == 13:
+                if layout_version >= 13:
                     invalid_listing_refs.add((page, ref))
                 issue(
                     "Ambiguous extraction provenance; no range assigned",
@@ -2151,17 +2381,8 @@ def adopt_owned_ranges(
         ):
             return None
 
-        def bounds(prov):
-            box = _DraftBox.model_validate(prov.get("bbox"))
-            b, t = (
-                (box.b, box.t)
-                if box.coord_origin == "BOTTOMLEFT"
-                else (page.height_points - box.b, page.height_points - box.t)
-            )
-            return box.l, b, box.r, t
-
         try:
-            boxes = [bounds(n["prov"][0]) for _, n in selected]
+            boxes = [_page_box(n["prov"][0], page) for _, n in selected]
             l, b, r, t = (
                 min(v[0] for v in boxes),
                 min(v[1] for v in boxes),
@@ -2194,7 +2415,7 @@ def adopt_owned_ranges(
             )
             if any(
                 x < r and l < right and bottom < t and b < top
-                for x, bottom, right, top in map(bounds, neighbors)
+                for x, bottom, right, top in (_page_box(p, page) for p in neighbors)
             ):
                 return None
         except ValueError:
@@ -2289,6 +2510,47 @@ def adopt_owned_ranges(
             )
         ):
             continue
+        if (
+            layout_version >= 14
+            and len(parts) == 1
+            and isinstance(item, TextBlock)
+            and item.kind == "body"
+            and len(item.evidence) == 1
+            and item.evidence[0].ref == parts[0].node["self_ref"]
+        ):
+            part = parts[0]
+            independent = (
+                part.node["label"] in ("text", "paragraph")
+                and not containers[part.order]
+                and tuple(part.prov["charspan"]) == (part.start, part.end)
+                and len(selectors[part.rank[0], part.node["self_ref"]]) == 1
+                and not any(
+                    isinstance(fig, PictureBlock)
+                    and fig.region.page == part.rank[0]
+                    and (
+                        not _outside_region(part, by_page, fig.region)
+                        or any(
+                            m.target_id == key
+                            or (m.ref and _overlaps(m.ref, part.evidence()))
+                            for m in fig.members
+                        )
+                    )
+                    for fig in blocks
+                )
+            )
+            punctuation = _body_punctuation(
+                part,
+                item,
+                by_page[part.rank[0]],
+                read_original,
+                read_image,
+                independent,
+                items,
+                issue,
+            )
+            if punctuation is not None:
+                replacements[key] = punctuation
+                continue
         if any((e.page, e.ref) not in body_refs for e in item.evidence):
             if verify_layout:
                 # Anchor the complete extracted phrase, allowing a disputed

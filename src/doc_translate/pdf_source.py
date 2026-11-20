@@ -87,11 +87,21 @@ def assemble_pdf_source(
     code_proposals = {}
     linked_proposals = {}
     drawn_proposal_order = {}
+    selector_evidence = {}
     for digest, chunk, answer in chunks:
         # Adoption preserves the validated local ID of a linked code proposal;
         # newly allocated/split fragments never inherit continuations.
         proposed = {
             b.block_id: (i, b) for i, b in enumerate(answer.blocks) if b.kind == "code"
+        }
+        # A verified symbol's subspan locates the drawing, not a new fragment boundary.
+        body_selectors = {
+            b.block_id: b.evidence
+            for b in answer.blocks
+            if chunk.schema_version >= 14
+            and b.kind == "body"
+            and len(b.evidence) == 1
+            and b.evidence[0].ref is not None
         }
         draft_sha256 = chunk.draft_sha256
         ids = {}
@@ -104,12 +114,19 @@ def assemble_pdf_source(
         for block in chunk.blocks:
             key = ids[block.block_id]
             originals[key] = block
+            proposal_evidence = body_selectors.get(block.block_id)
+            selector_evidence[key] = (
+                proposal_evidence
+                if proposal_evidence is not None
+                and proposal_evidence == block.evidence[:1]
+                else block.evidence
+            )
             if block.kind == "code" and (block.incoming or block.outgoing):
                 rank, proposal = proposed[block.block_id]
                 linked_proposals[key] = proposal
-                if chunk.schema_version in (12, 13):
+                if chunk.schema_version >= 12:
                     code_proposals[key] = proposal
-                if chunk.schema_version == 13:
+                if chunk.schema_version >= 13:
                     drawn_proposal_order[key] = rank
             block_drafts[key] = draft_sha256
             structure = block.model_dump(
@@ -169,7 +186,7 @@ def assemble_pdf_source(
             return []
         return [
             key
-            for key, block in originals.items()
+            for key in originals
             if any(
                 _matches(
                     selector,
@@ -177,7 +194,7 @@ def assemble_pdf_source(
                     raw_items[block_drafts[source_key]],
                     raw_items[block_drafts[key]],
                 )
-                for item in block.evidence
+                for item in selector_evidence[key]
             )
         ]
 

@@ -10,25 +10,34 @@ from doc_translate.snapshot import save_source_snapshot
 from doc_translate.units import generate_translation_units
 
 
-def capture(workspace, digests, old_ids):
+def capture(workspace, digests, old_ids, *, bodies=False):
     chunks = [load_pdf_correction(workspace, h) for h in digests]
-    assert [c.owned_pages for c in chunks] == [
-        list(range(n, n + 5)) for n in (71, 111, 116, 121, 181, 186)
-    ]
-    assert all(c.schema_version == 13 for c in chunks)
+    starts = (61, 121, 211) if bodies else (71, 111, 116, 121, 181, 186)
+    assert [c.owned_pages for c in chunks] == [list(range(n, n + 5)) for n in starts]
+    assert all(c.schema_version == (14 if bodies else 13) for c in chunks)
     source = assemble_pdf_source(
-        workspace=workspace, chunk_sha256s=digests, snapshot_id="code-connections"
+        workspace=workspace,
+        chunk_sha256s=digests,
+        snapshot_id="body-connections" if bodies else "code-connections",
     )
     save_source_snapshot(workspace, source)
     units = generate_translation_units(source)
     out = render_document(workspace)["artifacts"]
+    english = workspace / out["english"]
+    if bodies:
+        # Retain actual referenced crops (not crops synthesized from the map).
+        for path in re.findall(r'<img src="([^"]+)"', english.read_text()):
+            assert re.fullmatch(r"assets/[a-f0-9]{64}\.png", path)
+            dest = workspace.parent.parent / path
+            dest.parent.mkdir(exist_ok=True)
+            dest.write_bytes((english.parent / path).read_bytes())
     return {
         "digests": digests,
         "old_ids": old_ids,
         "chunks": [c.model_dump(mode="json") for c in chunks],
         "source": source.model_dump(mode="json"),
         "units": [u.model_dump(mode="json") for u in units],
-        "english": (workspace / out["english"]).read_text(),
+        "english": english.read_text(),
         "qa": json.loads((workspace / out["qa"]).read_bytes()),
         "source_map": json.loads((workspace / out["source_map"]).read_bytes()),
     }

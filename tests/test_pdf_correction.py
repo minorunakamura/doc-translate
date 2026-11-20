@@ -1513,7 +1513,7 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
             "printed-margin-v6": 7,
             "printed-separators-v7": 8,
             "printed-display-v8": 9,
-            "current": 13,
+            "current": 14,
         }[base]
     )
 
@@ -3815,6 +3815,11 @@ def test_printed_code_can_supply_boundary_or_indent_missing_from_extraction(
             "efe32e18940cb4aae64646e436a8b8f7fc94f9033d5ec5d0034543ca70e53425",
         ),
         (
+            "drawn-code-v12",
+            13,
+            "b39f1a39fc60b8eb34e0f46e61fe9ba11a5215cfce2f4f9fff8e73703913767b",
+        ),
+        (
             "reciprocal-code-v11",
             12,
             "5e76b7ffb259c92923369b4c2c15d65e91af3fc7cb8d921b5185f32ff5f7e755",
@@ -3876,6 +3881,15 @@ def test_named_orphan_recovers_historical_bytes_without_resending(
         and path.stat().st_mtime_ns == stat
     )
     assert (tmp_path / "request.json.jsonl").read_bytes() == sent
+
+    if version == 13:
+        # Both named saves can be loaded in one workspace without promotion.
+        ref = ws / current.run.artifact
+        ref.with_suffix(".unrelated").rename(ref)
+        assert load_pdf_correction(ws, new) == current and current.schema_version == 14
+        assert (
+            load_pdf_correction(ws, digest) == chunk and path.read_bytes() == original
+        )
 
 
 def test_unbacked_code_with_an_independently_claimed_note_preserves_located_qa(
@@ -4743,4 +4757,258 @@ def test_listing_with_invalid_span_requires_visible_rows_before_valid_tail(
         e.ref == "#/texts/0" and e.charspan is None
         for q in chunk.uncertainties
         for e in q.evidence
+    )
+
+
+def punctuation_reply(
+    draft,
+    case,
+    original="Mint-leaf tea now.",
+    proposal="Mint–leaf tea— now.",
+    drawing=rb"(Mint\261leaf tea\320 now.) Tj",
+):
+    import pypdfium2 as pdfium
+
+    ws, _, model = draft
+    # StandardEncoding: octal 261 and 320 are en and em dash.
+    local = (
+        original
+        if case == "other occurrence"
+        else b"3 Tr " + drawing
+        if case == "invisible"
+        else rb"1 g (Mint) Tj 0 g (\261) Tj 1 g (leaf tea) Tj 0 g (\320) Tj 1 g ( now.) Tj"
+        if case == "invisible context"
+        else drawing
+    )
+    data = prose_pdf([(65, local), (15, drawing)])
+    model.document = model.document.model_copy(
+        update=artifact(ws, "originals", "pdf", data)
+    )
+    model.pages = model.pages[:1]
+    model.target_pages = [1]
+    page = model.pages[0]
+    with pdfium.PdfDocument(data) as pdf:
+        image = BytesIO()
+        pixels = pdf[0].render(scale=2).to_pil()
+        if case == "blank image":
+            pixels = Image.new("RGB", pixels.size, "white")
+        pixels.save(image, format="PNG")
+    page.image = PDFArtifact(
+        **artifact(ws, "drafts/pdf/images", "png", image.getvalue())
+    )
+    page.width_pixels, page.height_pixels = 400, 200
+    page.scale_x = page.scale_y = 2
+    raw = {
+        "body": {"children": [{"$ref": "#/texts/0"}]},
+        "texts": [
+            {
+                "self_ref": "#/texts/0",
+                "label": "text",
+                "text": original,
+                "prov": [
+                    {
+                        "page_no": 1,
+                        "charspan": [0, len(original)],
+                        "bbox": {
+                            "l": 5,
+                            "r": 150,
+                            "b": 60,
+                            "t": 75,
+                            "coord_origin": "BOTTOMLEFT",
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    if case == "competing caption":
+        raw["texts"].append(
+            {**raw["texts"][0], "self_ref": "#/texts/1", "label": "caption"}
+        )
+        raw["body"]["children"].append({"$ref": "#/texts/1"})
+    draft = rewrite_raw(draft, raw)
+    reply = answer(draft[1])
+    reply["blocks"] = reply["blocks"][:1]
+    reply["blocks"][0]["text"] = proposal
+    reply["uncertainties"] = [
+        {
+            "origin": "original",
+            "evidence": [evidence()],
+            "reason": "Separate note on page",
+            "target_ids": ["outside"],
+        }
+    ]
+    return draft, reply
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "supported",
+        "other occurrence",
+        "competing caption",
+        "invisible",
+        "invisible context",
+        "blank image",
+    ],
+)
+def test_owned_body_punctuation_requires_the_local_drawing(tmp_path, draft, case):
+    draft, reply = punctuation_reply(draft, case)
+    ws = draft[0]
+    original, proposal = "Mint-leaf tea now.", "Mint–leaf tea— now."
+    visible = case == "supported"
+    chunk = load_pdf_correction(ws, run(tmp_path, draft, reply, reference_pages=[]))
+    (body,) = [b for b in chunk.blocks if b.kind == "body"]
+    assert chunk.schema_version == 14
+    record = json.loads((ws / chunk.run.artifact).read_bytes())
+    assert record["request"]["context"]["adoption_rule"] == "drawn-punctuation-v13"
+    assert any(
+        q.reason == "Separate note on page" and q.target_ids == [body.block_id]
+        for q in chunk.uncertainties
+    )
+    differences = [
+        q
+        for q in chunk.uncertainties
+        if q.target_ids == [body.block_id] and q.origin == "processing"
+    ]
+    assert body.text == (proposal if visible else original)
+    if visible:
+        assert not differences
+        assert [e.charspan for e in body.evidence[1:]] == [(4, 5), (12, 13), (13, 14)]
+        assert all("glyph bbox" in e.position for e in body.evidence[1:])
+    else:
+        replacement, insertion = differences
+        assert all(
+            q.target_ids == [body.block_id]
+            and all(e.ref == "#/texts/0" and e.page == 1 for e in q.evidence)
+            for q in (replacement, insertion)
+        )
+        assert [e.charspan for e in replacement.evidence] == [(4, 5)]
+        assert [e.charspan for e in insertion.evidence] == [(12, 13), (13, 14)]
+
+
+def test_verified_marks_do_not_adopt_an_unverified_word_edit(tmp_path, draft):
+    draft, reply = punctuation_reply(draft, "supported")
+    reply["blocks"][0]["text"] = "Mint–leaf tea— done."
+    chunk = load_pdf_correction(
+        draft[0], run(tmp_path, draft, reply, reference_pages=[])
+    )
+    (body,) = chunk.blocks
+    assert body.text == "Mint–leaf tea— now."
+    inserted, replaced = [q for q in chunk.uncertainties if q.origin == "processing"]
+    assert inserted.target_ids == replaced.target_ids == [body.block_id]
+    assert [e.charspan for e in inserted.evidence] == [(13, 14), (14, 15)]
+    assert [e.charspan for e in replaced.evidence] == [(15, 17)]
+
+
+def test_inconsistent_original_page_does_not_become_punctuation_qa(tmp_path, draft):
+    draft, reply = punctuation_reply(draft, "supported")
+    ws, _, model = draft
+    model.pages[0].width_points += 1
+    draft = rewrite_raw(draft, json.loads((ws / model.raw.artifact).read_bytes()))
+    reply["draft_sha256"] = draft[1]
+    with pytest.raises(ValueError, match="page geometry"):
+        run(tmp_path, draft, reply, reference_pages=[])
+    assert not list((ws / "corrections/pdf").glob("*.json"))
+
+
+@pytest.mark.parametrize(
+    "proposal,drawing",
+    [
+        ("Mint–leaf tea— now.", rb"(Mint\261leaf tea: now.) Tj"),
+        ("Mint–leaf tea done.", rb"(Mint\261leaf tea done.) Tj"),
+    ],
+)
+def test_owned_mark_survives_an_independent_difference(
+    tmp_path, draft, proposal, drawing
+):
+    draft, reply = punctuation_reply(
+        draft, "supported", proposal=proposal, drawing=drawing
+    )
+    chunk = load_pdf_correction(
+        draft[0], run(tmp_path, draft, reply, reference_pages=[])
+    )
+    (body,) = chunk.blocks
+    assert body.text == "Mint–leaf tea now."
+    assert [e.charspan for e in body.evidence[1:]] == [(4, 5)]
+    qa = [q for q in chunk.uncertainties if q.origin == "processing"]
+    assert qa and all(q.target_ids == [body.block_id] for q in qa)
+    assert [e.charspan for q in qa for e in q.evidence] == (
+        [(12, 13), (13, 14)] if "—" in proposal else [(13, 14), (14, 15), (15, 17)]
+    )
+
+
+def test_terminal_punctuation_qa_points_to_the_replaced_character(tmp_path, draft):
+    draft, reply = punctuation_reply(
+        draft, "supported", "Check.", "Check!", b"(Check.) Tj"
+    )
+    chunk = load_pdf_correction(
+        draft[0], run(tmp_path, draft, reply, reference_pages=[])
+    )
+    assert chunk.blocks[0].text == "Check."
+    (qa,) = [q for q in chunk.uncertainties if q.origin == "processing"]
+    assert [e.charspan for e in qa.evidence] == [(5, 6)]
+    assert "'.' → '!'" in qa.reason
+
+
+@pytest.mark.parametrize(
+    "original,proposal,drawing,want,span",
+    [
+        (
+            "see https://ex.test/a-b",
+            "see https://ex.test/a–b",
+            rb"(see https://ex.test/a\261b) Tj",
+            "see https://ex.test/a-b",
+            (21, 22),
+        ),
+        (
+            "Pack 1,25 kg.",
+            "Pack 1/25 kg.",
+            b"(Pack 1/25 kg.) Tj",
+            "Pack 1,25 kg.",
+            (6, 7),
+        ),
+        (
+            "(see https://example.test/a), then",
+            "(see https://example.test/a); then",
+            rb"(\(see https://example.test/a\); then) Tj",
+            "(see https://example.test/a); then",
+            (28, 29),
+        ),
+    ],
+)
+def test_body_mark_respects_numeric_separators_and_real_literal_range(
+    tmp_path, draft, original, proposal, drawing, want, span
+):
+    draft, reply = punctuation_reply(draft, "supported", original, proposal, drawing)
+    chunk = load_pdf_correction(
+        draft[0], run(tmp_path, draft, reply, reference_pages=[])
+    )
+    (body,) = chunk.blocks
+    assert body.text == want
+    processing = [q for q in chunk.uncertainties if q.origin == "processing"]
+    if want == proposal:
+        assert not processing
+        assert [e.charspan for e in body.evidence[1:]] == [span]
+    else:
+        (qa,) = processing
+        assert [e.charspan for e in qa.evidence] == [span]
+
+
+def test_owned_mark_cannot_borrow_another_occurrence_inside_the_box(tmp_path, draft):
+    original = "Mint-leaf Mint-leaf now."
+    draft, reply = punctuation_reply(
+        draft,
+        "supported",
+        original,
+        "Mint–leaf Mint-leaf done.",
+        rb"(Mint-leaf Mint\261leaf done.) Tj",
+    )
+    chunk = load_pdf_correction(
+        draft[0], run(tmp_path, draft, reply, reference_pages=[])
+    )
+    (body,) = chunk.blocks
+    assert body.text == original and len(body.evidence) == 1
+    assert any(
+        [e.charspan for e in q.evidence] == [(4, 5)] for q in chunk.uncertainties
     )
