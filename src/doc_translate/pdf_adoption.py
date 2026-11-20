@@ -530,7 +530,9 @@ def _printed_candidate(original, proposal, *, relative_margin=False):
     return True
 
 
-def _line_origins(textpage, local, bounds, *, printed_lines, row_fonts=None):
+def _line_origins(
+    textpage, local, bounds, *, printed_lines, row_fonts=None, glyphs=None
+):
     """Find the bounded text's unique native run, not an identical line elsewhere."""
     import pypdfium2.raw as native
 
@@ -558,6 +560,7 @@ def _line_origins(textpage, local, bounds, *, printed_lines, row_fonts=None):
     for line in lines:
         content = line.rstrip("\r\n")
         positions = []
+        generated_spaces = set()
         fonts = []
         for i in range(index, index + len(content)):
             x, y = ctypes.c_double(), ctypes.c_double()
@@ -578,6 +581,9 @@ def _line_origins(textpage, local, bounds, *, printed_lines, row_fonts=None):
                         and not content[offset + 1].isspace()
                     ):
                         return None
+                    if glyphs is not None:
+                        # A generated separator alone is not evidence of a printed SPACE.
+                        generated_spaces.add(offset)
                 elif generated != 0 or not _paints_text(
                     native.FPDFText_GetTextObject(textpage, i)
                 ):
@@ -589,6 +595,14 @@ def _line_origins(textpage, local, bounds, *, printed_lines, row_fonts=None):
                     if obj
                     else None
                 )
+            if glyphs is not None and not content[i - index].isspace():
+                glyphs.append(
+                    (
+                        i,
+                        native.FPDFText_GetTextObject(textpage, i),
+                        textpage.get_charbox(i),
+                    )
+                )
             positions.append((x.value, y.value))
         row = 0
         for end in range(1, len(positions) + 1):
@@ -598,8 +612,34 @@ def _line_origins(textpage, local, bounds, *, printed_lines, row_fonts=None):
                 continue
             if not printed_lines and end < len(positions):
                 return None
+            if glyphs is not None:
+                # A bounded substring cannot establish a row if its native row continues.
+                for neighbor in (index + row - 1, index + end):
+                    if (
+                        not 0 <= neighbor < textpage.count_chars()
+                        or chr(native.FPDFText_GetUnicode(textpage, neighbor)) in "\r\n"
+                    ):
+                        continue
+                    nx, ny = ctypes.c_double(), ctypes.c_double()
+                    if not native.FPDFText_GetCharOrigin(
+                        textpage, neighbor, nx, ny
+                    ) or isclose(ny.value, positions[row][1], abs_tol=0.01):
+                        return None
             x, y = positions[row]
             steps = [b[0] - a[0] for a, b in itertools.pairwise(positions[row:end])]
+            if generated_spaces.intersection(range(row, end)):
+                pitch = next(
+                    (
+                        d
+                        for j, d in enumerate(steps, row)
+                        if j not in generated_spaces and j + 1 not in generated_spaces
+                    ),
+                    None,
+                )
+                if pitch is None or not all(
+                    isclose(d, pitch, abs_tol=0.02) for d in steps
+                ):
+                    return None
             if printed_lines and any(step <= 0 for step in steps):
                 return None
             result.append((content[row:end], x, y, steps))
@@ -608,6 +648,237 @@ def _line_origins(textpage, local, bounds, *, printed_lines, row_fonts=None):
             row = end
         index += len(line)
     return result
+
+
+def _drawn_listing(item, nodes, valid, page, read_original, read_image):
+    """Corroborate complete, adjacent item boxes, never an offset into invalid text."""
+    import pypdfium2 as pdfium
+    import pypdfium2.raw as native
+    from PIL import Image, ImageChops, ImageStat
+
+    provs = [n["prov"][0] for n in nodes]
+    sx, sy = page.scale_x, page.scale_y
+    with Image.open(BytesIO(read_image(page))) as im:
+        scale = page.rendering.get("render_scale", sx if sx == sy else None)
+        if (
+            im.size != (page.width_pixels, page.height_pixels)
+            or not isinstance(scale, (int, float))
+            or scale <= 0
+            or any(
+                not isclose(px / pt, axis)
+                or not floor(pt * scale) <= px <= ceil(pt * scale)
+                for px, pt, axis in (
+                    (im.width, page.width_points, sx),
+                    (im.height, page.height_points, sy),
+                )
+            )
+        ):
+            return None
+        image = im.convert("L")
+
+    def inspect(tp, local, bounds):
+        glyphs = []
+        rows = _line_origins(tp, local, bounds, printed_lines=True, glyphs=glyphs)
+        if not rows or not glyphs:
+            return None
+
+        # Rendering the verified buffer with and without the selected drawing
+        # distinguishes visible glyphs from hidden, overpainted or clipped text.
+        def paint():
+            # Render straight onto the recorded integer canvas; do not resample the PNG.
+            with closing(
+                pdfium.PdfBitmap.new_native(*image.size, native.FPDFBitmap_BGR)
+            ) as bitmap:
+                bitmap.fill_rect((255, 255, 255, 255), 0, 0, *image.size)
+                native.FPDF_RenderPageBitmap(bitmap, tp.page, 0, 0, *image.size, 0, 0)
+                return bitmap.to_pil().convert("L")
+
+        painted = paint()
+        objects = {ctypes.cast(o, ctypes.c_void_p).value: o for _, o, _ in glyphs}
+
+        def pixels(bounds):
+            l, b, r, t = bounds
+            return (
+                floor(l * sx),
+                floor((page.height_points - t) * sy),
+                ceil(r * sx),
+                ceil((page.height_points - b) * sy),
+            )
+
+        # Suppressing a text object also suppresses its other glyphs. Shared
+        # pixels cannot witness which glyph supplied the missing ink.
+        boxes = defaultdict(dict)
+        for i in range(tp.count_chars()):
+            obj = ctypes.cast(
+                native.FPDFText_GetTextObject(tp, i), ctypes.c_void_p
+            ).value
+            if obj in objects and not chr(native.FPDFText_GetUnicode(tp, i)).isspace():
+                boxes[obj][i] = pixels(tp.get_charbox(i))
+
+        active = None
+        hidden = None
+        for i, obj, (l, b, r, t) in glyphs:
+            key = ctypes.cast(obj, ctypes.c_void_p).value
+            if key != active:
+                if not native.FPDFPageObj_SetIsActive(obj, False):
+                    return None
+                hidden = paint()
+                if not native.FPDFPageObj_SetIsActive(obj, True):
+                    return None
+                active = key
+            if not (
+                bounds[0] <= (l + r) / 2 <= bounds[2]
+                and bounds[1] <= (b + t) / 2 <= bounds[3]
+            ):
+                return None
+            box = boxes[key][i]
+            if box[0] >= box[2] or box[1] >= box[3]:
+                return None
+            # The immutable page image must also carry ink at this glyph.
+            ink = image.crop(box)
+
+            exclusive = Image.new("L", ink.size, 255)
+            for j, (left, top, right, bottom) in boxes[key].items():
+                if (
+                    i != j
+                    and left < box[2]
+                    and box[0] < right
+                    and top < box[3]
+                    and box[1] < bottom
+                ):
+                    exclusive.paste(
+                        0,
+                        (left - box[0], top - box[1], right - box[0], bottom - box[1]),
+                    )
+
+            def distance(render, ink=ink, box=box, mask=exclusive):
+                return ImageStat.Stat(
+                    ImageChops.difference(ink, render.crop(box)), mask=mask
+                ).sum[0]
+
+            if distance(painted) >= distance(hidden):
+                return None
+        drawn_x = min(b[0] for _, _, b in glyphs), max(b[2] for _, _, b in glyphs)
+        return rows, bounds, drawn_x
+
+    groups = _local_text(provs, page, read_original, inspect, strict_pdf=True)
+    if not groups:
+        return None
+    rows = []
+    for i, ((group, box, drawn_x), ev) in enumerate(
+        zip(groups, item.evidence, strict=True)
+    ):
+        if i:
+            _, above, prior_x = groups[i - 1]
+            if not (
+                max(prior_x[0], drawn_x[0]) < min(prior_x[1], drawn_x[1])
+                and 0 <= above[1] - box[3] <= max(above[3] - above[1], box[3] - box[1])
+            ):
+                return None
+        anchor = valid.get(ev.ref)
+        cursor = 0
+        for line, x, y, steps in group:
+            if rows and rows[-1][2] <= y:
+                return None
+            span = None
+            gap = ""
+            if anchor:
+                match = re.match(r"(\s*)" + re.escape(line), anchor.text[cursor:])
+                if not match:
+                    return None
+                gap = match[1]
+                span = (
+                    anchor.start + cursor + len(gap),
+                    anchor.start + cursor + match.end(),
+                )
+                cursor += match.end()
+            location = ev.model_copy(
+                update={
+                    "charspan": span,
+                    "position": f"line origin ({x:.3f}, {y:.3f}) pt, bottom-left",
+                    "reason": "Visible drawing in owned listing",
+                }
+            )
+            rows.append((line, x, y, steps, location, gap))
+        if anchor and cursor != len(anchor.text):
+            return None
+    # Check the space between refs too: omitted text in the gap is a barrier.
+    boxes = [box for _, box, _ in groups]
+    envelope = {
+        "l": min(b[0] for b in boxes),
+        "b": min(b[1] for b in boxes),
+        "r": max(b[2] for b in boxes),
+        "t": max(b[3] for b in boxes),
+        "coord_origin": "BOTTOMLEFT",
+    }
+    band = _local_text(
+        [{"bbox": envelope}],
+        page,
+        read_original,
+        lambda tp, text, bounds: _line_origins(tp, text, bounds, printed_lines=True),
+        strict_pdf=True,
+    )
+    if band != [[row[:4] for row in rows]]:
+        return None
+    proposed = [m for m in re.finditer(r"[^\r\n]+", item.text) if m[0].strip(" \t")]
+    wanted = [m[0] for m in proposed]
+    if len(wanted) != len(rows) or any(
+        line.lstrip(" ") != r[0].lstrip(" ")
+        for line, r in zip(wanted, rows, strict=True)
+    ):
+        return None
+    pitch = next((d for r in rows for d in r[3]), None)
+    margin = min(r[1] for r in rows)
+    columns = [(r[1] - margin) / pitch if pitch else 0 for r in rows]
+    measured = (
+        pitch
+        and all(isclose(d, pitch, abs_tol=0.02) for r in rows for d in r[3])
+        and all(
+            isclose(round(c) * pitch, r[1] - margin, abs_tol=0.02)
+            for c, r in zip(columns, rows, strict=True)
+        )
+    )
+    display = []
+    differences = []
+    for i, (r, column) in enumerate(zip(rows, columns, strict=True)):
+        line = " " * (round(column) if measured else 0) + r[0]
+        if i:
+            separator = "".join(re.findall(r"\r\n|[\r\n]", r[5])) or "\n"
+            display.append(separator)
+            proposed_gap = item.text[proposed[i - 1].end() : proposed[i].start()]
+            if proposed_gap != separator:
+                differences.append(
+                    (
+                        "Line separator differs between drawn rows"
+                        if re.sub(r"\r\n?", "\n", proposed_gap)
+                        == re.sub(r"\r\n?", "\n", separator)
+                        else "Additional blank-line count not established between drawn rows",
+                        [rows[i - 1][4], r[4]],
+                    )
+                )
+        display.append(line)
+    # Keep protected whitespace in already-owned ranges, not just their letters.
+    for ref, anchor in valid.items():
+        selected = [i for i, r in enumerate(rows) if r[4].ref == ref]
+        printed = "".join(display[2 * selected[0] : 2 * selected[-1] + 1])
+        # Compare indentation on logical lines; display and source offsets keep their EOLs.
+        if not _printed_candidate(
+            re.sub(r"\r\n?", "\n", anchor.text),
+            re.sub(r"\r\n?", "\n", printed),
+            relative_margin=True,
+        ):
+            return None
+    locations = [r[4] for r in rows]
+    if proposed[0].start():
+        differences.append(("Leading blank-line count not established", locations[:1]))
+    if proposed[-1].end() != len(item.text):
+        differences.append(
+            ("Trailing blank-line count not established", locations[-1:])
+        )
+    differences.append(
+        ("Absolute indentation not established; see each drawn line origin", locations)
+    )
+    return "".join(display), locations, differences
 
 
 def _printed_role_split(part, entries, targets, page, read_original):
@@ -1257,6 +1528,7 @@ def adopt_owned_ranges(
     read_original,
     read_image,
     *,
+    items,
     verify_layout,
     printed_lines,
     printed_ranges,
@@ -1290,6 +1562,18 @@ def adopt_owned_ranges(
             )
         )
 
+    invalid_listing_refs = {
+        (e.page, e.ref)
+        for b in answer.blocks
+        if layout_version == 13 and isinstance(b, CodeBlock)
+        for e in b.evidence
+        if e.ref and isinstance((node := items[e.ref]).get("text"), str)
+        if any(
+            not _valid_span(p.get("charspan"), node["text"])
+            for p in node["prov"]
+            if p["page_no"] == e.page
+        )
+    }
     ranges: list[tuple[_Portion, str | None]] = []
     barriers = set()
     containers = {}
@@ -1336,6 +1620,8 @@ def adopt_owned_ranges(
                 for p in node["prov"]
                 if p is not prov
             ):
+                if layout_version == 13:
+                    invalid_listing_refs.add((page, ref))
                 issue(
                     "Ambiguous extraction provenance; no range assigned",
                     [],
@@ -1599,15 +1885,6 @@ def adopt_owned_ranges(
                     notes,
                 )
 
-    if unsupported:
-        # Keep original uncertainty locations, not references to a nonexistent example.
-        issues = [
-            q.model_copy(
-                update={"target_ids": [k for k in q.target_ids if k not in unsupported]}
-            )
-            for q in issues
-        ]
-
     def layout(parts, proposal, caption=None):
         if separated(parts) or (
             printed_lines
@@ -1819,16 +2096,158 @@ def adopt_owned_ranges(
             owners.append((part, owner))
             portions[owner].append(part)
             prev = None
+
+    def recover_listing(item, parts):
+        page = by_page[item.evidence[0].page]
+        refs = [e.ref for e in item.evidence]
+        valid = {p.node["self_ref"]: p for p in parts}
+        if len(set(refs)) != len(refs) or any(
+            e.page != page.page
+            or e.ref is None
+            or (
+                e.charspan is not None
+                and (
+                    e.ref not in valid
+                    or e.charspan != (valid[e.ref].start, valid[e.ref].end)
+                )
+            )
+            or e.cell_index is not None
+            or len(selectors[e.page, e.ref]) != 1
+            for e in item.evidence
+        ):
+            return None
+        # A second role, image-only claim or unlocated exclusion is not a free row.
+        if any(
+            e.page == page.page and e.ref in {*refs, None}
+            for b in answer.exclusions
+            for e in b.evidence
+        ) or any(
+            not isinstance(figure := targets.get(k), PictureBlock)
+            or figure.region.page != page.page
+            for k, _ in selectors[page.page, None]
+        ):
+            return None
+        selected = []
+        for order, (ref, node, container) in enumerate(
+            _reading_order(raw, nested=True)
+        ):
+            if ref not in refs:
+                continue
+            if (
+                container
+                or node.get("label") not in ("code", "list_item")
+                or node.get("content_layer", "body") != "body"
+                or len(node.get("prov", [])) != 1
+                or node["prov"][0]["page_no"] != page.page
+                or (selected and order != selected[-1][0] + 1)
+            ):
+                return None
+            selected.append((order, node))
+        if (
+            [n["self_ref"] for _, n in selected] != refs
+            or set(valid)
+            != {ref for ref in refs if (page.page, ref) not in invalid_listing_refs}
+            or any([p.start, p.end] != p.prov["charspan"] for p in parts)
+        ):
+            return None
+
+        def bounds(prov):
+            box = _DraftBox.model_validate(prov.get("bbox"))
+            b, t = (
+                (box.b, box.t)
+                if box.coord_origin == "BOTTOMLEFT"
+                else (page.height_points - box.b, page.height_points - box.t)
+            )
+            return box.l, b, box.r, t
+
+        try:
+            boxes = [bounds(n["prov"][0]) for _, n in selected]
+            l, b, r, t = (
+                min(v[0] for v in boxes),
+                min(v[1] for v in boxes),
+                max(v[2] for v in boxes),
+                max(v[3] for v in boxes),
+            )
+            for figure in blocks:
+                if (
+                    not isinstance(figure, PictureBlock)
+                    or figure.region.page != page.page
+                ):
+                    continue
+                region = figure.region
+                if (
+                    region.left < r * page.scale_x
+                    and l * page.scale_x < region.right
+                    and region.top < (page.height_points - b) * page.scale_y
+                    and (page.height_points - t) * page.scale_y < region.bottom
+                ) or any(
+                    m.target_id == item.block_id or (m.ref and m.ref.ref in refs)
+                    for m in figure.members
+                ):
+                    return None
+            neighbors = (
+                p
+                for ref, node in items.items()
+                if ref not in refs
+                for p in node["prov"]
+                if p["page_no"] == page.page
+            )
+            if any(
+                x < r and l < right and bottom < t and b < top
+                for x, bottom, right, top in map(bounds, neighbors)
+            ):
+                return None
+        except ValueError:
+            return None
+        return _drawn_listing(
+            item, [n for _, n in selected], valid, page, read_original, read_image
+        )
+
     replacements = {}
     verified_margins = {}
+    drawn_codes = set()
+    for b in blocks:
+        if isinstance(b, CodeBlock) and any(
+            (e.page, e.ref) in invalid_listing_refs for e in b.evidence
+        ):
+            portions.setdefault(b.block_id, [])
     for key, parts in portions.items():
         item = targets[key]
-        original = _joined(parts)
+        original = _joined(parts) if parts else ""
         if original == item.text and not (
             printed_lines and isinstance(item, CodeBlock)
         ):
             continue
         if verify_layout and isinstance(item, CodeBlock):
+            if any((e.page, e.ref) in invalid_listing_refs for e in item.evidence):
+                checked_rows = recover_listing(item, parts)
+                if checked_rows is not None:
+                    display, locations, differences = checked_rows
+                    drawn_codes.add(key)
+                    replacements[key] = item.model_copy(
+                        update={
+                            "text": display,
+                            "evidence": [*item.evidence, *locations],
+                        }
+                    )
+                    for reason, evidence in differences:
+                        issue(reason, [key], evidence)
+                    continue
+                issue(
+                    "Proposed listing rows not verified in the owned drawing",
+                    [key] if parts else [],
+                    item.evidence,
+                )
+                if not parts:
+                    blocks.remove(item)
+                    targets.pop(key)
+                    unsupported.add(key)
+                    continue
+                # Declined boxes neither position the fallback nor become adopted targets.
+                ranks[key] = min(p.rank for p in parts)
+                item = item.model_copy(
+                    update={"evidence": [p.evidence() for p in parts]}
+                )
             checked = layout(parts, item.text, shared_captions.get(key))
             if checked is not None:
                 text, differences, common = checked
@@ -1911,6 +2330,15 @@ def adopt_owned_ranges(
             [key],
             [p.evidence() for p in parts],
         )
+    if unsupported:
+        # Keep original uncertainty locations, not references to a nonexistent example.
+        issues = [
+            q.model_copy(
+                update={"target_ids": [k for k in q.target_ids if k not in unsupported]}
+            )
+            for q in issues
+        ]
+
     exclusions = []
     for excluded in answer.exclusions:
         disputed = [e for e in excluded.evidence if (e.page, e.ref) in body_refs]
@@ -1991,11 +2419,13 @@ def adopt_owned_ranges(
                 after = [i for i, line in enumerate(adopted, 1) if line.strip()]
                 # Never infer a shift by stripping each line of a fallback extraction.
                 shift = verified_margins.get(b.code_id) if layout_version >= 9 else 0
-                if (
-                    shift is not None
-                    and all(n in before for n in b.lines)
-                    and [proposed[n - 1] for n in before]
-                    == [" " * shift + adopted[n - 1] for n in after]
+                if all(n in before for n in b.lines) and (
+                    b.code_id in drawn_codes
+                    or (
+                        shift is not None
+                        and [proposed[n - 1] for n in before]
+                        == [" " * shift + adopted[n - 1] for n in after]
+                    )
                 ):
                     b = b.model_copy(
                         update={"lines": [after[before.index(n)] for n in b.lines]}

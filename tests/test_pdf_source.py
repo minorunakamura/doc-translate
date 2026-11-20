@@ -837,3 +837,228 @@ def test_assembly_revalidates_each_chunk_even_when_the_draft_was_already_checked
     with pytest.raises(ValueError):
         assemble(draft, [first, forged["sha256"]])
     assert not (workspace / "source-snapshot.json").exists()
+
+
+def code_piece(key, text, page, span, **links):
+    return fragment(key, text, page, kind="code", language="py", **links) | {
+        "evidence": [evidence(page, f"#/texts/{page - 1}", charspan=span)]
+    }
+
+
+def test_code_connection_counts_reciprocal_partners_not_raw_hits(tmp_path, draft):
+    left = code_piece(
+        "left", "Outside text", 1, [0, 12], outgoing=continuation(2, "newline")
+    )
+    right = code_piece(
+        "right", "REFERENCE", 2, [0, 9], incoming=continuation(1, "newline")
+    )
+    other = code_piece("other", "ONLY", 2, [10, 14])
+    first = accept(tmp_path, draft, [left], [1], [2])
+    second = accept(tmp_path, draft, [right, other], [2], [1])
+    source = assemble(draft, [first, second])
+    assert [b.text for b in source.blocks] == ["Outside text\nREFERENCE", "ONLY"]
+    assert [
+        [f["block"]["text"] for f in b.structure["fragments"]] for b in source.blocks
+    ] == [["Outside text", "REFERENCE"], ["ONLY"]]
+    assert [
+        [(l.page, l.extraction_ref) for l in b.locations] for b in source.blocks
+    ] == [[(1, "#/texts/0"), (2, "#/texts/1")], [(2, "#/texts/1")]]
+    assert not any(u.stage == "pdf_connection" for u in source.uncertainties)
+    assert not any(c.name == "pdf_connection" and not c.passed for c in source.checks)
+
+
+def assert_separate(source, pieces):
+    assert [b.text for b in source.blocks] == [p["text"] for p in pieces]
+    for b, p in zip(source.blocks, pieces, strict=True):
+        (f,) = b.structure["fragments"]
+        assert f["block"]["block_id"] == p["block_id"] and f["block"]["text"] == b.text
+        assert [(l.page, l.extraction_ref) for l in b.locations] == [
+            (e["page"], e["ref"]) for e in p["evidence"]
+        ]
+        if b.kind == "code":
+            assert any(
+                q.stage == "pdf_connection"
+                and b.block_id in q.target_ids
+                and all(l in q.locations for l in b.locations)
+                for q in source.uncertainties
+            )
+            assert any(
+                c.name == "pdf_connection"
+                and not c.passed
+                and b.block_id in c.target_ids
+                for c in source.checks
+            )
+
+
+@pytest.mark.parametrize("multiple", ["outgoing", "incoming"])
+def test_code_connection_rejects_all_reciprocal_partners_before_testing_gap(
+    tmp_path, draft, multiple
+):
+    # Each pair of spans shares a raw selector; both alternatives really reciprocate.
+    out = {"outgoing": continuation(2, "newline")}
+    inc = {"incoming": continuation(1, "newline")}
+    left = [code_piece("L", "Outside text", 1, [0, 12], **out)]
+    right = [code_piece("R", "REFERENCE ONLY", 2, [0, 14], **inc)]
+    if multiple == "outgoing":
+        right = [
+            code_piece("R1", "REFERENCE", 2, [0, 9], **inc),
+            code_piece("R2", "ONLY", 2, [10, 14], **inc),
+        ]
+    else:
+        left = [
+            code_piece("L1", "Outside", 1, [0, 7], **out),
+            code_piece("L2", "text", 1, [8, 12], **out),
+        ]
+    first = accept(tmp_path, draft, left, [1], [2])
+    second = accept(tmp_path, draft, right, [2], [1])
+    assert_separate(assemble(draft, [first, second]), [*left, *right])
+
+
+@pytest.mark.parametrize("kind", ["body", "footnote"])
+def test_unique_code_pair_only_crosses_independent_footnotes(tmp_path, draft, kind):
+    left = code_piece(
+        "L", "Outside text", 1, [0, 12], outgoing=continuation(2, "newline")
+    )
+    right = code_piece(
+        "R", "REFERENCE ONLY", 2, [0, 14], incoming=continuation(1, "newline")
+    )
+    middle = fragment("aside", "Paper note.", 1, kind=kind) | {
+        "evidence": [evidence(ref=None, position="bottom")]
+    }
+    if kind == "footnote":
+        middle["target_id"] = "L"
+    first = accept(tmp_path, draft, [left, middle], [1], [2])
+    second = accept(tmp_path, draft, [right], [2], [1])
+    source = assemble(draft, [first, second])
+    if kind == "body":
+        assert_separate(source, [left, middle, right])
+        return
+    assert [b.text for b in source.blocks] == [
+        "Outside text\nREFERENCE ONLY",
+        "Paper note.",
+    ]
+    code, note = source.blocks
+    assert note.kind == "footnote" and note.structure["target_id"] == code.block_id
+    assert [f["block"]["block_id"] for f in code.structure["fragments"]] == ["L", "R"]
+    assert [(l.page, l.extraction_ref) for l in code.locations] == [
+        (1, "#/texts/0"),
+        (2, "#/texts/1"),
+    ]
+    assert [(l.page, l.extraction_ref) for l in note.locations] == [(1, None)]
+    assert not any(q.stage == "pdf_connection" for q in source.uncertainties)
+    assert all(c.passed for c in source.checks)
+
+
+def test_added_listing_range_cannot_substitute_for_original_target(tmp_path, draft):
+    from test_pdf_correction import competing_listing_reply
+
+    draft, reply = competing_listing_reply(draft)
+    left, right = reply["blocks"]
+    # The second printed row belongs to L after adoption, but R targets that
+    # row, not L's proposed source (the first row).
+    left.update(
+        text="left\nmiddle",
+        outgoing={"mode": "newline", "target": evidence(ref="#/texts/2")},
+    )
+    right.update(
+        text="right", incoming={"mode": "newline", "target": evidence(ref="#/texts/1")}
+    )
+    source = assemble(draft, [accept(tmp_path, draft, [left, right], [1], [])])
+    assert_separate(
+        source, [left | {"evidence": [evidence(), evidence(ref="#/texts/1")]}, right]
+    )
+
+
+def test_declined_code_ref_does_not_move_tail_across_body(tmp_path, draft):
+    import json
+
+    from test_pdf_correction import rewrite_raw
+
+    ws, _, model = draft
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    raw["texts"].extend(
+        [
+            {
+                "self_ref": "#/texts/3",
+                "label": "code",
+                "text": "bad",
+                "prov": [{"page_no": 2, "charspan": [0, 30]}],
+            },
+            {
+                "self_ref": "#/texts/4",
+                "label": "paragraph",
+                "text": "Intervening body.",
+                "prov": [{"page_no": 2, "charspan": [0, 17]}],
+            },
+        ]
+    )
+    raw["body"] = {"children": [{"$ref": f"#/texts/{i}"} for i in (0, 3, 4, 1, 2)]}
+    draft = rewrite_raw(draft, raw)
+    left = code_piece(
+        "left", "Outside text", 1, [0, 12], outgoing=continuation(2, "newline")
+    )
+    right = code_piece(
+        "right", "REFERENCE ONLY", 2, [0, 14], incoming=continuation(1, "newline")
+    )
+    middle = fragment("body", "Intervening body.", 2) | {
+        "evidence": [evidence(2, "#/texts/4")]
+    }
+    proposed = right | {
+        "text": "bad\nREFERENCE ONLY",
+        "evidence": [evidence(2, "#/texts/3"), *right["evidence"]],
+    }
+    first = accept(tmp_path, draft, [left], [1], [2])
+    second = accept(tmp_path, draft, [proposed, middle], [2], [1])
+    assert [b.block_id for b in load_pdf_correction(ws, second).blocks] == [
+        "body",
+        "right",
+    ]
+    assert_separate(assemble(draft, [first, second]), [left, middle, right])
+
+
+def test_code_target_must_be_ordered_before_and_after_adoption(tmp_path, draft):
+    import json
+
+    from test_pdf_correction import rewrite_raw
+
+    ws, _, model = draft
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    raw["texts"][2]["prov"][0]["charspan"] = [0, 99]
+    raw["body"] = {"children": [{"$ref": f"#/texts/{i}"} for i in range(3)]}
+    draft = rewrite_raw(draft, raw)
+    left = code_piece(
+        "left", "Outside text", 1, [0, 12], outgoing=continuation(2, "newline")
+    )
+    right = code_piece(
+        "right", "REFERENCE ONLY", 2, [0, 14], incoming=continuation(1, "newline")
+    )
+    proposal = left | {"evidence": [*left["evidence"], evidence(3, "#/texts/2")]}
+    digest = accept(tmp_path, draft, [proposal, right], [1, 2, 3], [])
+    assert_separate(assemble(draft, [digest]), [left, right])
+
+
+def test_declined_code_head_does_not_reverse_same_page_proposal_order(tmp_path, draft):
+    import json
+
+    from test_pdf_correction import competing_listing_reply, rewrite_raw
+
+    draft, _ = competing_listing_reply(draft)
+    ws, _, model = draft
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    raw["texts"][0]["prov"][0]["charspan"] = [0, 99]
+    raw["texts"][1]["label"] = "code"
+    draft = rewrite_raw(draft, raw)
+    left = fragment("L", "middle", 1, kind="code") | {
+        "evidence": [evidence(ref="#/texts/1")],
+        "outgoing": {"mode": "newline", "target": evidence(ref="#/texts/2")},
+    }
+    right = fragment("R", "right", 1, kind="code") | {
+        "evidence": [evidence(ref="#/texts/2")],
+        "incoming": {"mode": "newline", "target": evidence(ref="#/texts/1")},
+    }
+    proposal = right | {
+        "text": "left\nright",
+        "evidence": [evidence(), *right["evidence"]],
+    }
+    digest = accept(tmp_path, draft, [proposal, left], [1], [])
+    assert_separate(assemble(draft, [digest]), [left, right])

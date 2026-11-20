@@ -124,6 +124,35 @@ def compare_listings(workspace, digests, old_ids):
         b["block_id"]: b["output_anchor"]
         for b in json.loads((workspace / out["source_map"]).read_bytes())["blocks"]
     }
+    return score_listings(
+        workspace,
+        digests,
+        old_ids,
+        chunks,
+        source,
+        units,
+        english,
+        qa,
+        anchors,
+        chunks,
+        table_page=True,
+    )
+
+
+def score_listings(
+    workspace,
+    digests,
+    old_ids,
+    chunks,
+    source,
+    units,
+    english,
+    qa,
+    anchors,
+    records_from,
+    *,
+    table_page,
+):
     # Only now read the comparator. Never pass it to correct_pdf or the wire process.
     inputs = {}
 
@@ -142,7 +171,7 @@ def compare_listings(workspace, digests, old_ids):
     assert [
         h
         for case in fixed["cases"]
-        if case["owned_pages"][0] in (111, 346)
+        if case["owned_pages"][0] in ((111, 346) if table_page else (111,))
         for h in case["chunk_sha256s"]
     ] == old_ids
     (draft,) = {c.draft_sha256 for c in chunks}
@@ -151,7 +180,7 @@ def compare_listings(workspace, digests, old_ids):
         checked(workspace / manifest["raw"]["artifact"], manifest["raw"]["sha256"])
     )
     records = {}
-    for h, c in zip(digests, chunks, strict=True):
+    for h, c in zip(digests, records_from, strict=True):
         record = json.loads(checked(workspace / c.run.artifact, c.run.sha256))
         (text,) = [
             v["text"]
@@ -175,7 +204,10 @@ def compare_listings(workspace, digests, old_ids):
     scores = {}
     paragraphs = []
     qa_rows = json.loads(qa)["uncertainties"]
-    for pages, counts in (([115, 116], [4, 29]), ([119, 120, 121], [6, 45, 21])):
+    groups = [([115, 116], [4, 29]), ([119, 120, 121], [6, 45, 21])]
+    if not table_page:
+        groups.append(([117, 118], [31, 17]))
+    for pages, counts in groups:
         (case,) = [g for g in gold if g["pages"] == pages]
         expected = iter(re.findall(r"([^\n]+)(\n*)", case["expected_text"]))
         for page, count in zip(pages, counts, strict=True):
@@ -217,8 +249,10 @@ def compare_listings(workspace, digests, old_ids):
             ]
             proposed = [l for l in prior.text.splitlines() if l.strip()]
             proof = []
-            caption = on(page, "caption").text if page in (115, 119) else None
-            if page in (115, 116):
+            caption = on(page, "caption").text if page in (115, 117, 119) else None
+            if page in (115, 116) or not table_page:
+                if page == 118:
+                    prior = type(item).model_validate(p)
                 proof = listing_evidence(
                     item,
                     prior,
@@ -228,8 +262,34 @@ def compare_listings(workspace, digests, old_ids):
                     workspace,
                     manifest,
                     caption=caption,
-                    relative=page == 116,
+                    relative=page in (116, 118, 120, 121),
+                    drawn=page == 118,
                 )
+                if page == 118:
+                    (absolute,) = [
+                        q
+                        for q in local
+                        if q["reason"].startswith(
+                            "Absolute indentation not established"
+                        )
+                    ]
+                    for row, loc in zip(proof, absolute["locations"], strict=True):
+                        x, y = row["original_xy"]
+                        ev = json.loads(loc["evidence"])
+                        assert (
+                            loc["extraction_ref"] == ev["ref"] == row["ref"]
+                            and ev["charspan"] == row["span"]
+                        )
+                        assert (
+                            ev["position"]
+                            == f"line origin ({x:.3f}, {y:.3f}) pt, bottom-left"
+                        )
+                        row["margin_qa"] = {
+                            "ref": ev["ref"],
+                            "span": ev["charspan"],
+                            "position": ev["position"],
+                            "anchor": anchors[block.block_id],
+                        }
                 for r in proof:
                     for q in r["qa"]:
                         assert any(
@@ -295,10 +355,14 @@ def compare_listings(workspace, digests, old_ids):
                 neighbors = (
                     source.blocks[k - 2 : k]
                     if page == 115
-                    else source.blocks[k + 1 : k + 2]
+                    else source.blocks[k + 1 : k + (2 if table_page else 3)]
                 )
                 assert [b.kind for b in neighbors] == (
-                    ["body", "caption"] if page == 115 else ["body"]
+                    ["body", "caption"]
+                    if page == 115
+                    else ["body"]
+                    if table_page
+                    else ["footnote", "body"]
                 )
                 positions = []
                 for b in neighbors:
@@ -321,7 +385,9 @@ def compare_listings(workspace, digests, old_ids):
                     positions[-1] < fpos if page == 115 else positions[0] > fpos
                 )
         assert next(expected, None) is None
-    body = source.blocks[source.blocks.index(on(116, "code")) + 1]
+    body = source.blocks[
+        source.blocks.index(on(116, "code")) + (1 if table_page else 2)
+    ]
     body_location = body.locations[0]
     assert body_location.format == "pdf" and body_location.extraction_ref is not None
     body_node = raw["texts"][int(body_location.extraction_ref.split("/")[-1])]
@@ -347,6 +413,26 @@ def compare_listings(workspace, digests, old_ids):
         and rows[2]["indent"] == 0
         and isclose(rows[2]["original_xy"][0], body_x, abs_tol=0.02)
     )
+    if not table_page:
+        from pdf_role_comparison import repaint
+
+        repaint(
+            checked(
+                workspace / manifest["document"]["artifact"],
+                manifest["document"]["sha256"],
+            ),
+            manifest,
+            FINAL.parent / "root-survey/seed-111",
+            read,
+            115,
+            121,
+        )
+        return {
+            "lines": scores,
+            "paragraphs": paragraphs,
+            "body_x": body_x,
+            "comparison_inputs": inputs,
+        }
     table = on(346, "table")
     image_info = next(p["image"] for p in manifest["pages"] if p["page"] == 346)
     image_path = FINAL.parent / "root-survey/seed-346/page-346.png"

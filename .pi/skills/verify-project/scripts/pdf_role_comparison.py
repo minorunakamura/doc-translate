@@ -23,6 +23,41 @@ from doc_translate.snapshot import save_source_snapshot
 from doc_translate.units import generate_translation_units
 
 
+def repaint(pdf, d, seed, read, first, last):
+    image_index = json.loads(read(seed / "image-index.json"))
+    # Repaint precisely these pages at the saved acquisition scale. No OCR/converter.
+    config = RenderConfig()
+    config.scale = 1
+    painter = DoclingThreadedPdfParser(
+        ThreadedPdfParserConfig(threads=1, render_config=config)
+    )
+    key = painter.load(BytesIO(pdf), page_range=(first, last))
+    seen = set()
+    try:
+        for result in painter.iterate_results():
+            n = result.page_number
+            (page,) = [p for p in d["pages"] if p["page"] == n]
+            (image,) = [i for i in image_index if i["page"] == n]
+            assert image["image_sha256"] == page["image"]["sha256"]
+            with Image.open(
+                BytesIO(read(seed / f"page-{n}.png", image["image_sha256"]))
+            ) as original:
+                painted = result.get_image(
+                    scale=page["rendering"]["render_scale"]
+                ).convert("RGB")
+                assert (
+                    painted.size == original.size
+                    and ImageChops.difference(
+                        painted, original.convert("RGB")
+                    ).getbbox()
+                    is None
+                )
+            seen.add(n)
+    finally:
+        painter.unload(key)
+    assert seen == set(range(first, last + 1))
+
+
 def compare_roles(workspace, digests, old_ids):
     chunks = [load_pdf_correction(workspace, h) for h in digests]
     assert [c.schema_version for c in chunks] == [11, 11]
@@ -38,6 +73,35 @@ def compare_roles(workspace, digests, old_ids):
         v["block_id"]: v["output_anchor"]
         for v in json.loads((workspace / out["source_map"]).read_bytes())["blocks"]
     }
+    return score_roles(
+        workspace,
+        digests,
+        old_ids,
+        chunks,
+        source,
+        units,
+        english,
+        qa,
+        anchors,
+        chunks,
+        joined=False,
+    )
+
+
+def score_roles(
+    workspace,
+    digests,
+    old_ids,
+    chunks,
+    source,
+    units,
+    english,
+    qa,
+    anchors,
+    records_from,
+    *,
+    joined,
+):
     # Index actual English sections, not an independently re-rendered source snapshot.
     matches = list(re.finditer(r'<a id="([^"]+)"></a>', english))
     bodies = {
@@ -50,7 +114,12 @@ def compare_roles(workspace, digests, old_ids):
     order = [anchors[b.block_id] for b in source.blocks]
     assert [m[1] for m in matches if m[1] in order] == order
     checked_blocks = []
-    for block in source.blocks:
+    scoped = [
+        b
+        for b in source.blocks
+        if b.structure["fragments"][0]["chunk_sha256"] in digests
+    ]
+    for block in scoped:
         selected = [u for u in units if u.block_id == block.block_id]
         body = bodies[anchors[block.block_id]]
         if block.kind == "code":
@@ -87,38 +156,7 @@ def compare_roles(workspace, digests, old_ids):
     raw = json.loads(checked(workspace / d["raw"]["artifact"], d["raw"]["sha256"]))
     pdf = checked(workspace / d["document"]["artifact"], d["document"]["sha256"])
     seed = SEED.parent / "seed-181"
-    image_index = json.loads(read(seed / "image-index.json"))
-    # Repaint precisely these pages at the saved acquisition scale. No OCR/converter.
-    config = RenderConfig()
-    config.scale = 1
-    painter = DoclingThreadedPdfParser(
-        ThreadedPdfParserConfig(threads=1, render_config=config)
-    )
-    key = painter.load(BytesIO(pdf), page_range=(181, 190))
-    seen = set()
-    try:
-        for result in painter.iterate_results():
-            n = result.page_number
-            (page,) = [p for p in d["pages"] if p["page"] == n]
-            (image,) = [i for i in image_index if i["page"] == n]
-            assert image["image_sha256"] == page["image"]["sha256"]
-            with Image.open(
-                BytesIO(read(seed / f"page-{n}.png", image["image_sha256"]))
-            ) as original:
-                painted = result.get_image(
-                    scale=page["rendering"]["render_scale"]
-                ).convert("RGB")
-                assert (
-                    painted.size == original.size
-                    and ImageChops.difference(
-                        painted, original.convert("RGB")
-                    ).getbbox()
-                    is None
-                )
-            seen.add(n)
-    finally:
-        painter.unload(key)
-    assert seen == set(range(181, 191))
+    repaint(pdf, d, seed, read, 181, 190)
     correspondence = json.loads(read(seed / "correspondence.json"))
 
     def from_fixed(key):
@@ -127,17 +165,20 @@ def compare_roles(workspace, digests, old_ids):
         (block,) = [
             b
             for b in source.blocks
-            if [
-                (f["chunk_sha256"], f["block"]["block_id"])
-                for f in b.model_dump()["structure"]["fragments"]
-            ]
+            if (
+                actual := [
+                    (f["chunk_sha256"], f["block"]["block_id"])
+                    for f in b.structure["fragments"]
+                ]
+            )
             == wanted
+            or (joined and len(wanted) == 1 and wanted[0] in actual)
         ]
         return block
 
     # Compare against the original proposal, not the adopted fragment's formatting.
     proposals = {}
-    for h, c in zip(digests, chunks, strict=True):
+    for h, c in zip(digests, records_from, strict=True):
         rec = json.loads(checked(workspace / c.run.artifact, c.run.sha256))
         (answer,) = [
             x["text"]
@@ -153,6 +194,13 @@ def compare_roles(workspace, digests, old_ids):
         (item,) = [b for b in chunks[digests.index(h)].blocks if b.block_id == key]
         assert item.kind == "code" and f["block"]["text"] == item.text
         return item, item.model_copy(update={"text": proposals[h, key]["text"]})
+
+    def page_fragments(code, n):
+        return [
+            f
+            for f in code.structure["fragments"]
+            if not joined or f["block"]["evidence"][0]["page"] == n
+        ]
 
     def printed(code, item, prior, caption=None, footnote=None):
         proof = listing_evidence(
@@ -207,7 +255,7 @@ def compare_roles(workspace, digests, old_ids):
             if kind == "caption":
                 assert note.structure["target_id"] == code.block_id
                 (cap,) = note.model_dump()["structure"]["fragments"]
-                (listing,) = code.model_dump()["structure"]["fragments"]
+                (listing,) = page_fragments(code, n)
                 assert (
                     cap["chunk_sha256"] == listing["chunk_sha256"]
                     and proposals[cap["chunk_sha256"], cap["block"]["block_id"]][
@@ -259,11 +307,16 @@ def compare_roles(workspace, digests, old_ids):
                 and json.loads(code_location.evidence)["charspan"] == [l, r]
             )
             original = text[l:r]
-            (f,) = code.model_dump()["structure"]["fragments"]
+            (f,) = page_fragments(code, n)
             item, prior = fragment(f)
-            assert code.text == item.text
+            assert (
+                not joined
+                and code.text == item.text
+                or joined
+                and item.text in code.text
+            )
             if n in (181, 182, 186):
-                assert code.text == original and code.text != prior.text
+                assert item.text == original and item.text != prior.text
                 reason = f"Line boundary or indentation not corroborated; adopted extraction {original!r} rather than correction {prior.text!r}"
                 (q,) = [
                     q
@@ -303,7 +356,7 @@ def compare_roles(workspace, digests, old_ids):
                     footnote=None if before else note.text,
                 )
                 assert len(proof) == len(lines)
-                printed_lines[code.block_id] = proof
+                printed_lines[f"{code.block_id}:{n}"] = proof
                 mode = "printed"
             # Check the fixed neighboring prose and its actual translation and display position.
             prior_blocks = json.loads(read(seed / f"page-{n}.json"))["original_blocks"]
@@ -348,15 +401,18 @@ def compare_roles(workspace, digests, old_ids):
         ) <= source.blocks.index(fragments[1])
         # Fixed examples can differ in indentation, not in the ordered nonempty lines.
         # The independent painted-row check above (or below) already proves each actual column and separator.
-        for code in fragments:
-            if code.block_id not in printed_lines:
-                (f,) = code.model_dump()["structure"]["fragments"]
+        if joined:
+            assert fragments[0] is fragments[1]
+        for code, n in zip(fragments, g["pages"], strict=True):
+            k = f"{code.block_id}:{n}"
+            if k not in printed_lines:
+                (f,) = page_fragments(code, n)
                 item, prior = fragment(f)
-                assert code.text == item.text
-                printed_lines[code.block_id] = printed(code, item, prior)
+                assert item.text in code.text if joined else code.text == item.text
+                printed_lines[k] = printed(code, item, prior)
         actual = [
             line
-            for code in fragments
+            for code in (fragments[:1] if joined else fragments)
             for line in code.text.splitlines()
             if line.strip()
         ]
@@ -367,7 +423,7 @@ def compare_roles(workspace, digests, old_ids):
         )
     # In the same two answers, check proposed extra blank lines even if a QA is missing.
     blank_boundaries = []
-    for code in source.blocks:
+    for code in scoped:
         if code.kind != "code":
             continue
         fragments = [fragment(f) for f in code.model_dump()["structure"]["fragments"]]
