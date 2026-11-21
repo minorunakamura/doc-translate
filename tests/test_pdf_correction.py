@@ -1513,7 +1513,7 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
             "printed-margin-v6": 7,
             "printed-separators-v7": 8,
             "printed-display-v8": 9,
-            "current": 14,
+            "current": 15,
         }[base]
     )
 
@@ -3815,6 +3815,11 @@ def test_printed_code_can_supply_boundary_or_indent_missing_from_extraction(
             "efe32e18940cb4aae64646e436a8b8f7fc94f9033d5ec5d0034543ca70e53425",
         ),
         (
+            "drawn-punctuation-v13",
+            14,
+            "1d9435ecd1e502ceb40c139f5cedf6174606583fd0f017f56f91604f3c5582ae",
+        ),
+        (
             "drawn-code-v12",
             13,
             "b39f1a39fc60b8eb34e0f46e61fe9ba11a5215cfce2f4f9fff8e73703913767b",
@@ -3882,11 +3887,11 @@ def test_named_orphan_recovers_historical_bytes_without_resending(
     )
     assert (tmp_path / "request.json.jsonl").read_bytes() == sent
 
-    if version == 13:
+    if version == 14:
         # Both named saves can be loaded in one workspace without promotion.
         ref = ws / current.run.artifact
         ref.with_suffix(".unrelated").rename(ref)
-        assert load_pdf_correction(ws, new) == current and current.schema_version == 14
+        assert load_pdf_correction(ws, new) == current and current.schema_version == 15
         assert (
             load_pdf_correction(ws, digest) == chunk and path.read_bytes() == original
         )
@@ -4318,6 +4323,117 @@ def test_reversed_shared_caption_without_target_cannot_claim_formatted_listing(
     )
     with pytest.raises(ValueError, match="Overlapping ownership"):
         run(tmp_path, draft, reply)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "printed",
+        "indent",
+        "extracted separator",
+        "collapsed space",
+        "changed space",
+        "omitted row",
+        "hidden row",
+        "explicit conflict",
+    ],
+)
+def test_shared_caption_and_multiref_listing_keep_all_printed_rows(
+    tmp_path, draft, case
+):
+    import pypdfium2 as pdfium
+
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    lines = [(80, "Meters"), (60, "do a sum"), (44, "return n")]
+    if case == "collapsed space":
+        lines[1] = (60, "do  a sum")
+    if case == "omitted row":
+        lines.insert(2, (50, "unclaimed"))
+    if case == "hidden row":
+        lines[1] = (60, b"3 Tr (do a sum) Tj")
+    first = "do a sum" + ("\r\n\r\n" if case == "extracted separator" else "")
+    proposed = "do a sum\n\nreturn n"
+    if case == "changed space":
+        proposed = "do  a sum\n\nreturn n"
+    if case == "indent":
+        proposed = "do a sum\n\n   return n"
+    draft, reply = listing_reply(draft, lines, "Meters return n", proposed)
+    ws, _, model = draft
+    with pdfium.PdfDocument(ws / model.document.artifact) as pdf:
+        image = BytesIO()
+        pdf[0].render(scale=1).to_pil().save(image, format="PNG")
+    page = model.pages[0]
+    page.image = PDFArtifact(
+        **artifact(ws, "drafts/pdf/images", "png", image.getvalue())
+    )
+    page.width_pixels, page.height_pixels = 200, 100
+    page.scale_x = page.scale_y = 1
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    ref = "#/texts/1"
+    prov = raw["texts"][0]["prov"][0]
+    raw["texts"].append(
+        {
+            "self_ref": ref,
+            "label": "code",
+            "text": first,
+            "prov": [
+                {
+                    **prov,
+                    "charspan": [0, len(first)],
+                    "bbox": {**prov["bbox"], "t": 70, "b": 58},
+                }
+            ],
+        }
+    )
+    raw["body"]["children"].insert(0, {"$ref": ref})
+    draft = rewrite_raw(draft, raw)
+    reply["draft_sha256"] = draft[1]
+    reply["blocks"][0]["evidence"].insert(0, evidence(ref=ref))
+    reply["blocks"].append(
+        {
+            "block_id": "cap",
+            "kind": "caption",
+            "target_id": "example",
+            "text": "Meters",
+            "evidence": [evidence()],
+        }
+    )
+    if case == "explicit conflict":
+        reply["blocks"][0]["evidence"][1]["charspan"] = [0, 15]
+    if case not in ("printed", "indent", "extracted separator"):
+        with pytest.raises(ValueError, match="Overlapping ownership"):
+            run(tmp_path, draft, reply)
+        return
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(ws, saved)
+    assert [(b.kind, b.text) for b in chunk.blocks] == [
+        ("caption", "Meters"),
+        (
+            "code",
+            "do a sum\r\n\r\nreturn n"
+            if case == "extracted separator"
+            else "do a sum\nreturn n",
+        ),
+    ]
+    assert [
+        [(e.page, e.ref, e.charspan) for e in b.evidence] for b in chunk.blocks
+    ] == [
+        [(1, "#/texts/0", (0, 6))],
+        [(1, ref, (0, len(first))), (1, "#/texts/0", (7, 15))],
+    ]
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="whole-listing"
+    )
+    caption, code = source.blocks
+    assert caption.structure["target_id"] == code.block_id
+    (gap,) = [q for q in source.uncertainties if q.target_ids == [code.block_id]]
+    assert ("blank-line count" if case == "printed" else "formatting") in gap.reason
+    assert gap.target_ids == [code.block_id]
+    assert [loc.extraction_ref for loc in gap.locations if loc.format == "pdf"] == [
+        ref,
+        "#/texts/0",
+    ]
 
 
 @pytest.mark.parametrize("claimant", ["example", "cap"])
@@ -4859,9 +4975,9 @@ def test_owned_body_punctuation_requires_the_local_drawing(tmp_path, draft, case
     visible = case == "supported"
     chunk = load_pdf_correction(ws, run(tmp_path, draft, reply, reference_pages=[]))
     (body,) = [b for b in chunk.blocks if b.kind == "body"]
-    assert chunk.schema_version == 14
+    assert chunk.schema_version == 15
     record = json.loads((ws / chunk.run.artifact).read_bytes())
-    assert record["request"]["context"]["adoption_rule"] == "drawn-punctuation-v13"
+    assert record["request"]["context"]["adoption_rule"] == "drawn-caption-listing-v14"
     assert any(
         q.reason == "Separate note on page" and q.target_ids == [body.block_id]
         for q in chunk.uncertainties
@@ -5012,3 +5128,992 @@ def test_owned_mark_cannot_borrow_another_occurrence_inside_the_box(tmp_path, dr
     assert any(
         [e.charspan for e in q.evidence] == [(4, 5)] for q in chunk.uncertainties
     )
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "twice",
+        "once",
+        "thrice",
+        "normalized",
+        "corrected",
+        "shared table",
+        "not in cells",
+        "partial span",
+    ],
+)
+def test_index_fragment_repeated_in_its_own_table_cells_counts_every_occurrence(
+    tmp_path, draft, case
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    entry = "beta tooI, 9" if case == "corrected" else "beta’s tool, 9"
+    proposed = {
+        "twice": "alpha, 3 beta’s tool, 9 gamma, 4 beta’s tool, 9",
+        "once": "alpha, 3 beta’s tool, 9 gamma, 4",
+        "thrice": "alpha, 3 beta’s tool, 9 gamma, 4 beta’s tool, 9 beta’s tool, 9",
+        "normalized": "alpha, 3 beta’s tool, 9 gamma, 4 beta's tool, 9",
+        "corrected": "alpha, 3 beta tool, 9 gamma, 4 beta tool, 9",
+        "shared table": "alpha, 3 beta’s tool, 9 gamma, 4 beta’s tool, 9",
+        "not in cells": "alpha, 3 gamma, 4 beta’s tool, 9",
+        "partial span": "alpha, 3 beta’s tool, 9 gamma, 4 beta’s tool, 9",
+    }[case]
+    cell = "gamma, 4" if case == "not in cells" else f"{entry} gamma, 4"
+    texts = [
+        {
+            "self_ref": f"#/texts/{i}",
+            "label": "text",
+            "text": text,
+            "prov": [{"page_no": 1, "charspan": [0, len(text)]}],
+        }
+        for i, text in enumerate([entry, "zeta, 2"])
+    ]
+    table = {
+        "self_ref": "#/tables/0",
+        "label": "document_index",
+        "prov": [{"page_no": 1, "charspan": [0, 0]}],
+        "data": {
+            "num_rows": 1,
+            "num_cols": 2,
+            "table_cells": [{"text": "alpha, 3"}, {"text": cell}],
+        },
+    }
+    draft = rewrite_raw(
+        draft,
+        {
+            "body": {
+                "children": [
+                    {"$ref": r} for r in ("#/tables/0", "#/texts/0", "#/texts/1")
+                ]
+            },
+            "texts": texts,
+            "tables": [table],
+        },
+    )
+    reply = answer(draft[1])
+    reply["blocks"] = [
+        {
+            "kind": "body",
+            "block_id": "index",
+            "text": proposed,
+            "evidence": [
+                evidence(ref="#/tables/0"),
+                evidence(
+                    ref="#/texts/0",
+                    charspan=[0, 4] if case == "partial span" else None,
+                ),
+            ],
+        },
+        {
+            "kind": "body",
+            "block_id": "next",
+            "text": "zeta, 2",
+            "evidence": [evidence(ref="#/texts/1")]
+            + ([evidence(ref="#/tables/0")] if case == "shared table" else []),
+        },
+    ]
+    if case not in ("twice", "not in cells"):
+        with pytest.raises(ValueError, match="Cannot isolate extraction range"):
+            run(tmp_path, draft, reply)
+        return
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(ws, saved)
+    assert [(b.block_id, b.text) for b in chunk.blocks] == [
+        ("index", proposed),
+        ("next", "zeta, 2"),
+    ]
+    assert [(e.ref, e.charspan) for e in chunk.blocks[0].evidence] == [
+        ("#/tables/0", None),
+        ("#/texts/0", None),
+    ]
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="index-cells"
+    )
+    assert [b.text for b in source.blocks] == [proposed, "zeta, 2"]
+
+
+def drawn_reply(draft, lines, nodes, blocks):
+    """Self-authored drawing, its page image, and extraction items with boxes."""
+    import pypdfium2 as pdfium
+
+    workspace, _, model = draft
+    model.document = model.document.model_copy(
+        update=artifact(workspace, "originals", "pdf", prose_pdf(lines, font="Courier"))
+    )
+    with pdfium.PdfDocument(workspace / model.document.artifact) as pdf:
+        image = BytesIO()
+        pdf[0].render(scale=1).to_pil().save(image, format="PNG")
+    page = model.pages[0]
+    page.image = PDFArtifact(
+        **artifact(workspace, "drafts/pdf/images", "png", image.getvalue())
+    )
+    page.width_pixels, page.height_pixels = 200, 100
+    page.scale_x = page.scale_y = 1
+    texts = [
+        {
+            "self_ref": f"#/texts/{i}",
+            "label": label,
+            "text": text,
+            "prov": [
+                {
+                    "page_no": 1,
+                    "charspan": [0, len(text)],
+                    "bbox": dict(zip("lbrt", box), coord_origin="BOTTOMLEFT"),
+                }
+            ],
+        }
+        for i, (label, text, box) in enumerate(nodes)
+    ]
+    draft = rewrite_raw(
+        draft,
+        {
+            "body": {"children": [{"$ref": t["self_ref"]} for t in texts]},
+            "texts": texts,
+        },
+    )
+    reply = answer(draft[1])
+    reply["blocks"] = [
+        {
+            "block_id": key,
+            "evidence": [evidence(ref=f"#/texts/{i}") for i in refs],
+            **fields,
+        }
+        for key, refs, fields in blocks
+    ]
+    return draft, reply
+
+
+@pytest.mark.parametrize(
+    "case", ["target", "no target", "typo", "caption changed", "unclaimed row"]
+)
+def test_caption_sharing_the_first_code_item_keeps_drawn_roles(tmp_path, draft, case):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    lines = [
+        (80, b"/Other 9 Tf (Meters) Tj"),
+        (65, "do a sun" if case == "typo" else "do a sum"),
+        (50, "return n"),
+    ]
+    nodes = [
+        (
+            "code",
+            "Meters do a sun" if case == "typo" else "Meters do a sum",
+            (5, 62, 120, 92),
+        ),
+        ("code", "return n", (5, 47, 120, 58)),
+    ]
+    if case == "unclaimed row":
+        lines.append((35, "unclaimed"))
+        nodes.append(("code", "unclaimed", (5, 32, 120, 44)))
+        nodes[1] = ("code", "return n", (5, 34, 120, 58))
+    caption = {
+        "kind": "caption",
+        "text": "Metres" if case == "caption changed" else "Meters",
+    }
+    if case != "no target":
+        caption["target_id"] = "example"
+    draft, reply = drawn_reply(
+        draft,
+        lines,
+        nodes,
+        [
+            ("cap", [0], caption),
+            ("example", [0, 1], {"kind": "code", "text": "do a sum\nreturn n"}),
+        ],
+    )
+    if case in ("caption changed", "unclaimed row"):
+        with pytest.raises(ValueError, match="Overlapping ownership"):
+            run(tmp_path, draft, reply)
+        return
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(ws, saved)
+    first = nodes[0][1][7:]
+    assert [(b.kind, b.text) for b in chunk.blocks] == [
+        ("caption", "Meters"),
+        ("code", f"{first}\nreturn n"),
+    ]
+    assert [[(e.ref, e.charspan) for e in b.evidence] for b in chunk.blocks] == [
+        [("#/texts/0", (0, 6))],
+        [("#/texts/0", (7, 15)), ("#/texts/1", (0, 8))],
+    ]
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="head-caption"
+    )
+    cap, code = source.blocks
+    assert cap.structure.get("target_id") == (
+        None if case == "no target" else code.block_id
+    )
+    # A proposed typo fix is not adopted; the drawn extraction stays with its QA.
+    assert [(q.target_ids, "do a sun" in q.reason) for q in source.uncertainties] == (
+        [([code.block_id], True)] if case == "typo" else []
+    )
+
+
+@pytest.mark.parametrize(
+    "case", ["mixed", "quotes", "same face", "changed code", "body rewritten"]
+)
+def test_code_note_code_in_one_item_keeps_each_drawn_row_once(tmp_path, draft, case):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    note = b"(Then run:) Tj" if case == "same face" else b"/Other 9 Tf (Then run:) Tj"
+    first = "say 'hi'" if case == "quotes" else "run a"
+    lines = [(80, first), (65, note), (50, "run a")]
+    text = f"{first} Then run: run a"
+    draft, reply = drawn_reply(
+        draft,
+        lines,
+        [("code", text, (5, 47, 120, 92))],
+        [
+            (
+                "before",
+                [0],
+                {"kind": "code", "text": "say ‘hi’" if case == "quotes" else first},
+            ),
+            (
+                "note",
+                [0],
+                {
+                    "kind": "body",
+                    "text": "Next run:" if case == "body rewritten" else "Then run:",
+                },
+            ),
+            (
+                "after",
+                [0],
+                {
+                    "kind": "code",
+                    "text": "run b" if case == "changed code" else "run a",
+                },
+            ),
+        ],
+    )
+    if case in ("same face", "changed code", "body rewritten"):
+        with pytest.raises(ValueError, match="Overlapping ownership"):
+            run(tmp_path, draft, reply)
+        return
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(ws, saved)
+    a = len(first)
+    assert [(b.kind, b.text, b.evidence[0].charspan) for b in chunk.blocks] == [
+        ("code", first, (0, a)),
+        ("body", "Then run:", (a + 1, a + 10)),
+        ("code", "run a", (a + 11, a + 16)),
+    ]
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="code-note-code"
+    )
+    assert [(b.kind, b.text) for b in source.blocks] == [
+        ("code", first),
+        ("body", "Then run:"),
+        ("code", "run a"),
+    ]
+    assert any(
+        "hi" in q.reason and q.target_ids == [source.blocks[0].block_id]
+        for q in source.uncertainties
+    ) == (case == "quotes")
+
+
+@pytest.mark.parametrize(
+    "case", ["quote form", "extracted quote", "spelling", "skipped row"]
+)
+def test_bodies_sharing_one_item_split_only_by_quote_form(tmp_path, draft, case):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    second = "Blue too."
+    # The drawing keeps a straight quote; the extraction may carry another form.
+    first = "It’s red." if case == "extracted quote" else "It's red."
+    draft, reply = drawn_reply(
+        draft,
+        [(80, "It's red."), (65, second), (50, "More.")],
+        [
+            ("text", f"{first} {second}", (5, 62, 120, 92)),
+            ("text", "More.", (5, 47, 120, 58)),
+        ],
+        [
+            (
+                "first",
+                [0],
+                {
+                    "kind": "body",
+                    "text": "Its red." if case == "spelling" else "It’s red.",
+                },
+            ),
+            (
+                "second",
+                [0, 1],
+                {
+                    "kind": "body",
+                    "text": "More." if case == "skipped row" else f"{second} More.",
+                },
+            ),
+        ],
+    )
+    if case in ("spelling", "skipped row"):
+        with pytest.raises(ValueError, match="Overlapping ownership"):
+            run(tmp_path, draft, reply)
+        return
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(ws, saved)
+    assert [
+        (b.text, [(e.ref, e.charspan) for e in b.evidence]) for b in chunk.blocks
+    ] == [
+        (first, [("#/texts/0", (0, 9))]),
+        ("Blue too. More.", [("#/texts/0", (10, 19)), ("#/texts/1", None)]),
+    ]
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="shared-bodies"
+    )
+    assert [b.text for b in source.blocks] == [first, "Blue too. More."]
+    assert any(
+        q.target_ids == [source.blocks[0].block_id] for q in source.uncertainties
+    ) == (case == "quote form")
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["omitted", "owned elsewhere", "not in proposal", "excluded", "other page"],
+)
+def test_omitted_middle_item_joins_only_at_its_unique_place(tmp_path, draft, case):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    raw = {"body": {"children": []}, "texts": []}
+    for label, text, page in [
+        ("section_header", "Begin", 1),
+        ("section_header", "Home", 3 if case == "other page" else 1),
+        ("list_item", "Finish it.", 1),
+    ]:
+        ref = f"#/texts/{len(raw['texts'])}"
+        raw["texts"].append(
+            {
+                "self_ref": ref,
+                "label": label,
+                "text": text,
+                "prov": [{"page_no": page, "charspan": [0, len(text)]}],
+            }
+        )
+        raw["body"]["children"].append({"$ref": ref})
+    draft = rewrite_raw(draft, raw)
+    reply = answer(draft[1])
+    reply["blocks"] = [
+        {
+            "kind": "body",
+            "block_id": "joined",
+            "text": "Begin Finish it."
+            if case == "not in proposal"
+            else "Begin Home Finish it.",
+            "evidence": [evidence(), evidence(ref="#/texts/2")],
+        }
+    ]
+    if case == "owned elsewhere":
+        reply["blocks"].append(
+            {
+                "kind": "heading",
+                "block_id": "home",
+                "level": 2,
+                "text": "Home",
+                "evidence": [evidence(ref="#/texts/1")],
+            }
+        )
+    if case == "excluded":
+        reply["exclusions"] = [
+            {
+                "text": "Home",
+                "reason": "running header",
+                "evidence": [evidence(ref="#/texts/1")],
+            }
+        ]
+    if case == "other page":
+        reply["owned_pages"] = [1, 3]
+        reply["exclusions"] = [
+            {
+                "text": "Home",
+                "reason": "running header",
+                "evidence": [evidence(3, None)],
+            }
+        ]
+    ws = draft[0]
+    saved = run(
+        tmp_path,
+        draft,
+        reply,
+        owned_pages=reply["owned_pages"],
+        reference_pages=[],
+    )
+    chunk = load_pdf_correction(ws, saved)
+    omitted = [q for q in chunk.uncertainties if "intervening" in q.reason]
+    if case != "omitted":
+        assert not omitted
+        assert ("joined", "Begin Home Finish it.") not in [
+            (b.block_id, b.text) for b in chunk.blocks
+        ]
+        return
+    (body,) = chunk.blocks
+    assert body.text == "Begin Home Finish it."
+    assert [(e.ref, e.charspan) for e in body.evidence] == [
+        ("#/texts/0", None),
+        ("#/texts/1", (0, 4)),
+        ("#/texts/2", None),
+    ]
+    assert [(q.target_ids, [e.ref for e in q.evidence]) for q in omitted] == [
+        (["joined"], ["#/texts/1"])
+    ]
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="omitted-middle"
+    )
+    assert [b.text for b in source.blocks] == ["Begin Home Finish it."]
+
+
+def fragments_reply(draft, nodes, block, *, lines=None):
+    """A block citing a table with no matching cells and separately extracted items."""
+    texts = [
+        {
+            "self_ref": f"#/texts/{i}",
+            "label": label,
+            "text": text,
+            "prov": [
+                {
+                    "page_no": 1,
+                    "charspan": span or [0, len(text)],
+                    "bbox": {**dict(zip("lbrt", box)), "coord_origin": "BOTTOMLEFT"},
+                }
+            ],
+        }
+        for i, (label, text, span, box) in enumerate(nodes)
+    ]
+    raw = {
+        "body": {"children": [{"$ref": t["self_ref"]} for t in texts]},
+        "texts": texts,
+    }
+    workspace, _, model = draft
+    model.document = model.document.model_copy(
+        update=artifact(
+            workspace, "originals", "pdf", prose_pdf(lines or [(65, "unrelated")])
+        )
+    )
+    if block["kind"] == "body":
+        raw["tables"] = [
+            {
+                "self_ref": "#/tables/0",
+                "label": "document_index",
+                "prov": [{"page_no": 1, "charspan": [0, 0]}],
+                "data": {
+                    "num_rows": 1,
+                    "num_cols": 1,
+                    "table_cells": [{"text": "alpha, 3"}],
+                },
+            }
+        ]
+        raw["body"]["children"].insert(0, {"$ref": "#/tables/0"})
+    draft = rewrite_raw(draft, raw)
+    reply = answer(draft[1])
+    reply["blocks"] = [block]
+    return draft, reply
+
+
+@pytest.mark.parametrize("case", ["separate", "reversed", "joined only"])
+def test_split_index_fragments_are_each_located_once_in_order(tmp_path, draft, case):
+    box = (5, 5, 195, 95)
+    proposed = {
+        "separate": "alpha, 3 beta, 7 gamma delta, 8",
+        "reversed": "alpha, 3 delta, 8 gamma beta, 7",
+        "joined only": "alpha, 3 gamma beta, 7delta, 8",
+    }[case]
+    draft, reply = fragments_reply(
+        draft,
+        [("text", "beta, 7", None, box), ("text", "delta, 8", None, box)],
+        {
+            "kind": "body",
+            "block_id": "index",
+            "text": proposed,
+            "evidence": [
+                evidence(ref="#/tables/0"),
+                evidence(ref="#/texts/0"),
+                evidence(ref="#/texts/1"),
+            ],
+        },
+    )
+    if case != "separate":
+        with pytest.raises(ValueError, match="Cannot isolate extraction range"):
+            run(tmp_path, draft, reply)
+        return
+    chunk = load_pdf_correction(draft[0], run(tmp_path, draft, reply))
+    (block,) = chunk.blocks
+    assert block.text == proposed
+    assert [e.ref for e in block.evidence] == ["#/tables/0", "#/texts/0", "#/texts/1"]
+    assert not [q for q in chunk.uncertainties if q.origin == "processing"]
+
+
+@pytest.mark.parametrize("case", ["drawn", "drawn differs"])
+def test_fragment_differing_from_its_drawing_is_located_by_the_drawn_row(
+    tmp_path, draft, case
+):
+    drawn = "epsilon, 5" if case == "drawn" else "epsilom, 5"
+    draft, reply = fragments_reply(
+        draft,
+        [("text", "epsiIon, 5", None, (5, 60, 120, 75))],
+        {
+            "kind": "body",
+            "block_id": "index",
+            "text": "alpha, 3 epsilon, 5",
+            "evidence": [evidence(ref="#/tables/0"), evidence(ref="#/texts/0")],
+        },
+        lines=[(65, drawn)],
+    )
+    if case != "drawn":
+        with pytest.raises(ValueError, match="Cannot isolate extraction range"):
+            run(tmp_path, draft, reply)
+        return
+    chunk = load_pdf_correction(draft[0], run(tmp_path, draft, reply))
+    (block,) = chunk.blocks
+    assert block.text == "alpha, 3 epsiIon, 5"
+    (qa,) = [q for q in chunk.uncertainties if q.origin == "processing"]
+    assert "epsiIon, 5" in qa.reason and "epsilon, 5" in qa.reason
+    assert [(e.ref, e.charspan) for e in qa.evidence] == [("#/texts/0", (0, 10))]
+
+
+@pytest.mark.parametrize("case", ["marker", "other marker", "not first"])
+def test_list_marker_split_from_its_text_is_the_block_marker(tmp_path, draft, case):
+    head = "9. Plan the work" if case == "other marker" else "8. Plan the work"
+    text = "Ship it. Plan the work" if case == "not first" else "Plan the work"
+    draft, reply = fragments_reply(
+        draft,
+        [
+            ("section_header", head, None, (5, 5, 195, 95)),
+            # An invalid span keeps this item out of the owned ranges.
+            ("list_item", "and ship.", [0, 11], (5, 5, 195, 95)),
+        ],
+        {
+            "kind": "list",
+            "block_id": "step",
+            "depth": 1,
+            "marker": "8.",
+            "text": f"{text} and ship.",
+            "evidence": [evidence(), evidence(ref="#/texts/1")],
+        },
+    )
+    if case != "marker":
+        with pytest.raises(ValueError, match="Cannot isolate extraction range"):
+            run(tmp_path, draft, reply)
+        return
+    chunk = load_pdf_correction(draft[0], run(tmp_path, draft, reply))
+    (block,) = chunk.blocks
+    assert block.kind == "list"
+    assert (block.marker, block.text) == ("8.", "Plan the work and ship.")
+    assert [(e.ref, e.charspan) for e in block.evidence] == [
+        ("#/texts/0", None),
+        ("#/texts/1", None),
+    ]
+
+
+@pytest.mark.parametrize(
+    "case", ["edge", "repeated row", "empty rest", "row count", "text after"]
+)
+def test_listing_edge_inside_a_paragraph_item_is_read_from_the_listing_band(
+    tmp_path, draft, case
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    shared = {
+        "edge": "Then add:3 var a = 1",
+        "repeated row": "Then var a = 1 add:3 var a = 1",
+        "empty rest": "var a = 1",
+        "row count": "Then add:3 var a = 1",
+        "text after": "Then add:3 var a = 1 Aside",
+    }[case]
+    code = "var a = 1\nvar b = 2" + ("\nvar c = 3" if case == "row count" else "")
+    draft, reply = drawn_reply(
+        draft,
+        [(80, "Then add:"), (84, "3", 58), (65, "var a = 1"), (50, "var b = 2")]
+        # Drawn outside the listing band.
+        + ([(35, "Aside")] if case == "text after" else []),
+        [("text", shared, (5, 62, 120, 92)), ("code", "var b = 2", (5, 47, 120, 75))],
+        [
+            ("prose", [0], {"kind": "body", "text": "Then add:³"}),
+            ("example", [0, 1], {"kind": "code", "text": code}),
+        ],
+    )
+    if case != "edge":
+        with pytest.raises(ValueError, match="Overlapping ownership"):
+            run(tmp_path, draft, reply)
+        return
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(ws, saved)
+    assert [(b.kind, b.text) for b in chunk.blocks] == [
+        ("body", "Then add:3"),
+        ("code", "var a = 1\nvar b = 2"),
+    ]
+    assert [[(e.ref, e.charspan) for e in b.evidence] for b in chunk.blocks] == [
+        [("#/texts/0", (0, 10))],
+        [("#/texts/0", (11, 20)), ("#/texts/1", (0, 9))],
+    ]
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="listing-edge"
+    )
+    body, _ = source.blocks
+    assert [(b.kind, b.text) for b in source.blocks] == [
+        ("body", "Then add:3"),
+        ("code", "var a = 1\nvar b = 2"),
+    ]
+    assert any(
+        body.block_id in q.target_ids and "³" in q.reason for q in source.uncertainties
+    )
+
+
+def test_bodies_split_from_one_item_keep_drawn_order(tmp_path, draft):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    # Only the middle proposal is found verbatim; the others differ by quote form.
+    rows = ["It's red.", "Blue too.", "It's green."]
+    draft, reply = drawn_reply(
+        draft,
+        [(80, rows[0]), (65, rows[1]), (50, rows[2])],
+        [("text", " ".join(rows), (5, 47, 120, 92))],
+        [
+            ("first", [0], {"kind": "body", "text": "It’s red."}),
+            ("second", [0], {"kind": "body", "text": rows[1]}),
+            ("third", [0], {"kind": "body", "text": "It’s green."}),
+        ],
+    )
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply)
+    chunk = load_pdf_correction(ws, saved)
+    assert [(b.block_id, b.evidence[0].charspan) for b in chunk.blocks] == [
+        ("first", (0, 9)),
+        ("second", (10, 19)),
+        ("third", (20, 31)),
+    ]
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="split-bodies"
+    )
+    # The drawn quote form is kept, as for any one shared item.
+    assert [b.text for b in source.blocks] == rows
+
+
+def test_shared_item_rows_keep_drawn_order_across_the_listing_items(tmp_path, draft):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    # Reading order puts the note before the shared item; the drawing does not.
+    draft, reply = drawn_reply(
+        draft,
+        [
+            (80, "run a"),
+            (65, "run b"),
+            (50, b"/Other 9 Tf (Then run:) Tj"),
+            (35, b"/Other 9 Tf (Read on.) Tj"),
+        ],
+        [
+            ("code", "run a", (5, 77, 120, 90)),
+            ("text", "Then run:", (5, 47, 120, 60)),
+            ("code", "run b Read on.", (5, 32, 120, 75)),
+        ],
+        [
+            ("listing", [0, 2], {"kind": "code", "text": "run a\nrun b"}),
+            ("note", [1, 2], {"kind": "body", "text": "Then run: Read on."}),
+        ],
+    )
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="drawn-order"
+    )
+    assert [(b.kind, b.text) for b in source.blocks] == [
+        ("code", "run a\nrun b"),
+        ("body", "Then run: Read on."),
+    ]
+
+
+def claim_on_another_page(draft, reply):
+    """One more owned page whose claimed item lies where page 1's rows are drawn."""
+    ws, _, model = draft
+    raw = json.loads((ws / model.raw.artifact).read_bytes())
+    ref = f"#/texts/{len(raw['texts'])}"
+    box = {"l": 5, "b": 5, "r": 195, "t": 95, "coord_origin": "BOTTOMLEFT"}
+    raw["texts"].append(
+        {
+            "self_ref": ref,
+            "label": "text",
+            "text": "Elsewhere.",
+            "prov": [{"page_no": 3, "charspan": [0, 10], "bbox": box}],
+        }
+    )
+    raw["body"]["children"].append({"$ref": ref})
+    draft = rewrite_raw(draft, raw)
+    reply["draft_sha256"] = draft[1]
+    reply["owned_pages"] = [1, 3]
+    reply["blocks"].append(
+        {
+            "kind": "body",
+            "block_id": "elsewhere",
+            "text": "Elsewhere.",
+            "evidence": [evidence(3, ref)],
+        }
+    )
+    return draft, reply
+
+
+def test_caption_listing_ignores_an_item_owned_on_another_page(tmp_path, draft):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    draft, reply = drawn_reply(
+        draft,
+        [(80, "Meters"), (60, "do a sum"), (44, "return n")],
+        [
+            ("code", "do a sum", (5, 58, 195, 70)),
+            ("code", "Meters return n", (5, 5, 195, 95)),
+        ],
+        [
+            ("example", [0, 1], {"kind": "code", "text": "do a sum\n\nreturn n"}),
+            ("cap", [1], {"kind": "caption", "target_id": "example", "text": "Meters"}),
+        ],
+    )
+    draft, reply = claim_on_another_page(draft, reply)
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply, owned_pages=[1, 3], reference_pages=[])
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="listing-other-page"
+    )
+    assert [(b.kind, b.text) for b in source.blocks] == [
+        ("caption", "Meters"),
+        ("code", "do a sum\nreturn n"),
+        ("body", "Elsewhere."),
+    ]
+    chunk = load_pdf_correction(ws, saved)
+    assert [[(e.ref, e.charspan) for e in b.evidence] for b in chunk.blocks] == [
+        [("#/texts/1", (0, 6))],
+        [("#/texts/0", (0, 8)), ("#/texts/1", (7, 15))],
+        [("#/texts/2", None)],
+    ]
+
+
+@pytest.mark.parametrize("case", ["other page claim", "turned row"])
+def test_shared_item_roles_read_only_the_visible_rows_of_their_page(
+    tmp_path, draft, case
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    rows = ["It's red.", "Blue too.", "It's green."]
+    drawn = [(80, rows[0]), (65, rows[1]), (50, rows[2])]
+    if case == "turned row":
+        # Painted, but not on a horizontal line.
+        drawn[1] = (65, b"0.996 0.087 -0.087 0.996 8 65 Tm (Blue too.) Tj")
+    draft, reply = drawn_reply(
+        draft,
+        drawn,
+        [("text", " ".join(rows), (5, 47, 120, 92))],
+        [
+            ("first", [0], {"kind": "body", "text": "It’s red."}),
+            ("second", [0], {"kind": "body", "text": rows[1]}),
+            ("third", [0], {"kind": "body", "text": "It’s green."}),
+        ],
+    )
+    if case == "turned row":
+        with pytest.raises(ValueError, match="Overlapping ownership"):
+            run(tmp_path, draft, reply)
+        return
+    draft, reply = claim_on_another_page(draft, reply)
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply, owned_pages=[1, 3], reference_pages=[])
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="roles-other-page"
+    )
+    assert [b.text for b in source.blocks] == [*rows, "Elsewhere."]
+    chunk = load_pdf_correction(ws, saved)
+    assert [[(e.ref, e.charspan) for e in b.evidence] for b in chunk.blocks] == [
+        [("#/texts/0", (0, 9))],
+        [("#/texts/0", (10, 19))],
+        [("#/texts/0", (20, 31))],
+        [("#/texts/1", None)],
+    ]
+
+
+def test_repeated_listing_row_is_read_from_the_item_drawn_under_it(tmp_path, draft):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    draft, reply = drawn_reply(
+        draft,
+        [
+            (80, "run a"),
+            (65, "run a"),
+            (50, b"/Other 9 Tf (Then run:) Tj"),
+            (35, b"/Other 9 Tf (Read on.) Tj"),
+        ],
+        [
+            ("code", "run a", (5, 77, 120, 90)),
+            ("text", "Then run:", (5, 47, 120, 60)),
+            ("code", "run a Read on.", (5, 32, 120, 75)),
+        ],
+        [
+            ("listing", [0, 2], {"kind": "code", "text": "run a\nrun a"}),
+            ("note", [1, 2], {"kind": "body", "text": "Then run: Read on."}),
+        ],
+    )
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="repeated-row"
+    )
+    assert [(b.kind, b.text) for b in source.blocks] == [
+        ("code", "run a\nrun a"),
+        ("body", "Then run: Read on."),
+    ]
+    chunk = load_pdf_correction(ws, saved)
+    assert [[(e.ref, e.charspan) for e in b.evidence] for b in chunk.blocks] == [
+        [("#/texts/0", (0, 5)), ("#/texts/2", (0, 5))],
+        [("#/texts/1", None), ("#/texts/2", (6, 14))],
+    ]
+
+
+def test_code_rows_of_one_shared_item_ignore_blank_proposed_lines(tmp_path, draft):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    draft, reply = drawn_reply(
+        draft,
+        [(80, "run a"), (65, "run b"), (50, b"/Other 9 Tf (Then stop.) Tj")],
+        [("code", "run a run b Then stop.", (5, 47, 120, 92))],
+        [
+            ("listing", [0], {"kind": "code", "text": "run a\n\nrun b"}),
+            ("note", [0], {"kind": "body", "text": "Then stop."}),
+        ],
+    )
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="blank-proposed"
+    )
+    assert [(b.kind, b.text) for b in source.blocks] == [
+        ("code", "run a\nrun b"),
+        ("body", "Then stop."),
+    ]
+    chunk = load_pdf_correction(ws, saved)
+    assert [[(e.ref, e.charspan) for e in b.evidence] for b in chunk.blocks] == [
+        [("#/texts/0", (0, 11))],
+        [("#/texts/0", (12, 22))],
+    ]
+
+
+def test_listing_edge_keeps_the_earlier_item_its_text_continues_from(tmp_path, draft):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    draft, reply = drawn_reply(
+        draft,
+        [
+            (94, "We start."),
+            (80, "Then add:"),
+            (84, "3", 58),
+            (65, "var a = 1"),
+            (50, "var b = 2"),
+        ],
+        [
+            ("text", "We start.", (5, 93, 120, 100)),
+            ("text", "Then add:3 var a = 1", (5, 62, 120, 92)),
+            ("code", "var b = 2", (5, 47, 120, 75)),
+        ],
+        [
+            ("prose", [0, 1], {"kind": "body", "text": "We start. Then add:³"}),
+            ("example", [1, 2], {"kind": "code", "text": "var a = 1\nvar b = 2"}),
+        ],
+    )
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="edge-earlier"
+    )
+    assert [(b.kind, b.text) for b in source.blocks] == [
+        ("body", "We start. Then add:3"),
+        ("code", "var a = 1\nvar b = 2"),
+    ]
+    chunk = load_pdf_correction(ws, saved)
+    assert [[(e.ref, e.charspan) for e in b.evidence] for b in chunk.blocks] == [
+        [("#/texts/0", None), ("#/texts/1", (0, 10))],
+        [("#/texts/1", (11, 20)), ("#/texts/2", (0, 9))],
+    ]
+
+
+def test_distinct_claims_in_one_item_keep_their_text_split(tmp_path, draft):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    draft, reply = drawn_reply(
+        draft,
+        [(80, "run a"), (65, b"/Other 9 Tf (Then run:) Tj"), (50, "run b")],
+        [("code", "run a Then run: run b", (5, 47, 120, 92))],
+        [
+            ("before", [0], {"kind": "code", "text": "run a"}),
+            ("note", [0], {"kind": "body", "text": "Then run:"}),
+            ("after", [0], {"kind": "code", "text": "run b"}),
+        ],
+    )
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="distinct-claims"
+    )
+    assert [(b.kind, b.text) for b in source.blocks] == [
+        ("code", "run a"),
+        ("body", "Then run:"),
+        ("code", "run b"),
+    ]
+    chunk = load_pdf_correction(ws, saved)
+    assert [[(e.ref, e.charspan) for e in b.evidence] for b in chunk.blocks] == [
+        [("#/texts/0", None)],
+        [("#/texts/0", None)],
+        [("#/texts/0", None)],
+    ]
+    # Each claim keeps the whole item as evidence; the first and last rows get QA.
+    assert [q.target_ids for q in chunk.uncertainties if q.origin == "processing"] == [
+        ["before"],
+        ["after"],
+    ]
+
+
+@pytest.mark.parametrize("case", ["edge", "continued", "text before"])
+def test_listing_edge_at_the_head_of_a_paragraph_item_below_it(tmp_path, draft, case):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    # The listing is drawn above; its last row opens the shared paragraph item.
+    shared = "So var b = 2 Read on." if case == "text before" else "var b = 2 Read on."
+    lines = [(80, "var a = 1"), (65, "var b = 2"), (50, "Read on.")]
+    nodes = [
+        ("code", "var a = 1", (5, 62, 120, 92)),
+        ("text", shared, (5, 47, 120, 75)),
+    ]
+    prose = {"kind": "body", "text": "Read on."}
+    if case == "text before":
+        lines.append((35, "So"))
+    if case == "continued":
+        lines.append((35, "And more."))
+        nodes.append(("text", "And more.", (5, 32, 120, 44)))
+        prose["text"] = "Read on. And more."
+    draft, reply = drawn_reply(
+        draft,
+        lines,
+        nodes,
+        [
+            ("example", [0, 1], {"kind": "code", "text": "var a = 1\nvar b = 2"}),
+            ("prose", [1, 2] if case == "continued" else [1], prose),
+        ],
+    )
+    if case == "text before":
+        with pytest.raises(ValueError, match="Overlapping ownership"):
+            run(tmp_path, draft, reply)
+        return
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="edge-head"
+    )
+    assert [(b.kind, b.text) for b in source.blocks] == [
+        ("code", "var a = 1\nvar b = 2"),
+        ("body", prose["text"]),
+    ]
+    chunk = load_pdf_correction(ws, saved)
+    assert [[(e.ref, e.charspan) for e in b.evidence] for b in chunk.blocks] == [
+        [("#/texts/0", (0, 9)), ("#/texts/1", (0, 9))],
+        [("#/texts/1", (10, 18))]
+        + ([("#/texts/2", None)] if case == "continued" else []),
+    ]

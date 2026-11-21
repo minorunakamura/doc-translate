@@ -31,7 +31,7 @@ from doc_translate.progress import Observer, emit, scoped_observer
 from doc_translate.snapshot import Contract, Nonempty, Sha256
 from doc_translate.workspace import workspace_lock
 
-ADOPTION_RULE = "drawn-punctuation-v13"
+ADOPTION_RULE = "drawn-caption-listing-v14"
 _RULE_VERSIONS = {
     "owned-text-v1": 2,
     "owned-ranges-v2": 3,
@@ -45,7 +45,8 @@ _RULE_VERSIONS = {
     "printed-roles-v10": 11,
     "reciprocal-code-v11": 12,
     "drawn-code-v12": 13,
-    ADOPTION_RULE: 14,
+    "drawn-punctuation-v13": 14,
+    ADOPTION_RULE: 15,
 }
 
 
@@ -238,7 +239,7 @@ class CorrectionAnswer(Contract):
 
 
 class PDFCorrectionChunk(Contract):
-    schema_version: Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14] = 1
+    schema_version: Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] = 1
     draft_sha256: Sha256
     owned_pages: list[PositiveInt]
     reference_pages: list[PositiveInt]

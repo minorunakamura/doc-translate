@@ -1111,6 +1111,788 @@ def _drawn_listing(item, nodes, valid, page, read_original, read_image):
     return "".join(display), locations, differences
 
 
+def _caption_listing_parts(
+    caption, code, selectors, raw, items, answer, page, read_original, read_image
+):
+    """Place the caption and *all* listing refs against one complete painted band."""
+    if caption.target_id != code.block_id or len(caption.evidence) != 1:
+        return None
+    note = caption.evidence[0]
+    refs = {e.ref for e in code.evidence}
+    if (
+        len(refs) < 2
+        or len(refs) != len(code.evidence)
+        or note.ref not in refs
+        or any(
+            e.page != page.page or e.cell_index is not None or e.ref is None
+            for e in [note, *code.evidence]
+        )
+        or any(
+            len(selectors[page.page, ref]) != (2 if ref == note.ref else 1)
+            for ref in refs
+        )
+        or any(
+            e.page == page.page and e.ref in {*refs, None}
+            for ex in answer.exclusions
+            for e in ex.evidence
+        )
+        or any(
+            not isinstance(b, PictureBlock)
+            and any(e.page == page.page and e.ref is None for e in b.evidence)
+            for b in answer.blocks
+        )
+    ):
+        return None
+    parts = {}
+    for order, (ref, node, container) in enumerate(_reading_order(raw, nested=True)):
+        if ref not in refs:
+            continue
+        if (
+            container
+            or node.get("label") != "code"
+            or node.get("content_layer", "body") != "body"
+            or len(node["prov"]) != 1
+        ):
+            return None
+        (prov,) = node["prov"]
+        span = prov.get("charspan")
+        if (
+            prov["page_no"] != page.page
+            or not isinstance(node.get("text"), str)
+            or not _valid_span(span, node["text"])
+        ):
+            return None
+        parts[ref] = _Portion(order, node, prov, *span)
+    if parts.keys() != refs or max(p.order for p in parts.values()) - min(
+        p.order for p in parts.values()
+    ) + 1 != len(parts):
+        return None
+    shared = parts[note.ref]
+    end = shared.start + len(caption.text)
+    if (
+        not caption.text
+        or not shared.text.startswith(caption.text)
+        or shared.text.find(caption.text, 1) != -1
+        or note.charspan not in (None, (shared.start, end))
+    ):
+        return None
+    try:
+        boxes = {r: _page_box(p.prov, page) for r, p in parts.items()}
+        left, bottom, right, top = (
+            min(b[0] for b in boxes.values()),
+            min(b[1] for b in boxes.values()),
+            max(b[2] for b in boxes.values()),
+            max(b[3] for b in boxes.values()),
+        )
+        if any(
+            not (0 <= l < r <= page.width_points and 0 <= b < t <= page.height_points)
+            for l, b, r, t in boxes.values()
+        ):
+            return None
+        if any(
+            l < right and left < r and b < top and bottom < t
+            for ref, node in items.items()
+            if ref not in refs
+            for prov in node["prov"]
+            if prov["page_no"] == page.page
+            for l, b, r, t in [_page_box(prov, page)]
+        ):
+            return None
+    except ValueError:
+        return None
+    if any(
+        isinstance(fig, PictureBlock)
+        and fig.region.page == page.page
+        and (
+            any(
+                not _outside_region(p, {page.page: page}, fig.region)
+                for p in parts.values()
+            )
+            or any(
+                m.target_id in (caption.block_id, code.block_id)
+                or (m.ref and m.ref.ref in refs)
+                for m in fig.members
+            )
+        )
+        for fig in answer.blocks
+    ):
+        return None
+    image = _page_ink(page, read_image)
+    if image is None:
+        return None
+
+    def inspect(tp, local, bounds):
+        glyphs = []
+        rows = _line_origins(tp, local, bounds, printed_lines=True, glyphs=glyphs)
+        if not rows or not _visible_glyphs(tp, bounds, glyphs, page, image):
+            return None
+        painted = iter(glyphs)
+        result = []
+        overlap = None
+        for index, row in enumerate(rows):
+            ink = [next(painted)[2] for c in row[0] if not c.isspace()]
+            if not ink:
+                return None
+            if index:
+                # PDFium can collapse a pair of printed spaces into one extracted SPACE.
+                if " " in row[0] and not all(
+                    isclose(d, row[3][0], abs_tol=0.02) for d in row[3]
+                ):
+                    return None
+                left, right = min(g[0] for g in ink), max(g[2] for g in ink)
+                overlap = (
+                    (left, right)
+                    if overlap is None
+                    else (max(left, overlap[0]), min(right, overlap[1]))
+                )
+                if overlap[0] >= overlap[1]:
+                    return None
+            centers = [((l + r) / 2, (b + t) / 2) for l, b, r, t in ink]
+            result.append(
+                (
+                    row,
+                    {
+                        ref
+                        for ref, (l, b, r, t) in boxes.items()
+                        if all(l <= x <= r and b <= y <= t for x, y in centers)
+                    },
+                )
+            )
+        return result
+
+    band = {"l": left, "r": right, "t": top, "b": bottom, "coord_origin": "BOTTOMLEFT"}
+    result = _local_text(
+        [{"bbox": band}], page, read_original, inspect, strict_pdf=True
+    )
+    if not result:
+        return None
+    (rows,) = result
+    proposed = [
+        line.lstrip(" \t") for line in code.text.splitlines() if line.strip(" \t")
+    ]
+    if (
+        rows[0][0][0] != caption.text
+        or note.ref not in rows[0][1]
+        or [row[0].lstrip(" ") for row, _ in rows[1:]] != proposed
+        or any(a[0][2] <= b[0][2] for a, b in itertools.pairwise(rows))
+        or caption.text in proposed
+    ):
+        return None
+    cap = _Portion(shared.order, shared.node, shared.prov, shared.start, end)
+    # Remove one role boundary, not indentation or blank lines belonging to the code.
+    boundary = re.match(r" *\r?\n| ", shared.node["text"][end : shared.end])
+    shared.start = end + (boundary.end() if boundary else 0)
+    cursors = {r: p.start for r, p in parts.items()}
+    by_ref = defaultdict(list)
+    extracted = []
+    for row, candidates in rows[1:]:
+        line = row[0].lstrip(" ")
+        matches = [
+            (r, m)
+            for r in candidates
+            if (
+                m := re.match(
+                    r"([ \t\r\n]*)" + re.escape(line),
+                    parts[r].node["text"][cursors[r] : parts[r].end],
+                )
+            )
+        ]
+        if len(matches) != 1:
+            return None
+        r, m = matches[0]
+        if r in by_ref and r != next(reversed(by_ref)):
+            return None
+        previous = next(reversed(by_ref), None)
+        by_ref[r].append(row)
+        gap = m[1]
+        if previous is not None and r != previous:
+            tail = parts[previous].node["text"][cursors[previous] : parts[previous].end]
+            if tail.strip(" \t\r\n"):
+                return None
+            cursors[previous] = parts[previous].end
+            if tail:
+                gap = tail + ("" if re.search(r"[\r\n]", tail + gap) else "\n") + gap
+        loc = (
+            parts[r]
+            .evidence()
+            .model_copy(
+                update={
+                    "charspan": (cursors[r] + len(m[1]), cursors[r] + m.end()),
+                    "position": f"line origin ({row[1]:.3f}, {row[2]:.3f}) pt, bottom-left",
+                }
+            )
+        )
+        cursors[r] += m.end()
+        if extracted and "\n" not in gap and "\r" not in gap:
+            gap = "\n" + gap
+        extracted.append((gap + line, loc))
+    if (
+        by_ref.keys() != refs
+        or next(reversed(by_ref)) != note.ref
+        or any(cursors[r] != p.end for r, p in parts.items())
+        or any(
+            e.charspan not in (None, (parts[e.ref].start, parts[e.ref].end))
+            for e in code.evidence
+        )
+    ):
+        return None
+    return cap, [(parts[r], rows) for r, rows in by_ref.items()], extracted
+
+
+# Only the glyph form of a quotation mark; every other character must match literally.
+_QUOTE_FORMS = str.maketrans("\u201c\u201d\u2018\u2019", "\"\"''")
+
+
+def _quote_pattern(text):
+    return "".join(
+        '["\u201c\u201d]'
+        if c == '"'
+        else "['\u2018\u2019]"
+        if c == "'"
+        else re.escape(c)
+        for c in text.translate(_QUOTE_FORMS)
+    )
+
+
+def _same_text(a, b):
+    return " ".join(a.translate(_QUOTE_FORMS).split()) == " ".join(
+        b.translate(_QUOTE_FORMS).split()
+    )
+
+
+def _drawn_rows(tp, local, bounds, page, image):
+    """Visible native rows in the band, each with its font set and glyph centers."""
+    import pypdfium2.raw as native
+
+    fonts = []
+    rows = _line_origins(tp, local, bounds, printed_lines=True, row_fonts=fonts)
+    if not rows:
+        return None
+    glyphs = []
+    for n in range(tp.count_chars()):
+        c = chr(native.FPDFText_GetUnicode(tp, n))
+        if c.isspace():
+            continue
+        l, b, r, t = box = tp.get_charbox(n)
+        if (
+            bounds[0] <= (l + r) / 2 <= bounds[2]
+            and bounds[1] <= (b + t) / 2 <= bounds[3]
+        ):
+            obj = native.FPDFText_GetTextObject(tp, n)
+            if native.FPDFText_IsGenerated(tp, n) != 0 or not _paints_text(obj):
+                return None
+            glyphs.append((c, (n, obj, box)))
+    # Every painted glyph in the band is one of the rows' characters, in order.
+    if "".join(c for c, _ in glyphs) != "".join("".join(r[0] for r in rows).split()):
+        return None
+    if not _visible_glyphs(tp, bounds, [g for _, g in glyphs], page, image):
+        return None
+    painted = iter(glyphs)
+    result = []
+    for row, font in zip(rows, fonts, strict=True):
+        centers = [
+            ((l + r) / 2, (b + t) / 2)
+            for _, (_, _, (l, b, r, t)) in (
+                next(painted) for c in row[0] if not c.isspace()
+            )
+        ]
+        if not centers:
+            return None
+        result.append((row, font, centers))
+    return result
+
+
+def _role_evidence(blocks, page, selectors, answer, refs):
+    """Bare same-page evidence only, from refs no block outside the claimants cites."""
+    keys = {b.block_id for b in blocks}
+    for b in blocks:
+        cited = [e.ref for e in b.evidence]
+        if len(set(cited)) != len(cited) or any(
+            e.page != page.page
+            or e.ref is None
+            or e.charspan is not None
+            or e.cell_index is not None
+            for e in b.evidence
+        ):
+            return False
+        refs.extend(r for r in cited if r not in refs)
+    return not (
+        any({k for k, _ in selectors[page.page, r]} - keys for r in refs)
+        or any(
+            e.page == page.page and e.ref in {*refs, None}
+            for ex in answer.exclusions
+            for e in ex.evidence
+        )
+        or any(
+            not isinstance(b, PictureBlock)
+            and any(e.page == page.page and e.ref is None for e in b.evidence)
+            for b in answer.blocks
+        )
+    )
+
+
+def _role_nodes(raw, refs, page):
+    nodes = {}
+    for order, (ref, node, container) in enumerate(_reading_order(raw, nested=True)):
+        if ref not in refs:
+            continue
+        if (
+            container
+            or node.get("content_layer", "body") != "body"
+            or node.get("label") not in ("text", "paragraph", "code")
+            or len(node["prov"]) != 1
+        ):
+            return None
+        (prov,) = node["prov"]
+        span = prov.get("charspan")
+        if (
+            prov["page_no"] != page.page
+            or not isinstance(node.get("text"), str)
+            or not _valid_span(span, node["text"])
+        ):
+            return None
+        nodes[ref] = _Portion(order, node, prov, *span)
+    orders = sorted(p.order for p in nodes.values())
+    if nodes.keys() != set(refs) or orders[-1] - orders[0] + 1 != len(orders):
+        return None
+    return nodes
+
+
+def _role_band(boxes, page, items, answer, allowed):
+    """One band holding only the given refs' items, away from any figure."""
+    left, bottom, right, top = (
+        min(b[0] for b in boxes.values()),
+        min(b[1] for b in boxes.values()),
+        max(b[2] for b in boxes.values()),
+        max(b[3] for b in boxes.values()),
+    )
+    if any(
+        not (0 <= l < r <= page.width_points and 0 <= b < t <= page.height_points)
+        for l, b, r, t in boxes.values()
+    ):
+        return None
+    if any(
+        l < right and left < r and b < top and bottom < t
+        for ref, node in items.items()
+        if ref not in allowed
+        for prov in node["prov"]
+        if prov["page_no"] == page.page
+        for l, b, r, t in [_page_box(prov, page)]
+    ):
+        return None
+    sx, sy = page.scale_x, page.scale_y
+    if any(
+        isinstance(fig, PictureBlock)
+        and fig.region.page == page.page
+        and fig.region.left < right * sx
+        and left * sx < fig.region.right
+        and fig.region.top < (page.height_points - bottom) * sy
+        and (page.height_points - top) * sy < fig.region.bottom
+        for fig in answer.blocks
+    ):
+        return None
+    return {"l": left, "r": right, "t": top, "b": bottom, "coord_origin": "BOTTOMLEFT"}
+
+
+def _code_groups(run, nodes):
+    """Drawn code rows as per-ref portions in printed order, plus extraction lines."""
+    groups = []
+    extracted = []
+    for r, row, _, a, b, gap in run:
+        part = nodes[r]
+        groups.append((_Portion(part.order, part.node, part.prov, a, b), [row]))
+        loc = part.evidence().model_copy(
+            update={
+                "charspan": (a, b),
+                "position": f"line origin ({row[1]:.3f}, {row[2]:.3f}) pt, bottom-left",
+            }
+        )
+        separator = "".join(re.findall(r"\r\n|[\r\n]", gap)) or "\n"
+        extracted.append(
+            ((separator if extracted else "") + part.node["text"][a:b], loc)
+        )
+    return groups, extracted
+
+
+def _shared_item_roles(
+    part,
+    entries,
+    targets,
+    selectors,
+    raw,
+    items,
+    answer,
+    page,
+    read_original,
+    read_image,
+):
+    """Partition one jointly claimed item and its claimants' refs by drawn row and role.
+
+    Every drawn row maps to exactly one extraction span. Each claimant, in correction
+    order, takes one contiguous run of rows; text roles match their full proposal,
+    code rows match its proposed lines, and code/text boundaries change typeface.
+    """
+    position = {b.block_id: i for i, b in enumerate(answer.blocks)}
+    keys = [k for k, _ in entries]
+    if (
+        len(set(keys)) != len(keys)
+        or len(keys) < 2
+        or any(k not in position for k in keys)
+    ):
+        return None
+    keys.sort(key=position.__getitem__)
+    blocks = [targets[k] for k in keys]
+    kinds = [getattr(b, "kind", None) for b in blocks]
+    if not set(kinds) <= {"body", "caption", "code"}:
+        return None
+    if "caption" in kinds:
+        # A caption names the listing directly after it, or is that listing's only note.
+        if kinds != ["caption", "code"] or blocks[0].target_id not in (None, keys[1]):
+            return None
+    elif "code" in kinds and "body" not in kinds:
+        return None
+    refs = []
+    if not _role_evidence(blocks, page, selectors, answer, refs):
+        return None
+    nodes = _role_nodes(raw, refs, page)
+    if nodes is None or nodes[part.node["self_ref"]].order != part.order:
+        return None
+    try:
+        boxes = {r: _page_box(p.prov, page) for r, p in nodes.items()}
+        band = _role_band(boxes, page, items, answer, refs)
+    except ValueError:
+        return None
+    image = _page_ink(page, read_image)
+    if band is None or image is None:
+        return None
+    result = _local_text(
+        [{"bbox": band}],
+        page,
+        read_original,
+        lambda tp, local, bounds: _drawn_rows(tp, local, bounds, page, image),
+        strict_pdf=True,
+    )
+    if not result:
+        return None
+    (drawn,) = result
+    cursors = {r: p.start for r, p in nodes.items()}
+    rows = []
+    for row, font, centers in drawn:
+        line = row[0].lstrip(" ")
+        matches = [
+            (r, m)
+            for r, (l, b, rt, t) in boxes.items()
+            if all(l <= x <= rt and b <= y <= t for x, y in centers)
+            if (
+                m := re.match(
+                    r"([ \t\r\n]*)" + _quote_pattern(line),
+                    nodes[r].node["text"][cursors[r] : nodes[r].end],
+                )
+            )
+        ]
+        if len(matches) != 1:
+            return None
+        r, m = matches[0]
+        a = cursors[r] + len(m[1])
+        cursors[r] += m.end()
+        rows.append((r, row, font, a, cursors[r], m[1]))
+    if any(
+        p.node["text"][cursors[r] : p.end].strip() or cursors[r] == p.start
+        for r, p in nodes.items()
+    ):
+        return None
+
+    def fits(block, run):
+        cited = {e.ref for e in block.evidence}
+        if {row[0] for row in run} != cited:
+            return False
+        drawn_lines = [row[1][0] for row in run]
+        if block.kind != "code":
+            return _same_text(" ".join(drawn_lines), block.text)
+        proposed = [line for line in block.text.splitlines() if line.strip()]
+        if len(proposed) != len(run):
+            return False
+        if kinds[0] == "caption":
+            # Character corrections only: the proposal keeps each drawn row's spacing.
+            return all(
+                re.split(r"\S+", p.strip()) == re.split(r"\S+", d.strip())
+                for p, d in zip(proposed, drawn_lines, strict=True)
+            )
+        return all(_same_text(p, d) for p, d in zip(proposed, drawn_lines, strict=True))
+
+    def faces(run):
+        return set().union(*(row[2] for row in run))
+
+    solutions = []
+
+    def place(index, start, runs):
+        if len(solutions) > 1:
+            return
+        if index == len(blocks):
+            if start == len(rows):
+                solutions.append(runs)
+            return
+        for end in range(start + 1, len(rows) - (len(blocks) - index - 1) + 1):
+            run = rows[start:end]
+            if not fits(blocks[index], run):
+                continue
+            if (
+                runs
+                and (kinds[index] == "code") != (kinds[index - 1] == "code")
+                and faces(run) & faces(runs[-1])
+            ):
+                continue
+            place(index + 1, end, [*runs, run])
+
+    place(0, 0, [])
+    if len(solutions) != 1:
+        return None
+    shared = part.node["self_ref"]
+    spans = {}
+    listings = {}
+    ordered = []
+    for key, block, run in zip(keys, blocks, solutions[0], strict=True):
+        own = [row for row in run if row[0] == shared]
+        spans[key] = (own[0][3], own[-1][4])
+        if block.kind == "code":
+            listings[key] = _code_groups(run, nodes)
+            ordered.extend((p, key) for p, _ in listings[key][0])
+            continue
+        for r in dict.fromkeys(row[0] for row in run):
+            n = nodes[r]
+            a, b = spans[key] if r == shared else (n.start, n.end)
+            ordered.append((_Portion(n.order, n.node, n.prov, a, b), key))
+    return spans, listings, ordered
+
+
+def _shared_listing_edge(
+    part,
+    entries,
+    targets,
+    selectors,
+    raw,
+    items,
+    answer,
+    page,
+    read_original,
+    read_image,
+):
+    """A listing's rows drawn in its own refs' band include one edge of a shared item.
+
+    The code's exclusive refs are read as complete visible rows; the remaining rows
+    must be one contiguous run at the edge of the shared item that faces the listing.
+    The single text claimant keeps the rest of that item.
+    """
+    position = {b.block_id: i for i, b in enumerate(answer.blocks)}
+    keys = [k for k, _ in entries]
+    if len(set(keys)) != 2 or len(keys) != 2 or any(k not in position for k in keys):
+        return None
+    keys.sort(key=position.__getitem__)
+    blocks = [targets[k] for k in keys]
+    kinds = [getattr(b, "kind", "") for b in blocks]
+    if sorted(kinds) != ["body", "code"]:
+        return None
+    refs = []
+    if not _role_evidence(blocks, page, selectors, answer, refs):
+        return None
+    nodes = _role_nodes(raw, refs, page)
+    shared = part.node["self_ref"]
+    if nodes is None or nodes[shared].order != part.order:
+        return None
+    code = blocks[kinds.index("code")]
+    text = blocks[kinds.index("body")]
+    tail = kinds[0] == "body"
+    own = [e.ref for e in code.evidence if e.ref != shared]
+    others = [nodes[e.ref].order for e in text.evidence if e.ref != shared]
+    # The text runs into the shared item from the side away from the listing.
+    if (
+        not own
+        or any((o > part.order) if tail else (o < part.order) for o in others)
+        or any(
+            (nodes[r].order < part.order) if tail else (nodes[r].order > part.order)
+            for r in own
+        )
+    ):
+        return None
+    try:
+        boxes = {r: _page_box(nodes[r].prov, page) for r in own}
+        shared_box = _page_box(part.prov, page)
+        # The listing's own rows set the height; the shared item may be wider.
+        lower = min(b[1] for b in boxes.values())
+        upper = max(b[3] for b in boxes.values())
+        across = (shared_box[0], lower, shared_box[2], upper)
+        band = _role_band(
+            {**boxes, shared: across}, page, items, answer, [*own, shared]
+        )
+    except ValueError:
+        return None
+    image = _page_ink(page, read_image)
+    if band is None or image is None:
+        return None
+    result = _local_text(
+        [{"bbox": band}],
+        page,
+        read_original,
+        lambda tp, local, bounds: _drawn_rows(tp, local, bounds, page, image),
+        strict_pdf=True,
+    )
+    if not result:
+        return None
+    (drawn,) = result
+    cursors = {r: nodes[r].start for r in own}
+    rows: list[list[Any]] = []
+    edge = []
+    for row, font, centers in drawn:
+        line = row[0].lstrip(" ")
+        hits = [
+            (r, m)
+            for r, (l, b, rt, t) in boxes.items()
+            if all(l <= x <= rt and b <= y <= t for x, y in centers)
+            if (
+                m := re.match(
+                    r"([ \t\r\n]*)" + re.escape(line),
+                    nodes[r].node["text"][cursors[r] : nodes[r].end],
+                )
+            )
+        ]
+        l, b, rt, t = shared_box
+        if len(hits) > 1:
+            return None
+        if hits:
+            r, m = hits[0]
+            a = cursors[r] + len(m[1])
+            cursors[r] += m.end()
+            rows.append([r, row, font, a, cursors[r], m[1]])
+        elif all(l <= x <= rt and b <= y <= t for x, y in centers):
+            if edge and edge[-1] != len(rows) - 1:
+                return None
+            edge.append(len(rows))
+            rows.append([shared, row, font, None, None, ""])
+        else:
+            return None
+    if not edge or any(
+        nodes[r].node["text"][cursors[r] : nodes[r].end].strip()
+        or cursors[r] == nodes[r].start
+        for r in own
+    ):
+        return None
+    whole = part.node["text"]
+    pattern = r"[ \t\r\n]+".join(re.escape(rows[i][1][0].lstrip(" ")) for i in edge)
+    found = list(re.finditer(pattern, whole[part.start : part.end]))
+    if len(found) != 1:
+        return None
+    (m,) = found
+    a, b = part.start + m.start(), part.start + m.end()
+    if whole[b if tail else part.start : part.end if tail else a].strip():
+        return None
+    cursor = a
+    for i in edge:
+        n = re.match(
+            r"([ \t\r\n]*)" + re.escape(rows[i][1][0].lstrip(" ")), whole[cursor:b]
+        )
+        assert n
+        rows[i][3:] = [cursor + len(n[1]), cursor + n.end(), n[1]]
+        cursor += n.end()
+    proposed = [line for line in code.text.splitlines() if line.strip()]
+    drawn_lines = [row[1][0] for row in rows]
+    if len(proposed) != len(rows) or not all(
+        _same_text(p, d) for p, d in zip(proposed, drawn_lines, strict=True)
+    ):
+        return None
+    rest = whole[part.start : a] if tail else whole[b : part.end]
+    if not rest.strip():
+        return None
+    if tail:
+        text_span = (part.start, part.start + len(rest.rstrip()))
+    else:
+        text_span = (part.end - len(rest.lstrip()), part.end)
+    listing = _code_groups(rows, nodes)
+    prose = [
+        (
+            _Portion(
+                n.order,
+                n.node,
+                n.prov,
+                *(text_span if r == shared else (n.start, n.end)),
+            ),
+            text.block_id,
+        )
+        for r, n in sorted(nodes.items(), key=lambda kv: kv[1].order)
+        if r in {e.ref for e in text.evidence}
+    ]
+    code_parts = [(p, code.block_id) for p, _ in listing[0]]
+    return (
+        {text.block_id: text_span, code.block_id: (a, b)},
+        {code.block_id: listing},
+        prose + code_parts if tail else code_parts + prose,
+    )
+
+
+def _occurrences(phrase, text):
+    return len(re.findall(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", text))
+
+
+def _cell_repeats(parts, item, cells):
+    """Fragments also printed in the block's own table cells, each occurrence unchanged.
+
+    The proposal must repeat each whole fragment exactly as often as the cited cells
+    and the equal fragments together hold it. Equal occurrences place identical text.
+    """
+    for part in parts:
+        if tuple(part.prov["charspan"]) != (part.start, part.end) or _occurrences(
+            part.text, item.text
+        ) != sum(_occurrences(part.text, c) for c in cells) + sum(
+            p.text == part.text for p in parts
+        ):
+            return None
+    return [(p.start, p.end) for p in parts]
+
+
+def _fragment_places(parts, item, pages, read_original):
+    """Each separately extracted fragment at one ordered place in the proposal.
+
+    A list marker split from its item text is the block's marker. A fragment whose
+    extraction differs from its drawing is located by its drawn row only.
+    """
+    located = []
+    cursor = 0
+    for index, part in enumerate(parts):
+        text = part.text
+        marker = (
+            re.fullmatch(re.escape(item.marker) + r"\s+(\S.*)", text, re.DOTALL)
+            if index == 0 and isinstance(item, ListBlock) and item.marker
+            else None
+        )
+        if marker:
+            text = marker[1]
+
+        def literal(phrase):
+            return list(
+                re.finditer(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", item.text)
+            )
+
+        matches = literal(text)
+        if not matches and not marker:
+            drawn = _local_text(
+                [part.prov],
+                pages[part.rank[0]],
+                read_original,
+                lambda tp, local, bounds: _line_origins(
+                    tp, local, bounds, printed_lines=True
+                ),
+                strict_pdf=True,
+            )
+            if drawn and len(drawn[0]) == 1 and drawn[0][0][0] != text:
+                matches = literal(drawn[0][0][0])
+        if len(matches) != 1 or matches[0].start() < cursor:
+            return None
+        if marker and matches[0].start():
+            return None
+        located.append((part, text, matches[0]))
+        cursor = matches[0].end()
+    return located
+
+
 def _printed_role_split(part, entries, targets, page, read_original):
     """Bind a complete edge note and its listing to the same ordered painted rows."""
     codes = [(targets[k], e) for k, e in entries if isinstance(targets[k], CodeBlock)]
@@ -1784,6 +2566,9 @@ def adopt_owned_ranges(
 
     shared_captions = {}
     shared_rows = {}
+    caption_listings = {}
+    drawn_listings = {}
+    drawn_groups = []
 
     def issue(reason, keys, evidence):
         issues.append(
@@ -2005,6 +2790,65 @@ def adopt_owned_ranges(
                                 ]
                             }
                         )
+            if (
+                not split
+                and layout_version >= 15
+                and len(entries) == 2
+                and node.get("label") == "code"
+            ):
+                for cap_key, _ in entries:
+                    caption = targets[cap_key]
+                    if not isinstance(caption, TextBlock) or caption.kind != "caption":
+                        continue
+                    code = targets.get(caption.target_id)
+                    if (
+                        not isinstance(code, CodeBlock)
+                        or len(code.evidence) < 2
+                        or not any(k == code.block_id for k, _ in entries)
+                    ):
+                        continue
+                    found = _caption_listing_parts(
+                        caption,
+                        code,
+                        selectors,
+                        raw,
+                        items,
+                        answer,
+                        by_page[page],
+                        read_original,
+                        read_image,
+                    )
+                    if found is None:
+                        continue
+                    cap, groups, extracted = found
+                    code_key = code.block_id
+                    spans = {p.node["self_ref"]: (p.start, p.end) for p, _ in groups}
+                    split = {cap_key: (cap.start, cap.end), code_key: spans[ref]}
+                    caption_listings[code_key] = (cap_key, cap, groups, extracted)
+                    for p, rows in groups:
+                        shared_rows[p.rank] = rows
+                    for block, evidence in (
+                        (
+                            caption,
+                            [
+                                caption.evidence[0].model_copy(
+                                    update={"charspan": split[cap_key]}
+                                )
+                            ],
+                        ),
+                        (
+                            code,
+                            [
+                                next(e for e in code.evidence if e.ref == r).model_copy(
+                                    update={"charspan": span}
+                                )
+                                for r, span in spans.items()
+                            ],
+                        ),
+                    ):
+                        blocks[blocks.index(block)] = targets[block.block_id] = (
+                            block.model_copy(update={"evidence": evidence})
+                        )
             claims = []
             for key, e in entries:
                 if (
@@ -2060,6 +2904,62 @@ def adopt_owned_ranges(
                         ranks[key] = (page, order, a)
                 if start <= a < b <= end and (a, b, key) not in claims:
                     claims.append((a, b, key))
+            if (
+                layout_version >= 15
+                and not split
+                and not container
+                and any(c[0] < p[1] for p, c in itertools.pairwise(sorted(claims)))
+            ):
+                found = None
+                for rule in (_shared_item_roles, _shared_listing_edge):
+                    found = rule(
+                        _Portion(order, node, prov, start, end),
+                        entries,
+                        targets,
+                        selectors,
+                        raw,
+                        items,
+                        answer,
+                        by_page[page],
+                        read_original,
+                        read_image,
+                    )
+                    if found:
+                        break
+                if found:
+                    split, listings, ordered = found
+                    drawn_groups.append(ordered)
+                    claims = sorted((a, b, k) for k, (a, b) in split.items())
+                    for key, (a, b) in split.items():
+                        if ranks[key][:2] >= (page, order):
+                            ranks[key] = (page, order, a)
+                    for key, (groups, extracted) in listings.items():
+                        drawn_listings[key] = (groups, extracted)
+                        for p, rows in groups:
+                            shared_rows[p.rank] = rows
+                    for key in split:
+                        block = targets[key]
+                        bounds = defaultdict(list)
+                        for p, _ in listings.get(key, ([], None))[0]:
+                            bounds[p.node["self_ref"]] += [p.start, p.end]
+                        bounds[ref] = list(split[key])
+                        blocks[blocks.index(block)] = targets[key] = block.model_copy(
+                            update={
+                                "evidence": [
+                                    e.model_copy(
+                                        update={
+                                            "charspan": (
+                                                min(bounds[e.ref]),
+                                                max(bounds[e.ref]),
+                                            )
+                                        }
+                                    )
+                                    if e.ref in bounds
+                                    else e
+                                    for e in block.evidence
+                                ]
+                            }
+                        )
             cursor = start
             for a, b, key in sorted(claims) + [(end, end, None)]:
                 if a < cursor:
@@ -2070,6 +2970,43 @@ def adopt_owned_ranges(
                 if key is not None:
                     ranges.append((_Portion(order, node, prov, a, b), key))
                 cursor = b
+
+    for code_key, (cap_key, cap, groups, _) in caption_listings.items():
+        # Only permute this complete, contiguous group. All ordinary claims, including
+        # explicit spans and the double-ownership check, must have survived unchanged.
+        ordered = [(cap, cap_key), *((p, code_key) for p, _ in groups)]
+        indices = [i for i, (_, k) in enumerate(ranges) if k in (cap_key, code_key)]
+        if (
+            not indices
+            or indices != list(range(indices[0], indices[0] + len(ordered)))
+            or sorted(
+                (ranges[i][0].rank, ranges[i][0].end, ranges[i][1]) for i in indices
+            )
+            != sorted((p.rank, p.end, k) for p, k in ordered)
+        ):
+            raise ValueError("Cannot place evidenced caption and listing")
+        ranges[indices[0] : indices[-1] + 1] = ordered
+        ranks[cap_key] = (cap.rank[0], min(p.order for p, _ in ordered), -1)
+
+    def covered(owned):
+        return {
+            (p.node["self_ref"], i, key)
+            for p, key in owned
+            for i in range(p.start, p.end)
+            if not p.node["text"][i].isspace()
+        }
+
+    for ordered in drawn_groups:
+        # Reorder only the proven items, as drawn; every character keeps its owner.
+        orders = {p.order for p, _ in ordered}
+        indices = [i for i, (p, _) in enumerate(ranges) if p.order in orders]
+        if (
+            not indices
+            or indices != list(range(indices[0], indices[0] + len(indices)))
+            or covered(ranges[i] for i in indices) != covered(ordered)
+        ):
+            raise ValueError("Cannot place evidenced caption and listing")
+        ranges[indices[0] : indices[-1] + 1] = ordered
 
     if printed_ranges:
         _place_word_label_lists(ranges, blocks, ranks, by_page, containers)
@@ -2223,11 +3160,59 @@ def adopt_owned_ranges(
     for i, (_, owner) in enumerate(ranges):
         if owner is not None:
             indices[owner].append(i)
+    excluded_refs = {(e.page, e.ref) for x in answer.exclusions for e in x.evidence}
+
+    def omitted_items(key, positions):
+        """Unclaimed items between evidenced ranges, each at one place in the proposal."""
+        block = targets[key]
+        filled = [positions[0]]
+        for i, j in itertools.pairwise(positions):
+            middle = range(i + 1, j)
+            # Page, container and owner are checked by separated() and selectors.
+            if middle and any(
+                selectors[ranges[k][0].rank[0], ranges[k][0].node["self_ref"]]
+                or (ranges[k][0].rank[0], ranges[k][0].node["self_ref"])
+                in excluded_refs
+                for k in middle
+            ):
+                return None
+            if middle:
+                pattern = r"\s+".join(
+                    re.escape(token)
+                    for k in (i, *middle, j)
+                    for token in ranges[k][0].text.split()
+                )
+                if len(list(re.finditer(pattern, block.text))) != 1:
+                    return None
+            filled.extend([*middle, j])
+        return filled if len(filled) > len(positions) else None
+
     for key, positions in indices.items():
         parts = [ranges[i][0] for i in positions]
         if positions[-1] - positions[0] + 1 == len(positions) and not separated(
             parts, code=isinstance(targets[key], CodeBlock)
         ):
+            continue
+        filled = omitted_items(key, positions) if layout_version >= 15 else None
+        if filled and not separated(
+            [ranges[i][0] for i in filled], code=isinstance(targets[key], CodeBlock)
+        ):
+            block = targets[key]
+            evidence = list(block.evidence)
+            for i in sorted(set(filled) - set(positions)):
+                part = ranges[i][0]
+                ranges[i] = (part, key)
+                previous = ranges[i - 1][0].node["self_ref"]
+                at = max(n for n, e in enumerate(evidence) if e.ref == previous)
+                evidence.insert(at + 1, part.evidence())
+                issue(
+                    "Evidence omitted an intervening extraction item; included at its unique place in the correction",
+                    [key],
+                    [part.evidence()],
+                )
+            blocks[blocks.index(block)] = targets[key] = block.model_copy(
+                update={"evidence": evidence}
+            )
             continue
         block = targets[key]
         split_code = printed_lines and isinstance(block, CodeBlock)
@@ -2477,6 +3462,20 @@ def adopt_owned_ranges(
                 for reason, evidence in differences:
                     issue(reason, [key], evidence)
                 continue
+            if key in caption_listings or key in drawn_listings:
+                extracted = (
+                    caption_listings[key][3]
+                    if key in caption_listings
+                    else drawn_listings[key][1]
+                )
+                original = "".join(text for text, _ in extracted)
+                issue(
+                    f"Unverified listing formatting; proposed {item.text!r}, retained drawn boundaries and extraction {original!r}",
+                    [key],
+                    [loc for _, loc in extracted],
+                )
+                replacements[key] = item.model_copy(update={"text": original})
+                continue
             replacements[key] = item.model_copy(update={"text": original})
             issue(
                 f"Line boundary or indentation not corroborated; adopted extraction {original!r} rather than correction {item.text!r}",
@@ -2552,6 +3551,23 @@ def adopt_owned_ranges(
                 replacements[key] = punctuation
                 continue
         if any((e.page, e.ref) not in body_refs for e in item.evidence):
+            tables = [e for e in item.evidence if (e.ref or "").startswith("#/tables/")]
+            cells = [
+                cell.get("text", "")
+                for e in tables
+                for cell in items[e.ref].get("data", {}).get("table_cells", [])
+            ]
+            if layout_version >= 15 and any(
+                _occurrences(p.text, cell) for p in parts for cell in cells
+            ):
+                sole = all(
+                    {k for k, _ in selectors[e.page, e.ref]} == {key} for e in tables
+                )
+                if not sole or _cell_repeats(parts, item, cells) is None:
+                    raise ValueError(
+                        "Cannot isolate extraction range from other block evidence"
+                    )
+                continue
             if verify_layout:
                 # Anchor the complete extracted phrase, allowing a disputed
                 # decimal token, never a prefix of a longer number or word.
@@ -2582,6 +3598,25 @@ def adopt_owned_ranges(
                         )
                     continue
             elif original in item.text:
+                continue
+            located = (
+                _fragment_places(parts, item, by_page, read_original)
+                if layout_version >= 15 and printed_lines
+                else None
+            )
+            if located is not None:
+                text = item.text
+                for part, extracted, match in reversed(located):
+                    if match[0] == extracted:
+                        continue
+                    text = text[: match.start()] + extracted + text[match.end() :]
+                    issue(
+                        f"Adopted extraction {extracted!r} rather than correction {match[0]!r}",
+                        [key],
+                        [part.evidence()],
+                    )
+                if text != item.text:
+                    replacements[key] = item.model_copy(update={"text": text})
                 continue
             raise ValueError(
                 "Cannot isolate extraction range from other block evidence"

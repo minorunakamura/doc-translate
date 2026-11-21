@@ -15,16 +15,27 @@ def capture(workspace, digests, old_ids, *, bodies=False):
     starts = (61, 121, 211) if bodies else (71, 111, 116, 121, 181, 186)
     assert [c.owned_pages for c in chunks] == [list(range(n, n + 5)) for n in starts]
     assert all(c.schema_version == (14 if bodies else 13) for c in chunks)
+    return capture_output(
+        workspace,
+        digests,
+        old_ids,
+        chunks,
+        "body-connections" if bodies else "code-connections",
+        assets=bodies,
+    )
+
+
+def capture_output(workspace, digests, old_ids, chunks, snapshot_id, *, assets):
     source = assemble_pdf_source(
         workspace=workspace,
         chunk_sha256s=digests,
-        snapshot_id="body-connections" if bodies else "code-connections",
+        snapshot_id=snapshot_id,
     )
     save_source_snapshot(workspace, source)
     units = generate_translation_units(source)
     out = render_document(workspace)["artifacts"]
     english = workspace / out["english"]
-    if bodies:
+    if assets:
         # Retain actual referenced crops (not crops synthesized from the map).
         for path in re.findall(r'<img src="([^"]+)"', english.read_text()):
             assert re.fullmatch(r"assets/[a-f0-9]{64}\.png", path)

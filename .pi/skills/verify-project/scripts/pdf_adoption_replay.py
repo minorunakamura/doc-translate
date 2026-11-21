@@ -67,10 +67,13 @@ def wire(path, digest):
         else:
             images = payload.pop("images")
             ctx = payload["context"].copy()
-            assert ctx.pop("adoption_rule") == ADOPTION_RULE and ctx.pop("page_results")
-            assert {**payload, "context": ctx, "stage": "correction"} == record[
-                "request"
-            ]
+            assert ctx.pop("adoption_rule") == ADOPTION_RULE
+            if "page_results" not in record["request"]["context"]:
+                assert ctx.pop("page_results")
+            expected = record["request"]
+            assert json.dumps(
+                {**payload, "context": ctx, "stage": "correction"}, sort_keys=True
+            ) == json.dumps(expected, sort_keys=True)
             for image, old in zip(images, attempt["images"], strict=True):
                 data = base64.b64decode(image.pop("data"), validate=True)
                 assert sha(data) == old["sha256"] and len(data) == old["byte_size"]
@@ -603,10 +606,74 @@ def compare(workspace, digests, historical, gold):
     }
 
 
-def replay(output, *, listings=False, roles=False, connections=False, bodies=False):
+def replay_chunk(workspace, i, h, c, read, *, verify_record, wire_dir=None):
     from doc_translate.inference import GenerationConfig
     from doc_translate.pdf_correction import correct_pdf, load_pdf_correction
 
+    parent = workspace.parent
+    dh = c["draft_sha256"]
+    rel = f"drafts/pdf/{dh}.json"
+    if not (workspace / rel).exists():
+        draft_data = read(BOOK / rel, dh)
+        d = json.loads(draft_data)
+        for name, data in [(rel, draft_data)] + [
+            (a["artifact"], read(BOOK / a["artifact"], a["sha256"]))
+            for a in [
+                d["document"],
+                d["raw"],
+                *(p["image"] for p in d["pages"]),
+            ]
+        ]:
+            dest = workspace / name
+            assert dest.resolve().is_relative_to(workspace)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+    record_bytes = read(BOOK / c["run"]["artifact"], c["run"]["sha256"])
+    load_pdf_correction(
+        BOOK, h
+    )  # historical request/projection/pages, no workspace lock
+    record_path = (wire_dir or parent) / f"{i}.json"
+    with record_path.open("xb") as f:
+        f.write(record_bytes)
+    record = json.loads(record_bytes)
+    assert record["status"] == "validated"
+    command = [
+        sys.executable,
+        SCRIPT,
+        "wire",
+        str(record_path),
+        c["run"]["sha256"],
+    ]
+
+    marker = record_path.with_suffix(".sent")
+
+    def before_send(config, request, pf, marker=marker):
+        marker.touch(exist_ok=False)
+
+    digest = correct_pdf(
+        workspace=workspace,
+        draft_sha256=dh,
+        owned_pages=c["owned_pages"],
+        reference_pages=c["reference_pages"],
+        config=GenerationConfig.model_validate(record["config"]),
+        policy=record["request"]["policy"],
+        process_command=command,
+        before_send=before_send,
+    )
+    assert record_path.with_suffix(".sent").is_file()
+    if verify_record:
+        h = digest
+        stored = json.loads(checked(workspace / f"corrections/pdf/{h}.json", h))["run"]
+        new = json.loads(checked(workspace / stored["artifact"], stored["sha256"]))
+        (attempt,) = new["attempts"]
+        assert (
+            new["status"] == "validated"
+            and attempt["final"] == record["attempts"][-1]["final"]
+        )
+    return digest
+
+
+def replay(output, *, listings=False, roles=False, connections=False, bodies=False):
     assert output.absolute().parent.parent == ROOT / "work"
     output = new_directory(output, BOOK)
     inventory = {}
@@ -673,70 +740,16 @@ def replay(output, *, listings=False, roles=False, connections=False, bodies=Fal
             for i, h in enumerate(old_ids):
                 c = json.loads(read(BOOK / f"corrections/pdf/{h}.json", h))
                 assert c["owned_pages"] == scopes[i]
-                dh = c["draft_sha256"]
-                rel = f"drafts/pdf/{dh}.json"
-                if not (workspace / rel).exists():
-                    draft_data = read(BOOK / rel, dh)
-                    d = json.loads(draft_data)
-                    for name, data in [(rel, draft_data)] + [
-                        (a["artifact"], read(BOOK / a["artifact"], a["sha256"]))
-                        for a in [
-                            d["document"],
-                            d["raw"],
-                            *(p["image"] for p in d["pages"]),
-                        ]
-                    ]:
-                        dest = workspace / name
-                        assert dest.resolve().is_relative_to(workspace)
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        dest.write_bytes(data)
-                record_bytes = read(BOOK / c["run"]["artifact"], c["run"]["sha256"])
-                load_pdf_correction(
-                    BOOK, h
-                )  # historical request/projection/pages, no workspace lock
-                record_path = parent / f"{i}.json"
-                record_path.write_bytes(record_bytes)
-                record = json.loads(record_bytes)
-                assert record["status"] == "validated"
-                command = [
-                    sys.executable,
-                    SCRIPT,
-                    "wire",
-                    str(record_path),
-                    c["run"]["sha256"],
-                ]
-
-                marker = record_path.with_suffix(".sent")
-
-                def before_send(config, request, pf, marker=marker):
-                    marker.touch(exist_ok=False)
-
                 digests.append(
-                    correct_pdf(
-                        workspace=workspace,
-                        draft_sha256=dh,
-                        owned_pages=c["owned_pages"],
-                        reference_pages=c["reference_pages"],
-                        config=GenerationConfig.model_validate(record["config"]),
-                        policy=record["request"]["policy"],
-                        process_command=command,
-                        before_send=before_send,
+                    replay_chunk(
+                        workspace,
+                        i,
+                        h,
+                        c,
+                        read,
+                        verify_record=roles or connections or bodies,
                     )
                 )
-                assert record_path.with_suffix(".sent").is_file()
-                if roles or connections or bodies:
-                    h = digests[-1]
-                    stored = json.loads(
-                        checked(workspace / f"corrections/pdf/{h}.json", h)
-                    )["run"]
-                    new = json.loads(
-                        checked(workspace / stored["artifact"], stored["sha256"])
-                    )
-                    (attempt,) = new["attempts"]
-                    assert (
-                        new["status"] == "validated"
-                        and attempt["final"] == record["attempts"][-1]["final"]
-                    )
             # Gold never enters the wire, request, or workspace. Compare in a fresh process.
             if not (listings or roles or connections or bodies):
                 hashes = json.loads(read(FINAL / "hashes.json"))
