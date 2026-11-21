@@ -88,6 +88,7 @@ def assemble_pdf_source(
     linked_proposals = {}
     drawn_proposal_order = {}
     selector_evidence = {}
+    sidebars = {}
     for digest, chunk, answer in chunks:
         # Adoption preserves the validated local ID of a linked code proposal;
         # newly allocated/split fragments never inherit continuations.
@@ -114,6 +115,8 @@ def assemble_pdf_source(
         for block in chunk.blocks:
             key = ids[block.block_id]
             originals[key] = block
+            if chunk.schema_version >= 16 and getattr(block, "enclosure", None):
+                sidebars[key] = (digest, block.enclosure)
             proposal_evidence = body_selectors.get(block.block_id)
             selector_evidence[key] = (
                 proposal_evidence
@@ -305,6 +308,21 @@ def assemble_pdf_source(
             ):
                 forward[left].append(right)
                 backward[right].append(left)
+
+    def between_allowed(start, end):
+        between = order[order.index(start) + 1 : order.index(end)]
+        if all(originals[k].kind == "footnote" for k in between):
+            return True
+        # #109: whole drawn sidebars may also sit between the two fragments.
+        drawn = {sidebars[k] for k in between if k in sidebars}
+        return (
+            bool(drawn)
+            and start not in sidebars
+            and end not in sidebars
+            and all(originals[k].kind == "footnote" or k in sidebars for k in between)
+            and all(k in between for k, sidebar in sidebars.items() if sidebar in drawn)
+        )
+
     edges = {}
     for key, block in originals.items():
         for direction in ("incoming", "outgoing"):
@@ -384,10 +402,7 @@ def assemble_pdf_source(
                 and start_index < end_index
                 and max(item.page for item in originals[start].evidence)
                 <= min(item.page for item in originals[end].evidence)
-                and all(
-                    originals[item].kind == "footnote"
-                    for item in order[start_index + 1 : end_index]
-                )
+                and between_allowed(start, end)
             )
             if not valid:
                 problem(
@@ -395,6 +410,10 @@ def assemble_pdf_source(
                 )
                 continue
             edges[start] = (end, link.mode)
+    for start, (end, _mode) in edges.items():
+        # Sidebars follow the joined paragraph and its footnotes, in their own order.
+        i, j = order.index(start) + 1, order.index(end)
+        order[i:j] = sorted(order[i:j], key=lambda k: k in sidebars)
     aliases = {key: key for key in blocks}
     line_offsets = {}
     for start in order:

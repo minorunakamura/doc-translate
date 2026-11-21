@@ -14,6 +14,9 @@ from threading import Lock
 from typing import Any
 
 from doc_translate.pdf_correction import (
+    AcceptedHeading,
+    AcceptedList,
+    AcceptedText,
     CalloutBlock,
     CodeBlock,
     CorrectionEvidence,
@@ -3753,6 +3756,223 @@ def adopt_owned_ranges(
         ranks.setdefault(b.block_id, previous.get(page, (page, -1, 0)))
         previous[page] = ranks[b.block_id]
     result.sort(key=lambda b: ranks[b.block_id])
+    if layout_version >= 16:
+        result = _enclose_sidebars(
+            result, answer.owned_pages, items, by_page, read_original
+        )
     return answer.model_copy(
         update={"blocks": result, "uncertainties": issues, "exclusions": exclusions}
     )
+
+
+_FRAME_TOLERANCE = 1.0
+_SIDEBAR_LABELS = {"section_header", "title", "text", "paragraph", "list_item"}
+
+
+def _drawn_frames(data, pages, by_page):
+    """Bounds (BOTTOMLEFT) of connected filled drawings on each owned page.
+
+    Fills and rules join when they touch; horizontal rules of equal width also
+    join, so rules bracketing an unfilled band form one frame with it.
+    """
+    import pypdfium2 as pdfium
+    import pypdfium2.raw as native
+
+    def linked(a, b):
+        tol = _FRAME_TOLERANCE
+        if (
+            a[0] <= b[2] + tol
+            and b[0] <= a[2] + tol
+            and a[1] <= b[3] + tol
+            and b[1] <= a[3] + tol
+        ):
+            return True
+        return (
+            a[3] - a[1] <= 2 * tol
+            and b[3] - b[1] <= 2 * tol
+            and isclose(a[0], b[0], abs_tol=tol)
+            and isclose(a[2], b[2], abs_tol=tol)
+        )
+
+    frames = {}
+    with _pdfium_lock:
+        try:
+            with pdfium.PdfDocument(data) as pdf:
+                for number in pages:
+                    if number > len(pdf):
+                        continue
+                    page = pdf[number - 1]
+                    width, height = page.get_size()
+                    if (
+                        page.get_rotation()
+                        or page.get_bbox()[:2] != (0, 0)
+                        or not isclose(
+                            width, by_page[number].width_points, abs_tol=0.01
+                        )
+                        or not isclose(
+                            height, by_page[number].height_points, abs_tol=0.01
+                        )
+                    ):
+                        continue
+                    groups = []
+                    # Form XObject bounds are in form space, not page space.
+                    for obj in page.get_objects(
+                        filter=[native.FPDF_PAGEOBJ_PATH], max_depth=0
+                    ):
+                        fill, stroke = ctypes.c_int(), ctypes.c_int()
+                        if not (
+                            native.FPDFPath_GetDrawMode(obj.raw, fill, stroke)
+                            and fill.value
+                        ):
+                            continue
+                        group = [tuple(obj.get_bounds())]
+                        for other in [
+                            g for g in groups if any(linked(group[0], r) for r in g)
+                        ]:
+                            groups.remove(other)
+                            group += other
+                        groups.append(group)
+                    # Rules alone (e.g. running heads, separators) never make a frame.
+                    frames[number] = sorted(
+                        (
+                            (
+                                min(r[0] for r in g),
+                                min(r[1] for r in g),
+                                max(r[2] for r in g),
+                                max(r[3] for r in g),
+                            )
+                            for g in groups
+                            if any(r[3] - r[1] > 2 * _FRAME_TOLERANCE for r in g)
+                        ),
+                        key=lambda f: (-f[3], f[0]),
+                    )
+        except pdfium.PdfiumError:
+            return {}
+    return frames
+
+
+def _enclose_sidebars(blocks, owned, items, by_page, read_original):
+    """Mark heading/body/list blocks wholly inside one drawn frame as a sidebar.
+
+    The sidebar moves as a unit between the same page's blocks drawn above and
+    below it, only when that position is unique.
+    """
+    tol = _FRAME_TOLERANCE
+    boxes = defaultdict(list)
+    for ref, node in items.items():
+        if node.get("content_layer", "body") != "body":
+            continue
+        for prov in node["prov"]:
+            page = by_page.get(prov["page_no"])
+            if page is None or page.page not in owned:
+                continue
+            try:
+                boxes[page.page, ref].append(_page_box(prov, page))
+            except ValueError:
+                continue
+    frames = _drawn_frames(read_original(), owned, by_page)
+    enclosed = {}
+    for number, page_frames in frames.items():
+        for f in page_frames:
+
+            def overlaps(box, f=f):
+                return (
+                    box[0] < f[2] - tol
+                    and f[0] + tol < box[2]
+                    and box[1] < f[3] - tol
+                    and f[1] + tol < box[3]
+                )
+
+            def within(box, f=f):
+                return (
+                    f[0] - tol <= box[0]
+                    and box[2] <= f[2] + tol
+                    and f[1] - tol <= box[1]
+                    and box[3] <= f[3] + tol
+                )
+
+            refs = {
+                ref
+                for (page, ref), bs in boxes.items()
+                if page == number and any(overlaps(b) for b in bs)
+            }
+            if not refs or not all(
+                within(b) for ref in refs for b in boxes[number, ref]
+            ):
+                continue
+            node_labels = {ref: items[ref].get("label") for ref in refs}
+            if not all(
+                label in _SIDEBAR_LABELS
+                or (
+                    label == "picture"
+                    and not items[ref].get("children")
+                    and not items[ref].get("captions")
+                )
+                for ref, label in node_labels.items()
+            ):
+                continue
+            inside = [
+                b
+                for b in blocks
+                if any(e.page == number and e.ref in refs for e in b.evidence)
+            ]
+            # A drawn icon inside the frame neither joins nor blocks the sidebar.
+            members = [b for b in inside if not isinstance(b, PictureBlock)]
+            claimed = {e.ref for b in members for e in b.evidence}
+            if (
+                not members
+                or any(b.block_id in enclosed for b in members)
+                or not all(
+                    isinstance(b, (HeadingBlock, ListBlock))
+                    or (isinstance(b, TextBlock) and b.kind == "body")
+                    for b in members
+                )
+                or any(
+                    e.page != number or e.ref not in refs
+                    for b in members
+                    for e in b.evidence
+                )
+                or not {r for r, label in node_labels.items() if label != "picture"}
+                <= claimed
+            ):
+                continue
+            enclosure = len(set(enclosed.values())) + 1
+            enclosed.update((b.block_id, enclosure) for b in members)
+            ids = {b.block_id for b in members}
+            above, below, outside = [], [], []
+            for i, b in enumerate(blocks):
+                if (
+                    b.block_id in ids
+                    or b in inside
+                    or all(e.page != number for e in b.evidence)
+                ):
+                    continue
+                spots = [
+                    box
+                    for e in b.evidence
+                    if e.page == number
+                    for box in boxes.get((number, e.ref), [None])
+                ]
+                if None in spots:
+                    outside.append(i)
+                elif all(box[1] >= f[3] - tol for box in spots):
+                    above.append(i)
+                elif all(box[3] <= f[1] + tol for box in spots):
+                    below.append(i)
+                else:
+                    outside.append(i)
+            if outside or (above and below and max(above) > min(below)):
+                continue
+            if not above and not below:
+                continue
+            anchor = blocks[max(above)] if above else blocks[min(below)]
+            rest = [b for b in blocks if b.block_id not in ids]
+            at = rest.index(anchor) + (1 if above else 0)
+            blocks = rest[:at] + members + rest[at:]
+    accepted = {"body": AcceptedText, "heading": AcceptedHeading, "list": AcceptedList}
+    return [
+        accepted[b.kind](**b.model_dump(), enclosure=enclosed[b.block_id])
+        if b.block_id in enclosed
+        else b
+        for b in blocks
+    ]

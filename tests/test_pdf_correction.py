@@ -1513,7 +1513,7 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
             "printed-margin-v6": 7,
             "printed-separators-v7": 8,
             "printed-display-v8": 9,
-            "current": 15,
+            "current": 16,
         }[base]
     )
 
@@ -3800,6 +3800,11 @@ def test_printed_code_can_supply_boundary_or_indent_missing_from_extraction(
     "rule,version,signature",
     [
         (
+            "drawn-caption-listing-v14",
+            15,
+            "81372a05009558a8c6eb5cd9f08bbf2d178bdf2906a8d1cb1da1741ad184210a",
+        ),
+        (
             "owned-text-v1",
             2,
             "b976164cfa20c2d993cbf9c84f4920910f098417036ad685884bc4963b544a2e",
@@ -3891,7 +3896,7 @@ def test_named_orphan_recovers_historical_bytes_without_resending(
         # Both named saves can be loaded in one workspace without promotion.
         ref = ws / current.run.artifact
         ref.with_suffix(".unrelated").rename(ref)
-        assert load_pdf_correction(ws, new) == current and current.schema_version == 15
+        assert load_pdf_correction(ws, new) == current and current.schema_version == 16
         assert (
             load_pdf_correction(ws, digest) == chunk and path.read_bytes() == original
         )
@@ -4975,9 +4980,9 @@ def test_owned_body_punctuation_requires_the_local_drawing(tmp_path, draft, case
     visible = case == "supported"
     chunk = load_pdf_correction(ws, run(tmp_path, draft, reply, reference_pages=[]))
     (body,) = [b for b in chunk.blocks if b.kind == "body"]
-    assert chunk.schema_version == 15
+    assert chunk.schema_version == 16
     record = json.loads((ws / chunk.run.artifact).read_bytes())
-    assert record["request"]["context"]["adoption_rule"] == "drawn-caption-listing-v14"
+    assert record["request"]["context"]["adoption_rule"] == "drawn-enclosure-v15"
     assert any(
         q.reason == "Separate note on page" and q.target_ids == [body.block_id]
         for q in chunk.uncertainties
@@ -6117,3 +6122,253 @@ def test_listing_edge_at_the_head_of_a_paragraph_item_below_it(tmp_path, draft, 
         [("#/texts/1", (10, 18))]
         + ([("#/texts/2", None)] if case == "continued" else []),
     ]
+
+
+def sidebar_reply(draft, case):
+    """Two self-authored pages; a drawn sidebar sits between a split paragraph."""
+    workspace, _, model = draft
+    first = [("section_header", "Terms", (5, 45, 60, 55))] * (case == "ruled")
+    if case == "stacked":
+        first = [("section_header", "Terms", (5, 88, 60, 96))]
+    first.append(
+        (
+            "text",
+            "Words start",
+            (5, 10, 190, 40) if case in ("ruled", "stacked") else (5, 30, 190, 90),
+        )
+    )
+    if case == "stacked":
+        # Two separate fills, one under the other, between the heading and the body.
+        drawn = [b"5 65 190 20 re f", b"5 45 190 18 re f"]
+        boxed = [
+            ("text", "Box", (10, 70, 100, 80)),
+            ("text", "Inside box", (10, 50, 180, 58)),
+        ]
+        first[1:1] = boxed
+        second = [("text", "continue here.", (5, 70, 190, 90))]
+        sidebar_page = 1
+    elif case == "ruled":
+        # Rules bracket the heading; the icon cell and the body fill touch the lower rules.
+        drawn = [b"5 92 190 1 re f", b"5 61.5 190 1 re f", b"5 79.5 190 1 re f"]
+        drawn += [b"5 62.5 35 17 re f", b"40 62.5 155 17 re f"]
+        boxed = [
+            ("section_header", "Note", (60, 84, 140, 90)),
+            ("text", "Tip text", (45, 65, 190, 77)),
+        ]
+        first += boxed
+        second = [("text", "continue here.", (5, 70, 190, 90))]
+        sidebar_page = 1
+    else:
+        first.append(("footnote", "Note one.", (5, 5, 100, 15)))
+        # A title band and a body fill touching it, without any rule.
+        drawn = [b"20 85 160 10 re f", b"20 55 160 30 re f"]
+        inside = "code" if case == "code" else "text"
+        bottom = 50 if case == "crossing" else 58
+        boxed = [
+            ("section_header", "Box", (25, 86, 80, 94)),
+            (inside, "Inside box", (25, bottom, 175, 82)),
+        ]
+        second = [*boxed, ("text", "continue here.", (5, 10, 190, 50))]
+        if case == "plain between":
+            second.insert(2, ("text", "Aside.", (5, 51, 60, 54)))
+        if case == "partial":
+            second.insert(1, second.pop())
+            second.append(("text", "Side", (182, 60, 198, 80)))
+        sidebar_page = 2
+    pages = [first, second]
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+    ]
+    for i in range(2):
+        objects.append(
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Font << /F 5 0 R >> >> /Contents {6 + i} 0 R >>".encode()
+        )
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    for number, nodes in enumerate(pages, 1):
+        content = (
+            b"0.9 g " + b" ".join(drawn) + b" 0 g\n" if number == sidebar_page else b""
+        )
+        content += b"".join(
+            f"BT /F 6 Tf {box[0]} {box[1] + 1} Td ({text}) Tj ET\n".encode()
+            for _, text, box in nodes
+        )
+        objects.append(
+            f"<< /Length {len(content)} >>\nstream\n".encode() + content + b"endstream"
+        )
+    pdf = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, obj in enumerate(objects, 1):
+        offsets.append(len(pdf))
+        pdf.extend(f"{i} 0 obj\n".encode() + obj + b"\nendobj\n")
+    xref = len(pdf)
+    pdf.extend(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode())
+    pdf.extend(b"".join(f"{offset:010d} 00000 n \n".encode() for offset in offsets))
+    pdf.extend(
+        f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    )
+    model.document = model.document.model_copy(
+        update=artifact(workspace, "originals", "pdf", bytes(pdf))
+    )
+    texts = []
+    for number, nodes in enumerate(pages, 1):
+        for label, text, box in nodes:
+            texts.append(
+                {
+                    "self_ref": f"#/texts/{len(texts)}",
+                    "label": label,
+                    "level": 2,
+                    "text": text,
+                    "prov": [
+                        {
+                            "page_no": number,
+                            "charspan": [0, len(text)],
+                            "bbox": dict(zip("lbrt", box), coord_origin="BOTTOMLEFT"),
+                        }
+                    ],
+                }
+            )
+    draft = rewrite_raw(
+        draft,
+        {
+            "body": {"children": [{"$ref": t["self_ref"]} for t in texts]},
+            "texts": texts,
+        },
+    )
+    kinds = {
+        "section_header": "heading",
+        "text": "body",
+        "footnote": "footnote",
+        "code": "code",
+    }
+    reply = answer(draft[1])
+    reply["owned_pages"] = [1, 2]
+    placed = [
+        (n, label, text) for n, nodes in enumerate(pages, 1) for label, text, _ in nodes
+    ]
+    reply["blocks"] = [
+        {
+            "block_id": text,
+            "kind": kinds[label],
+            "text": text,
+            "evidence": [evidence(number, f"#/texts/{i}")],
+            **({"level": 2} if label == "section_header" else {}),
+        }
+        for i, (number, label, text) in enumerate(placed)
+    ]
+    blocks = {b["text"]: b for b in reply["blocks"]}
+    start, end = blocks["Words start"], blocks["continue here."]
+    start["outgoing"] = {"target": end["evidence"][0], "mode": "space"}
+    if case != "one-sided":
+        end["incoming"] = {"target": start["evidence"][0], "mode": "space"}
+    if case == "no partner":
+        start["outgoing"]["target"] = evidence(2, None)
+    return draft, reply
+
+
+@pytest.mark.parametrize(
+    "case,expected",
+    [
+        ("ruled", ["Note", "Tip text", "Terms", "Words start continue here."]),
+        ("stacked", ["Terms", "Box", "Inside box", "Words start continue here."]),
+        ("filled", ["Words start continue here.", "Note one.", "Box", "Inside box"]),
+        ("crossing", None),
+        ("code", None),
+        ("plain between", None),
+        ("partial", None),
+        ("one-sided", None),
+        ("no partner", None),
+    ],
+)
+def test_drawn_sidebar_between_split_paragraph_is_kept_whole_after_joining(
+    tmp_path, draft, case, expected
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    draft, reply = sidebar_reply(draft, case)
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply, owned_pages=[1, 2], reference_pages=[])
+    chunk = load_pdf_correction(ws, saved)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="sidebar"
+    )
+    texts = [b.text for b in source.blocks]
+    failed = [c for c in source.checks if c.name == "pdf_connection" and not c.passed]
+    enclosed = [b.text for b in chunk.blocks if getattr(b, "enclosure", None)]
+    assert enclosed == (
+        []
+        if case in ("crossing", "code")
+        else [t for t in ("Note", "Tip text", "Box", "Inside box") if t in texts]
+    )
+    if expected is not None:
+        assert texts == expected and not failed
+        assert chunk.schema_version == 16
+        return
+    assert "Words start" in texts and "continue here." in texts and failed
+
+
+def test_drawn_sidebar_record_is_bound_to_its_adoption_rule(tmp_path, draft):
+    draft, reply = sidebar_reply(draft, "ruled")
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply, owned_pages=[1, 2], reference_pages=[])
+    path = ws / f"corrections/pdf/{saved}.json"
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from pathlib import Path; from doc_translate.pdf_correction import load_pdf_correction; c=load_pdf_correction(Path(sys.argv[1]),sys.argv[2]); assert c.schema_version==16 and [b.enclosure for b in c.blocks[:2]]==[1,1]",
+            str(ws),
+            saved,
+        ],
+        check=True,
+    )
+    data = json.loads(path.read_bytes())
+
+    def load(chunk, record=None):
+        if record is not None:
+            chunk = {
+                **chunk,
+                "run": artifact(
+                    ws, "attempts/pdf-correction", "json", json.dumps(record).encode()
+                ),
+            }
+        digest = artifact(
+            ws,
+            "corrections/pdf",
+            "json",
+            json.dumps(chunk, ensure_ascii=False, separators=(",", ":")).encode(),
+        )["sha256"]
+        return load_pdf_correction(ws, digest)
+
+    # A sidebar identity that the drawing does not give is not accepted.
+    tampered = json.loads(json.dumps(data))
+    tampered["blocks"][2]["enclosure"] = 1
+    with pytest.raises(ValueError):
+        load(tampered)
+    # The previous rule re-reads strictly: no identity, extraction order kept.
+    record = json.loads((ws / data["run"]["artifact"]).read_bytes())
+    record["request"]["context"]["adoption_rule"] = "drawn-caption-listing-v14"
+    with pytest.raises(ValueError):
+        load({**data, "schema_version": 15}, record)
+    old = {**data, "schema_version": 15}
+    old["blocks"] = sorted(
+        [{k: v for k, v in b.items() if k != "enclosure"} for b in data["blocks"]],
+        key=lambda b: int(b["evidence"][0]["ref"].rsplit("/", 1)[1]),
+    )
+    assert [b.text for b in load(old, record).blocks][:4] == [
+        "Terms",
+        "Words start",
+        "Note",
+        "Tip text",
+    ]
+    # The answer contract never accepts a sidebar claim.
+    reply["blocks"][2]["enclosure"] = 1
+    with pytest.raises((ValueError, RuntimeError)):
+        run(
+            tmp_path,
+            draft,
+            reply,
+            owned_pages=[1, 2],
+            reference_pages=[],
+            policy="Claimed sidebar.",
+        )
