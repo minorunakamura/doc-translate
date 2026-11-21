@@ -1314,3 +1314,56 @@ test -s "$E/scoring/score.json" && test ! -s "$E/scoring/error.log"
 - 別の新規0700親で `export CHECK_BODY_SYMBOL=1` として#97節の「別の人工実操作」を実行する。既存の省略対照に加えて、原本に根拠のない記号挿入案を渡し、翻訳requestが抽出文字のまま、QAが両隣を指し、fresh resumeで追加送信0・旧immutableのhash/mtime不変であることを確認する。終了後 `unset CHECK_BODY_SYMBOL`。実AI・実認証・追加retry・全冊処理・修復はしない。
 
 各親にcommand/exit・revision/dirty・期待と実測・残差を残す。`isolated-*`／人工一時workspace・childの回収後、`inputs.json` の元資料のhash/mtime、`proof/hashes.json` の保存物・crop、および `scoring/score.json` とCLI結果を再読する。原資料や既存の検証親を削除せず、失敗や未確認を件数による成功に読み替えない。Rootは別の新規親で最終差分を独立に直接確認する。
+
+## 局所所有と全書籍の接続差分（#101）
+
+[第2版Planと継承した統合条件](../../../../docs/plans/pdf-initial-source-preservation-101-r2.md)専用。対象版は `drawn-caption-listing-v14`／schema 15。`local` と `all` は**別の新規0700親**で実行する。旧#98/#108/#99/#100の限定assertを現行版向けに変更しない。repository root、既存PDF環境、書籍は指定workspaceの原本・draft・画像・記録を読取専用。外部trial markerには読取りも含め触れず、実AI・実認証・retry・OCR・installをしない。
+
+```sh
+set -eu; umask 077
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+mode=local  # 全70件の場合は all。各回、この行以降を新規親で実行
+E=$(mktemp -d "$PWD/work/preservation-$mode-XXXXXXXX")
+git rev-parse HEAD >"$E/revision"; git status --short >"$E/dirty"; git diff >"$E/tested.diff"
+S=.pi/skills/verify-project/scripts/pdf_preservation_comparison.py
+printf '%s\n' "python $S $mode $E/proof" >"$E/command"
+python "$S" "$mode" "$E/proof" >"$E/stdout" 2>"$E/stderr" && rc=0 || rc=$?
+printf '%s\n' "$rc" >"$E/exit"
+test -s "$E/proof/inputs.json" && test -s "$E/proof/population-status.json"
+test -z "$(find "$E/proof" -maxdepth 1 -name 'isolated-*' -print)"
+test "$rc" = 0
+```
+
+`population-status.json` は固定surveyのinventoryとpopulation＋8つの対応表に対する旧chunk別の所有範囲／成功・失敗・未試行。成功欄の新digestは今回の閉じたpipeから新規採用したものだけ。保存回答は編集せず現行の送信内容と照合し、別processで公開load→assemble→実units・英語・QA・mapを取得する。失敗なら再送せず `phase.json`・private stderr・台帳・元資料指紋を確認。部分集合のrenderや接続比較は行わない。失敗／cleanup未成立は未達。製品修正を要すれば停止して再計画とし、成功と未試行を分けて報告する。
+
+`capture.json` は比較前の出力。`observations.json` の `local` で出典3範囲→caption対象・実unit・英語2行・境界の両側QA、81/83不読の位置と前後の英語を追う。紙面はseed-81の画像と照合。`all` の `connections` は母集団全体の旧sourceと新sourceで、fragmentの（元chunk・local ID）の順序対から列挙した追加・消失・相手変更。件数や固定組だけで採点しない。全変更対について両端の元位置と間のblock・役割、原画像、実unitまたは英語anchor、QAを別々に確認し、各判定をprivate根拠とともに記録する。列挙だけでは合格ではない。
+
+全件出力後にのみ、surveyの8対応表と兄弟 `root-final/hashes.json` 経由で固定23期待・欠落50項目・9対照・コード見本を照合する。上の#97／#98／#108／#99／#100節の観測項目を今回の `capture.json`（全chunk、全fragments、実出力・crop）へ適用し、固定schemaの旧コマンドは実行しない。115/116は4＋29非空行の全文・行内空白・各行−2桁、実outputの共通余白QA・各追加空行両側QAを位置別に比較。5コード系列・3本文接続と4記号・独立図、拒否2境界と21行の残差、190/211/321および346の全12セルまで、Plan表の各条件について未比較・不一致を残す。原画像と本出力が説明できない場合は合格にしない。書籍run／訳文作成はしない。人工CLIと互換再読は別親で#97/#100節・開発ガイドのsignal wrapperを使う。
+
+成功／失敗を問わず今回のTemporaryDirectoryと同期childだけを回収。`inputs.json` のhash/mtimeと、成功時 `hashes.json` の全private出力をcleanup後に再読する。各親にcommand／exit、対象版・観測／未達を保持し、詳細stderr・図・本文を端末やGitに出さない。Rootは別の新規親で原画像・実出力を独立照合する。
+
+### 第3版・第4版：全70件の各1回試行と56件の採用差分
+
+[第4版Plan](../../../../docs/plans/pdf-initial-source-preservation-101-r4.md)（第3版・第2版を継承）。上の `all` は全70件を**各1回**試行し、`adopt_owned_ranges` による採用拒否だけをchunk別の結果として `population-status.json` に `saved`／`rejected`／`not attempted` で残す。拒否の詳細は `proof/rejections/<所有開始ページ>.txt`（private）。他の例外は従来どおり即停止。拒否が1件でもあれば `rejected chunks` のassertで比較に進まず非0終了する（旧assertは緩めない）。保存できたchunkは `proof/chunks/<旧digest>.json` に新digestのbyteで残す。合格は exit 0・`saved` 70・`rejected` 0・`not attempted` 0。
+
+56件の採用差分は、第2版の製品（`work/issue101-r3-baseline-src-milqOIuf/src` の複製。private）で同じ `all` を**別の新規0700親**で実行し（14件拒否で非0終了するのは想定どおり）、その後に別の新規親で両方の `proof` を比べる。
+
+```sh
+# 第2版製品での再生（上の shell の python 行だけを次に置き換える）
+PYTHONPATH="$BASELINE_SRC" python "$S" all "$E/proof" >"$E/stdout" 2>"$E/stderr" && rc=0 || rc=$?
+# 採用差分（別の新規0700親 D、stdout/stderr は D 直下のprivateファイル）
+PROOFS="$BASELINE_PARENT/proof:$CURRENT_PARENT/proof" python "$S" adoption-diff "$D/proof" >"$D/stdout" 2>"$D/stderr"
+```
+
+`adoption-diff` は両方で `saved` のchunkだけを、各 `chunks/*.json` が記録した新digestと一致することを確かめてから、blocks・retained_blocks（block_id単位の追加・消失・変更・順序）、exclusions・uncertainties（内容単位の追加・消失）、その他の欄の差を chunk 別に `observations.json` の `chunks` と `changed` に列挙する。`run` はattemptのhashなので比べない。列挙は判定ではない。差があれば各差を原画像で判定する。
+
+### 第5版：既知の未解決2組（91→92、212→213）
+
+[第5版Plan](../../../../docs/plans/pdf-initial-source-preservation-101-r5.md)（第4版以前を継承、製品差分は第4版のまま）。`all` の `connections` で消失した次の2組だけは、73→74・61→62と同じ扱いの既知の未解決とし、成功に数えず、旧版との比較では別欄に記録する。
+
+| 組 | 失敗check | 別Issue |
+|---|---|---|
+| 91→92（本文） | Contradictory continuation。新方式は抽出の読順で囲みを段落の前半とp92の続きの間に置く | [#109](https://github.com/minorunakamura/doc-translate/issues/109) |
+| 212→213（コード） | Unresolved code continuation。不正charspanの最終行 `#/texts/3304` の省略、表 `#/tables/6` を出典とする `c213a` へ接続不能、`c212b` の1行への縮約、罫線断片の重複。HEADからある | [#110](https://github.com/minorunakamura/doc-translate/issues/110) |
+
+統合の期待として、各組で次をすべて確認する。①両端の断片が実unitsまたは英語出力に残る。②位置付きQAと上の失敗checkが残る。③残差を行・出典・位置ごとに別記する（91：囲みが原画像の位置＝見出しの上と異なり段落の間にある。212→213：`c212b` の1行への縮約、`#/texts/3304` の省略、p213の罫線が本文unitと `c213a` の両方にある）。原画像は91–92枚目・212–213枚目と照合する。満たさなければ統合未達。これ以外の追加・消失・相手変更で原画像と合わないものは従来どおり統合未達とし、この例外をほかの組や新たな消失に広げない。
