@@ -571,7 +571,7 @@ for block in chunk.blocks:
 
 ### 所有本文の採否とコードの接続（#97・#98・#108・#99・#100）
 
-`correct_pdf` は生回答をattemptへ保存し、それとは別に採用chunkを作ります。採用方式は `request.context.adoption_rule` に記録します。新規補正は `drawn-caption-listing-v14`（chunk schema 15）です。補正は、draftの読順・所有page・有効な文字範囲をblock／cellの出典と照合します。案が欠いた読める範囲を、見出し・本文・脚注・コード等の位置と役割に戻し、図内文字や参照ページを独立本文に足しません。chunkは所有部分を保存します。別itemとのページ間接続は後段の組立で判定し、表を再構築しません。
+`correct_pdf` は生回答をattemptへ保存し、それとは別に採用chunkを作ります。採用方式は `request.context.adoption_rule` に記録します。新規補正は `drawn-enclosure-v15`（chunk schema 16）です。補正は、draftの読順・所有page・有効な文字範囲をblock／cellの出典と照合します。案が欠いた読める範囲を、見出し・本文・脚注・コード等の位置と役割に戻し、図内文字や参照ページを独立本文に足しません。chunkは所有部分を保存します。別itemとのページ間接続は後段の組立で判定し、表を再構築しません。
 
 通常本文で案の差が局所的な語間SPACEだけなら、draftのSHA-256を検証した**その原本byte列**を、所有ページのprovenance bbox内だけで照合します。同一出現・同一行の実文字SPACE、または別描画間で通常の字送りを越え、周囲の字間の揺れでは説明できない余白だけを採用します。生成SPACEや描画の分割だけでは採用しません。一意の裏付けがない区切りや行末hyphen、数字などの読みの不一致は抽出文字を採り、両者の違いと位置を要確認に残します。不確かな所属は推測しません。hash不一致は照合失敗であり、文字層のないPDFと同じ扱いにしません。
 
@@ -607,12 +607,17 @@ schema 15では、題名とコード末尾が同じ抽出項目にあり、そ�
 - **分かれた断片**：リストのmarkerと本文に分かれた項目（markerがブロックのmarkerと一致し、提案の先頭にある場合）、索引等の分かれた断片（各断片の全文が提案に一度だけ紙面順に現れる、または抽出と異なる断片の描画行が一度だけ現れる場合）は、断片ごとに照合します。連結した文字列では照合しません。描画行で位置を決めた場合は抽出文字を採用してQAに残します。
 - **索引断片と同じブロックの表セル文字の重複**：表（`#/tables/*`）と一緒に出典に挙げた断片の全文が、そのブロックが出典に挙げる表のセル抽出文字にも現れる場合は、提案での出現数（単語境界つき、変更なしの文字）が、セル抽出文字での出現数と同じ全文の断片数の和に完全に一致し、その表を出典に挙げるのがこのブロックだけで、断片の出典範囲が断片の全文であるときだけ採用します。訂正・正規化での一致や、他ブロックとの表の共有は拒否します。セル文字は数えるためだけに読み、表の所有・出典は変えません。セル文字に現れない断片は上の規則のままです。
 
-schema 15でも、ページ間の接続は後段の組立の規則のままです。採用時にブロックを描画位置で並べ替えたり、不正なcharspanの文字を補ったり、表を出典とするコードへ接続したりはしません。次の既知の未解決では、接続されずに両断片と位置付きQA・失敗した `pdf_connection` checkが残ります。
+schema 15でも、ページ間の接続は後段の組立の規則のままです。採用時にブロックを描画位置で並べ替えたり、不正なcharspanの文字を補ったり、表を出典とするコードへ接続したりはしません。
 
-- 抽出の読順では囲みが段落の前半と次ページの続きの間に入り、紙面では囲みが見出しより上にある場合（Contradictory continuation。[#109](https://github.com/minorunakamura/doc-translate/issues/109)）。
+schema 16（`drawn-enclosure-v15`）では、原本に描かれた囲み（sidebar）を採用時に判定します。所有ページの原本PDF（draftのSHA-256で検証したbyte列）のページ直下の塗りのpathを読み、接する（許容1pt）塗り同士と、左右端が揃った高さ2pt以下の横罫線同士を1つの枠につなぎます。罫線だけの集まり（柱の罫線など）は枠にしません。枠に重なる抽出項目がすべて枠の内側に収まり（許容1pt）、見出し・本文・リストだけ（子もcaptionもない図のアイコンは可）で、そのすべてをこのchunkの見出し・本文・リストのブロックが出典に挙げ、それらのブロックが枠外の項目を出典に挙げない場合だけ、囲みとします。AIの回答・ページ番号・ref・固有の文字列・固定座標は判定に使いません。囲みのブロックには採用chunkだけの任意の `enclosure`（chunk内の番号）が付き、AIの回答（`CorrectionAnswer`）では拒否します。囲みは内部順を保ったまま、同じページで枠より上に描かれた枠外ブロックの後、下に描かれたものの前に移します。上下で一意に決まらない場合は並びを変えません。成立しなくてもchunkは拒否せず、囲みを付けない従来の採用になります。
+
+組立では、schema 16のchunkに限り、相互target等のContradictory continuationの条件のうち「間は脚注だけ」に例外を1つ加えます。前半と後半の間が、脚注と1つ以上の完結した囲み（囲みの全ブロックが間にあり、前半・後半は囲みに属さない）だけなら接続し、間の囲みは接続した段落（と間の脚注）の後に内部順で独立して置きます。表示（units・render）は囲みのない場合と同じで、新しいQAはありません。相手が一意でない、片側だけtarget、囲みでない本文・見出しが間にある、囲みの一部だけが間にある場合は従来どおり接続せず、両断片と位置付きQA・失敗した `pdf_connection` checkが残ります。schema 15以前の記録は旧規則で厳密に再読し、`enclosure` を持つ旧記録や描画が与えない `enclosure` を持つ記録は読めません。
+
+次の既知の未解決では、接続されずに両断片と位置付きQA・失敗した `pdf_connection` checkが残ります。抽出の読順で囲みが段落の前半と次ページの続きの間に入る場合（[#109](https://github.com/minorunakamura/doc-translate/issues/109)）は、上のschema 16で解決しました。
+
 - ページをまたぐコードで、最終行が不正なcharspanのため省かれ、続きが表を出典にしている場合（Unresolved code continuation。前半の1行への縮約や罫線断片の重複も残ります。schema 15以前からある問題。[#110](https://github.com/minorunakamura/doc-translate/issues/110)）。
 
-`load_pdf_correction`・成功再利用・未採用attempt回収も記録された方式で再構成します。方式なし（schema 1）は旧回答の採用、`owned-text-v1`（schema 2）と`owned-ranges-v2`（schema 3）、`owned-layout-v3`（schema 4）、`printed-lines-v4`（schema 5、印刷行）、`printed-ranges-v5`（schema 6、caption等の局所所有）、`printed-margin-v6`（schema 7、共通余白）、`printed-separators-v7`（schema 8、提案の共通余白を除く区切り照合）、`printed-display-v8`（schema 9、最終表示による照合）、`printed-ownership-v9`（schema 10）、`printed-roles-v10`（schema 11）、`reciprocal-code-v11`（schema 12）、`drawn-code-v12`（schema 13）、`drawn-punctuation-v13`（schema 14）はそれぞれ当時の採否をbyte単位で維持します。新方式へ移行・再送せず、方式値と実入力、再構成した保存内容を検証します。未知の方式のchunk、方式取り違え、再hashだけした不一致chunkは読めません。今回の要求・設定に該当する検証済み成功attemptの方式が未知なら、回収時にエラーとし、新規送信には進みません。
+`load_pdf_correction`・成功再利用・未採用attempt回収も記録された方式で再構成します。方式なし（schema 1）は旧回答の採用、`owned-text-v1`（schema 2）と`owned-ranges-v2`（schema 3）、`owned-layout-v3`（schema 4）、`printed-lines-v4`（schema 5、印刷行）、`printed-ranges-v5`（schema 6、caption等の局所所有）、`printed-margin-v6`（schema 7、共通余白）、`printed-separators-v7`（schema 8、提案の共通余白を除く区切り照合）、`printed-display-v8`（schema 9、最終表示による照合）、`printed-ownership-v9`（schema 10）、`printed-roles-v10`（schema 11）、`reciprocal-code-v11`（schema 12）、`drawn-code-v12`（schema 13）、`drawn-punctuation-v13`（schema 14）、`drawn-caption-listing-v14`（schema 15）はそれぞれ当時の採否をbyte単位で維持します。新方式へ移行・再送せず、方式値と実入力、再構成した保存内容を検証します。未知の方式のchunk、方式取り違え、再hashだけした不一致chunkは読めません。今回の要求・設定に該当する検証済み成功attemptの方式が未知なら、回収時にエラーとし、新規送信には進みません。
 
 ### 図の所属と採用結果
 

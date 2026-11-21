@@ -31,7 +31,7 @@ from doc_translate.progress import Observer, emit, scoped_observer
 from doc_translate.snapshot import Contract, Nonempty, Sha256
 from doc_translate.workspace import workspace_lock
 
-ADOPTION_RULE = "drawn-caption-listing-v14"
+ADOPTION_RULE = "drawn-enclosure-v15"
 _RULE_VERSIONS = {
     "owned-text-v1": 2,
     "owned-ranges-v2": 3,
@@ -46,7 +46,8 @@ _RULE_VERSIONS = {
     "reciprocal-code-v11": 12,
     "drawn-code-v12": 13,
     "drawn-punctuation-v13": 14,
-    ADOPTION_RULE: 15,
+    "drawn-caption-listing-v14": 15,
+    ADOPTION_RULE: 16,
 }
 
 
@@ -204,10 +205,26 @@ class AcceptedTable(TableBlock):
     retained_cells: list[TableCell]
 
 
+# Adoption-only sidebar identity, local to the chunk; absent unless drawn (schema 16).
+Enclosure = Annotated[PositiveInt | None, Field(exclude_if=lambda v: v is None)]
+
+
+class AcceptedText(TextBlock):
+    enclosure: Enclosure = None
+
+
+class AcceptedHeading(HeadingBlock):
+    enclosure: Enclosure = None
+
+
+class AcceptedList(ListBlock):
+    enclosure: Enclosure = None
+
+
 AcceptedBlock = Annotated[
-    TextBlock
-    | HeadingBlock
-    | ListBlock
+    AcceptedText
+    | AcceptedHeading
+    | AcceptedList
     | CodeBlock
     | CalloutBlock
     | AcceptedTable
@@ -239,7 +256,7 @@ class CorrectionAnswer(Contract):
 
 
 class PDFCorrectionChunk(Contract):
-    schema_version: Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] = 1
+    schema_version: Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] = 1
     draft_sha256: Sha256
     owned_pages: list[PositiveInt]
     reference_pages: list[PositiveInt]
@@ -632,7 +649,8 @@ def _make_chunk(
         draft_sha256=answer.draft_sha256,
         owned_pages=answer.owned_pages,
         reference_pages=reference_pages,
-        blocks=adopted,
+        # Revalidate as accepted variants; only drawn sidebars carry an enclosure.
+        blocks=[block.model_dump() for block in adopted],
         retained_blocks=retained,
         exclusions=answer.exclusions,
         uncertainties=uncertainties,

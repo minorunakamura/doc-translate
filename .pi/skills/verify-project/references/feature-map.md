@@ -1367,3 +1367,18 @@ PROOFS="$BASELINE_PARENT/proof:$CURRENT_PARENT/proof" python "$S" adoption-diff 
 | 212→213（コード） | Unresolved code continuation。不正charspanの最終行 `#/texts/3304` の省略、表 `#/tables/6` を出典とする `c213a` へ接続不能、`c212b` の1行への縮約、罫線断片の重複。HEADからある | [#110](https://github.com/minorunakamura/doc-translate/issues/110) |
 
 統合の期待として、各組で次をすべて確認する。①両端の断片が実unitsまたは英語出力に残る。②位置付きQAと上の失敗checkが残る。③残差を行・出典・位置ごとに別記する（91：囲みが原画像の位置＝見出しの上と異なり段落の間にある。212→213：`c212b` の1行への縮約、`#/texts/3304` の省略、p213の罫線が本文unitと `c213a` の両方にある）。原画像は91–92枚目・212–213枚目と照合する。満たさなければ統合未達。これ以外の追加・消失・相手変更で原画像と合わないものは従来どおり統合未達とし、この例外をほかの組や新たな消失に広げない。
+
+91→92 は #109 で解決（#109 節を参照）。
+
+## 描かれた囲みとページ間接続（#109）
+
+[#109 Plan](../../../../docs/plans/pdf-sidebar-continuation-109.md)の完了条件のうち、全70件の再生・採用差分・接続差分・囲みの一覧・人工CLIを扱う。条件と禁止事項は#101節と同じ。現行の `pdf_preservation_comparison.py` は `drawn-enclosure-v15`／schema 16 だけを受け付ける（schema 15 の再生には使えない）。
+
+1. **全70件：** #101節の shell を `mode=all` として新規0700親で1回実行する。合格は exit 0・`population-status.json` で `saved` 70・`rejected` 0・`not attempted` 0。拒否があれば比較に進まない。
+2. **採用差分：** #101節「第3版・第4版」の `adoption-diff` を別の新規0700親 `D` で、`PROOFS="$PWD/work/preservation-all-GvSexcSD/proof:<1の親>/proof"`（基準は#101 r6 の最終再生、private）として実行する。続けて `python .pi/skills/verify-project/scripts/pdf_enclosure_comparison.py "$D" >"$D/enclosure.stdout" 2>"$D/enclosure.stderr"`。`$D/enclosure.json` の `enclosure_or_schema_only`（schema 15→16 と `enclosure` の追加だけ）と `other`（ブロック内容・順序の差）に分かれる。`enclosures` は囲みブロックごとの所有開始・囲み番号・ページ・ref・旧→新の位置・移動の有無。期待：`other` は所有開始91の順序だけ（`p91-note-title`・`p91-note` が見出し `p91-descriptors-heading` の前へ移動）。それ以外の `other` と、`enclosures` の全ページは原画像と照合して説明する。p155 の囲み3（`#/texts/2272`、Docling が section_header と付けたコードのファイル名バー）は囲みとして記録されるが、移動・接続・出力の変化はない（既知の誤判定）。
+3. **接続差分：** 1の `observations.json` の `connections` を#101 r6 のものと比べる。期待：追加 `p624`→`p632`（61→62）、消失から `p91-descriptors`→`p92-descriptors-cont`（91→92）が外れる。ほかの追加・消失・相手変更は変わらない。source・実units・英語anchor・QAで ref ごとに確認する。91：1029＋1034 が1 block・1 unit・1 anchor、囲み 1030・1031 が各1回、英語で見出し 1028 より前。61：624＋632 が1回、脚注 625 と囲み 628–631 が各1回、英語で接続段落の後。2組とも `Contradictory continuation` の QA と、失敗した `pdf_connection` check がない（r6 との差はこの2組だけ）。
+4. **人工CLI：** 別の新規0700親で `export CHECK_BODY_SYMBOL=1` として#97節の「別の人工実操作」を実行する。期待：`cli.exit` 0、`results.json` の各 `resume_sends` 0（immutable不変はassert）。
+
+各親に revision・dirty・command・exit を残し、自分で作った一時物だけを回収して証拠を再読する。原画像との照合は Root が別の親で行う。
+
+既知の限界：左右端が揃った横罫線は縦の距離に関係なくつながるので、上下の柱の罫線と全面の塗りがある別の書籍では、ページ全体が1つの枠になりうる（この書籍では生じていない。保証外）。
