@@ -541,7 +541,14 @@ def _printed_candidate(original, proposal, *, relative_margin=False):
 
 
 def _line_origins(
-    textpage, local, bounds, *, printed_lines, row_fonts=None, glyphs=None
+    textpage,
+    local,
+    bounds,
+    *,
+    printed_lines,
+    row_fonts=None,
+    glyphs=None,
+    advances=None,
 ):
     """Find the bounded text's unique native run, not an identical line elsewhere."""
     import pypdfium2.raw as native
@@ -572,6 +579,7 @@ def _line_origins(
         positions = []
         generated_spaces = set()
         fonts = []
+        chars = []
         for i in range(index, index + len(content)):
             x, y = ctypes.c_double(), ctypes.c_double()
             if (
@@ -613,6 +621,9 @@ def _line_origins(
                         textpage.get_charbox(i),
                     )
                 )
+            if advances is not None:
+                generated = native.FPDFText_IsGenerated(textpage, i) == 1
+                chars.append((content[i - index], x.value, generated))
             positions.append((x.value, y.value))
         row = 0
         for end in range(1, len(positions) + 1):
@@ -637,7 +648,10 @@ def _line_origins(
                         return None
             x, y = positions[row]
             steps = [b[0] - a[0] for a, b in itertools.pairwise(positions[row:end])]
-            if generated_spaces.intersection(range(row, end)):
+            if advances is not None:
+                # The caller measures every gap against one grid for the whole listing.
+                advances.append(chars[row:end])
+            elif generated_spaces.intersection(range(row, end)):
                 pitch = next(
                     (
                         d
@@ -976,7 +990,75 @@ def _body_punctuation(
     )
 
 
-def _drawn_listing(item, nodes, valid, page, read_original, read_image):
+_SYMBOL_SPACE = "Space count after an off-grid symbol was set from the drawn grid"
+
+
+def _drawn_grid(rows):
+    """The one drawn advance that measures every gap; rows of (char, origin, generated)."""
+    # A glyph's advance ends at the next origin in its row, where a generated space starts.
+    drawn = []
+    for row in rows:
+        glyphs = []
+        for j, (char, origin, generated) in enumerate(row):
+            if generated:
+                continue
+            advance = row[j + 1][1] - origin if j + 1 < len(row) else None
+            k = next((k for k in range(j + 1, len(row)) if not row[k][2]), None)
+            gap = None if k is None else row[k][1] - row[j + 1][1]
+            glyphs.append((char, advance, gap, k is not None and k > j + 1))
+        drawn.append(glyphs)
+    candidates = []
+    for _, advance, _, _ in itertools.chain(*drawn):
+        if (
+            advance is not None
+            and advance > 0
+            and not any(isclose(advance, c, abs_tol=0.02) for c in candidates)
+        ):
+            candidates.append(advance)
+
+    def cells(pitch):
+        counts = []
+        for _, _, gap, _ in itertools.chain(*drawn):
+            if gap is None:
+                continue
+            n = round(gap / pitch)
+            if n < 0 or not isclose(gap, n * pitch, abs_tol=0.02):
+                return None
+            counts.append(n)
+        return counts
+
+    fits = [(p, c) for p in candidates if (c := cells(p)) is not None]
+    # Several grids are ambiguous only when they disagree on a space count.
+    if not fits or any(c != fits[0][1] for _, c in fits):
+        return None
+    advances = [a for _, a, _, _ in itertools.chain(*drawn) if a is not None]
+    pitch, counts = max(
+        fits, key=lambda f: sum(isclose(a, f[0], abs_tol=0.02) for a in advances)
+    )
+    counts = iter(counts)
+    result = []
+    for glyphs in drawn:
+        text = pattern = ""
+        symbol = False
+        for char, advance, gap, opened in glyphs:
+            text += char
+            # The proposal is matched after its indent, as before v17.
+            leading = char == " " and not pattern
+            pattern += "" if leading else re.escape(char)
+            if advance is None or gap is None:  # a row's last glyph has no measured gap
+                continue
+            n = next(counts)
+            text += " " * n
+            # Only an undrawn gap takes its count from the grid; drawn spaces are letters.
+            pattern += " *" if (n or opened) and not leading else ""
+            symbol |= bool(n) and not isclose(advance, pitch, abs_tol=0.02)
+        result.append((text, pattern, symbol))
+    return pitch, result
+
+
+def _drawn_listing(
+    item, nodes, valid, page, read_original, read_image, *, layout_version
+):
     """Corroborate complete, adjacent item boxes, never an offset into invalid text."""
     provs = [n["prov"][0] for n in nodes]
     image = _page_ink(page, read_image)
@@ -985,24 +1067,32 @@ def _drawn_listing(item, nodes, valid, page, read_original, read_image):
 
     def inspect(tp, local, bounds):
         glyphs = []
-        rows = _line_origins(tp, local, bounds, printed_lines=True, glyphs=glyphs)
+        advances = [] if layout_version >= 17 else None
+        rows = _line_origins(
+            tp,
+            local,
+            bounds,
+            printed_lines=True,
+            glyphs=glyphs,
+            advances=advances,
+        )
         if not rows or not glyphs:
             return None
 
         if not _visible_glyphs(tp, bounds, glyphs, page, image):
             return None
         drawn_x = min(b[0] for _, _, b in glyphs), max(b[2] for _, _, b in glyphs)
-        return rows, bounds, drawn_x
+        return rows, bounds, drawn_x, advances or [None] * len(rows)
 
     groups = _local_text(provs, page, read_original, inspect, strict_pdf=True)
     if not groups:
         return None
     rows = []
-    for i, ((group, box, drawn_x), ev) in enumerate(
+    for i, ((group, box, drawn_x, advances), ev) in enumerate(
         zip(groups, item.evidence, strict=True)
     ):
         if i:
-            _, above, prior_x = groups[i - 1]
+            _, above, prior_x, _ = groups[i - 1]
             if not (
                 max(prior_x[0], drawn_x[0]) < min(prior_x[1], drawn_x[1])
                 and 0 <= above[1] - box[3] <= max(above[3] - above[1], box[3] - box[1])
@@ -1010,7 +1100,7 @@ def _drawn_listing(item, nodes, valid, page, read_original, read_image):
                 return None
         anchor = valid.get(ev.ref)
         cursor = 0
-        for line, x, y, steps in group:
+        for (line, x, y, steps), drawn in zip(group, advances, strict=True):
             if rows and rows[-1][2] <= y:
                 return None
             span = None
@@ -1032,11 +1122,11 @@ def _drawn_listing(item, nodes, valid, page, read_original, read_image):
                     "reason": "Visible drawing in owned listing",
                 }
             )
-            rows.append((line, x, y, steps, location, gap))
+            rows.append((line, x, y, steps, location, gap, drawn))
         if anchor and cursor != len(anchor.text):
             return None
     # Check the space between refs too: omitted text in the gap is a barrier.
-    boxes = [box for _, box, _ in groups]
+    boxes = [box for _, box, _, _ in groups]
     envelope = {
         "l": min(b[0] for b in boxes),
         "b": min(b[1] for b in boxes),
@@ -1055,17 +1145,33 @@ def _drawn_listing(item, nodes, valid, page, read_original, read_image):
         return None
     proposed = [m for m in re.finditer(r"[^\r\n]+", item.text) if m[0].strip(" \t")]
     wanted = [m[0] for m in proposed]
-    if len(wanted) != len(rows) or any(
+    if len(wanted) != len(rows):
+        return None
+    if layout_version >= 17:
+        # Gap widths come from the drawn grid, not from the extraction or the proposal.
+        grid = _drawn_grid([r[6] for r in rows])
+        if grid is None or any(
+            not re.fullmatch(pattern, line.lstrip(" "))
+            for line, (_, pattern, _) in zip(wanted, grid[1], strict=True)
+        ):
+            return None
+        pitch, drawn_rows = grid
+    elif any(
         line.lstrip(" ") != r[0].lstrip(" ")
         for line, r in zip(wanted, rows, strict=True)
     ):
         return None
-    pitch = next((d for r in rows for d in r[3]), None)
+    else:
+        pitch = next((d for r in rows for d in r[3]), None)
+        drawn_rows = [(r[0], None, False) for r in rows]
     margin = min(r[1] for r in rows)
     columns = [(r[1] - margin) / pitch if pitch else 0 for r in rows]
     measured = (
         pitch
-        and all(isclose(d, pitch, abs_tol=0.02) for r in rows for d in r[3])
+        and (
+            layout_version >= 17
+            or all(isclose(d, pitch, abs_tol=0.02) for r in rows for d in r[3])
+        )
         and all(
             isclose(round(c) * pitch, r[1] - margin, abs_tol=0.02)
             for c, r in zip(columns, rows, strict=True)
@@ -1073,8 +1179,10 @@ def _drawn_listing(item, nodes, valid, page, read_original, read_image):
     )
     display = []
     differences = []
-    for i, (r, column) in enumerate(zip(rows, columns, strict=True)):
-        line = " " * (round(column) if measured else 0) + r[0]
+    for i, (r, column, (text, _, _)) in enumerate(
+        zip(rows, columns, drawn_rows, strict=True)
+    ):
+        line = " " * (round(column) if measured else 0) + text
         if i:
             separator = "".join(re.findall(r"\r\n|[\r\n]", r[5])) or "\n"
             display.append(separator)
@@ -1108,6 +1216,11 @@ def _drawn_listing(item, nodes, valid, page, read_original, read_image):
         differences.append(
             ("Trailing blank-line count not established", locations[-1:])
         )
+    symbols = [
+        r[4] for r, (_, _, symbol) in zip(rows, drawn_rows, strict=True) if symbol
+    ]
+    if symbols:
+        differences.append((_SYMBOL_SPACE, symbols))
     differences.append(
         ("Absolute indentation not established; see each drawn line origin", locations)
     )
@@ -3271,6 +3384,131 @@ def adopt_owned_ranges(
                 )
                 blocks[blocks.index(block)] = targets[key] = replacement
                 ranks[key] = part.rank
+
+    def table_listing(item, sequence, at_order):
+        """Read a code proposal cited only by a whole table, with the rule rows beside it."""
+        e = item.evidence[0]
+        if (
+            len(item.evidence) != 1
+            or not (e.ref or "").startswith("#/tables/")
+            or e.charspan is not None
+            or e.cell_index is not None
+            or item.block_id in indices
+            or {k for k, _ in selectors[e.page, e.ref]} != {item.block_id}
+            or (e.page, e.ref) in excluded_refs
+            or len(items[e.ref]["prov"]) != 1
+            or items[e.ref]["prov"][0]["page_no"] != e.page
+        ):
+            return None
+        order = next(
+            (o for o, (ref, _, _) in enumerate(sequence) if ref == e.ref), None
+        )
+        if order is None:
+            return None
+        page = by_page[e.page]
+        try:
+            box = _page_box(items[e.ref]["prov"][0], page)
+            # Unowned text items next in reading order that cross the table box.
+            rules = []
+            for step in (-1, 1):
+                o = order + step
+                while 0 <= o < len(sequence):
+                    ref, node, container = sequence[o]
+                    if (
+                        container
+                        or len(node.get("prov", [])) != 1
+                        or node["prov"][0]["page_no"] != e.page
+                        or selectors[e.page, ref]
+                        or (e.page, ref) in excluded_refs
+                        or not at_order[o]
+                        or any(ranges[i][1] is not None for i in at_order[o])
+                    ):
+                        break
+                    l, b, r, t = _page_box(node["prov"][0], page)
+                    if not (l < box[2] and box[0] < r and b < box[3] and box[1] < t):
+                        break
+                    rules.append((o, (l, b, r, t)))
+                    o += step
+            boxes = [box, *(v for _, v in rules)]
+            l, b, r, t = (
+                min(v[0] for v in boxes),
+                min(v[1] for v in boxes),
+                max(v[2] for v in boxes),
+                max(v[3] for v in boxes),
+            )
+            refs = {e.ref, *(sequence[o][0] for o, _ in rules)}
+            if any(
+                x < r and l < right and bottom < t and b < top
+                for ref, node in items.items()
+                if ref not in refs
+                for p in node["prov"]
+                if p["page_no"] == e.page
+                for x, bottom, right, top in [_page_box(p, page)]
+            ):
+                return None
+        except ValueError:
+            return None
+        bbox = {"l": l, "b": b, "r": r, "t": t, "coord_origin": "BOTTOMLEFT"}
+        drawn = _drawn_listing(
+            item,
+            [{"prov": [{"bbox": bbox}]}],
+            {},
+            page,
+            read_original,
+            read_image,
+            layout_version=layout_version,
+        )
+        if drawn is None:
+            return None
+
+        owned = []
+        for o, _ in rules:
+            found = _local_text(
+                [sequence[o][1]["prov"][0]],
+                page,
+                read_original,
+                lambda tp, text, bounds: _line_origins(
+                    tp, text, bounds, printed_lines=False
+                ),
+                strict_pdf=True,
+            )
+            own = found[0] if found else None
+            extracted = "".join(ranges[i][0].text for i in at_order[o])
+            # Each rule item must be its own drawn letters.
+            if not own or "".join(extracted.split()) != "".join(
+                "".join(w[0] for w in own).split()
+            ):
+                return None
+            owned += at_order[o]
+        return owned, drawn
+
+    drawn_tables = {}
+    if layout_version >= 17:
+        sequence = list(_reading_order(raw, nested=verify_layout))
+        at_order = defaultdict(list)
+        for i, (part, _) in enumerate(ranges):
+            at_order[part.order].append(i)
+        for item in [b for b in blocks if isinstance(b, CodeBlock)]:
+            found = table_listing(item, sequence, at_order)
+            if found is None:
+                continue
+            owned, (display, locations, differences) = found
+            key = item.block_id
+            for i in owned:
+                ranges[i] = (ranges[i][0], key)
+            ranks[key] = min([ranks[key], *(ranges[i][0].rank for i in owned)])
+            drawn_tables[key] = item.model_copy(
+                update={
+                    "text": display,
+                    "evidence": [
+                        *item.evidence,
+                        *(ranges[i][0].evidence() for i in owned),
+                        *locations,
+                    ],
+                }
+            )
+            for reason, evidence in differences:
+                issue(reason, [key], evidence)
     owners = []
     prev = None
     for part, owner in ranges:
@@ -3346,18 +3584,31 @@ def adopt_owned_ranges(
         ):
             return None
         selected = []
+        # From v17 a list group of only proposed rows, and a proposed heading row, keep the run.
+        labels = ("code", "list_item", "section_header")[
+            : 3 if layout_version >= 17 else 2
+        ]
+        grouped = set()
         for order, (ref, node, container) in enumerate(
             _reading_order(raw, nested=True)
         ):
+            if (
+                layout_version >= 17
+                and ref.startswith("#/groups/")
+                and node.get("label") == "list"
+                and node.get("children")
+                and all(c["$ref"] in refs for c in node["children"])
+            ):
+                grouped.add(order)
             if ref not in refs:
                 continue
             if (
                 container
-                or node.get("label") not in ("code", "list_item")
+                or node.get("label") not in labels
                 or node.get("content_layer", "body") != "body"
                 or len(node.get("prov", [])) != 1
                 or node["prov"][0]["page_no"] != page.page
-                or (selected and order != selected[-1][0] + 1)
+                or (selected and set(range(selected[-1][0] + 1, order)) - grouped)
             ):
                 return None
             selected.append((order, node))
@@ -3409,18 +3660,26 @@ def adopt_owned_ranges(
         except ValueError:
             return None
         return _drawn_listing(
-            item, [n for _, n in selected], valid, page, read_original, read_image
+            item,
+            [n for _, n in selected],
+            valid,
+            page,
+            read_original,
+            read_image,
+            layout_version=layout_version,
         )
 
-    replacements = {}
+    replacements = dict(drawn_tables)
     verified_margins = {}
-    drawn_codes = set()
+    drawn_codes = set(drawn_tables)
     for b in blocks:
         if isinstance(b, CodeBlock) and any(
             (e.page, e.ref) in invalid_listing_refs for e in b.evidence
         ):
             portions.setdefault(b.block_id, [])
     for key, parts in portions.items():
+        if key in drawn_tables:
+            continue
         item = targets[key]
         original = _joined(parts) if parts else ""
         if original == item.text and not (
@@ -3656,6 +3915,7 @@ def adopt_owned_ranges(
             and isinstance(b, CodeBlock)
             and b.block_id in targets
             and b.block_id not in portions
+            and b.block_id not in drawn_tables
         ):
             issue(
                 "No unique owned extraction range for the proposed display lines; retained the evidenced code without confirming its layout",

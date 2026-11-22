@@ -41,9 +41,11 @@ def capture(workspace, ids):
     pages = [page for chunk in chunks for page in chunk.owned_pages]
     assert pages == (list(range(81, 86)) if len(ids) == 1 else list(range(1, 347)))
     for chunk in chunks:
-        assert chunk.schema_version == 16
+        assert chunk.schema_version == 17
         record = json.loads(checked(workspace / chunk.run.artifact, chunk.run.sha256))
-        assert record["request"]["context"]["adoption_rule"] == "drawn-enclosure-v15"
+        assert (
+            record["request"]["context"]["adoption_rule"] == "drawn-table-listing-v16"
+        )
     return capture_output(
         workspace, digests, list(ids), chunks, "preservation-101", assets=True
     )
@@ -307,6 +309,12 @@ def adoption_diff(output, earlier, later):
             "later": str(later),
             "compared": len(shared),
             "changed": sorted(h for h, v in chunks.items() if v["differences"]),
+            # Only the schema number differs; anything else needs a page-by-page check.
+            "schema_only": sorted(
+                h
+                for h, v in chunks.items()
+                if v["differences"] == {"other_fields": ["schema_version"]}
+            ),
             "chunks": chunks,
         },
     )

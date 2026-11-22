@@ -1370,9 +1370,11 @@ PROOFS="$BASELINE_PARENT/proof:$CURRENT_PARENT/proof" python "$S" adoption-diff 
 
 91→92 は #109 で解決（#109 節を参照）。
 
+212→213 は #110 で解決（#110 節を参照）。
+
 ## 描かれた囲みとページ間接続（#109）
 
-[#109 Plan](../../../../docs/plans/pdf-sidebar-continuation-109.md)の完了条件のうち、全70件の再生・採用差分・接続差分・囲みの一覧・人工CLIを扱う。条件と禁止事項は#101節と同じ。現行の `pdf_preservation_comparison.py` は `drawn-enclosure-v15`／schema 16 だけを受け付ける（schema 15 の再生には使えない）。
+[#109 Plan](../../../../docs/plans/pdf-sidebar-continuation-109.md)の完了条件のうち、全70件の再生・採用差分・接続差分・囲みの一覧・人工CLIを扱う。条件と禁止事項は#101節と同じ。#109 の再生は `drawn-enclosure-v15`／schema 16 で行った。現行の `pdf_preservation_comparison.py` は `drawn-table-listing-v16`／schema 17 だけを受け付ける（#110節。schema 16 以前の再生には使えない）。
 
 1. **全70件：** #101節の shell を `mode=all` として新規0700親で1回実行する。合格は exit 0・`population-status.json` で `saved` 70・`rejected` 0・`not attempted` 0。拒否があれば比較に進まない。
 2. **採用差分：** #101節「第3版・第4版」の `adoption-diff` を別の新規0700親 `D` で、`PROOFS="$PWD/work/preservation-all-GvSexcSD/proof:<1の親>/proof"`（基準は#101 r6 の最終再生、private）として実行する。続けて `python .pi/skills/verify-project/scripts/pdf_enclosure_comparison.py "$D" >"$D/enclosure.stdout" 2>"$D/enclosure.stderr"`。`$D/enclosure.json` の `enclosure_or_schema_only`（schema 15→16 と `enclosure` の追加だけ）と `other`（ブロック内容・順序の差）に分かれる。`enclosures` は囲みブロックごとの所有開始・囲み番号・ページ・ref・旧→新の位置・移動の有無。期待：`other` は所有開始91の順序だけ（`p91-note-title`・`p91-note` が見出し `p91-descriptors-heading` の前へ移動）。それ以外の `other` と、`enclosures` の全ページは原画像と照合して説明する。p155 の囲み3（`#/texts/2272`、Docling が section_header と付けたコードのファイル名バー）は囲みとして記録されるが、移動・接続・出力の変化はない（既知の誤判定）。
@@ -1382,3 +1384,28 @@ PROOFS="$BASELINE_PARENT/proof:$CURRENT_PARENT/proof" python "$S" adoption-diff 
 各親に revision・dirty・command・exit を残し、自分で作った一時物だけを回収して証拠を再読する。原画像との照合は Root が別の親で行う。
 
 既知の限界：左右端が揃った横罫線は縦の距離に関係なくつながるので、上下の柱の罫線と全面の塗りがある別の書籍では、ページ全体が1つの枠になりうる（この書籍では生じていない。保証外）。
+
+## ページをまたぐコードと表の接続（#110）
+
+[#110 第2版Plan](../../../../docs/plans/pdf-code-table-continuation-110-r2.md)の完了条件のうち、全70件の再生・採用差分・接続差分・212→213 の観測・人工CLIを扱う。対象版は `drawn-table-listing-v16`／schema 17（現行の `pdf_preservation_comparison.py` が受け付ける版）。条件と禁止事項は#101節と同じ。
+
+1. **全70件：** #101節の shell を `mode=all` として新規0700親で1回実行する。合格は exit 0・`population-status.json` で `saved` 70・`rejected` 0・`not attempted` 0。拒否があれば比較に進まない。
+2. **採用差分：** #101節「第3版・第4版」の `adoption-diff` を別の新規0700親 `D` で、`PROOFS="$PWD/work/preservation-all-9drsIXYe/proof:<1の親>/proof"`（基準は#109 の最終再生、private）として実行する。`$D/proof/observations.json` の `schema_only`（差が `schema_version` だけの chunk）とそれ以外に分け、それ以外の各差を原画像で判定する。
+3. **接続差分：** 1の `observations.json` の `connections` を基準（`9drsIXYe`）のものと比べる。block_id の採番ずれは差に数えず、source・実units・英語anchor・QAで ref ごとに確認する。
+4. **212→213 の観測：** 別の新規0700親で、1の `proof/capture.json`（全fragments・実units・英語・QA）を読取専用で使い、原本PDFの pypdfium2 の描画文字（原点と送り幅、格子 4.672pt）から p212 の21行と p213 の表19行の期待を独立に計算して照合する。結果はprivateなJSONに置き、報告は pass/fail と件数だけ。
+   - (a) p212 の21行（`newman`〜`#/texts/3304`）と表19行が1つのコード block として1回だけあり、実unitsに入らず、英語出力に1回（anchor 1回）。
+   - (b) 全40行が描画格子の期待と一致する（行頭字下げ、行内2空白、`✓` の後2、`→` の後1、表の各行の空白数）。
+   - (c) `#/texts/3307`–`3314` は本文 block／unit にならず、コードの出典（Owned extraction range）として各1回。
+   - (d) この組に Unresolved outgoing／incoming code continuation・Line boundary or indentation not corroborated・Proposed listing rows not verified・No unique owned extraction range の QA と、失敗した `pdf_connection` check がない。
+   - (e) "Space count after an off-grid symbol was set from the drawn grid" の QA が行ごとの line origin 付きで、`#/texts/3304` の不正charspan QA（charspan なし、p212）が1件残る。
+   - (f) block の fragments が `c212b`・`c213a` の2つで、locations に両ページの出典と40行の line origin（描画位置と一致）がある。
+5. **人工CLI：** 別の新規0700親で `export CHECK_BODY_SYMBOL=1` として#97節の「別の人工実操作」を実行する。期待：`cli.exit` 0、`results.json` の各 `resume_sends` 0（immutable不変はassert）。
+
+期待：
+- 採用差分で `schema_only` 以外は2件だけ。所有開始186の `code189`（p189、`#/tables/5`）は非空白12行が同一で、旧の空行2行が描画行の採用で消える（新では行間が通常の1.5倍＝16.296pt の2か所に「Additional blank-line count not established between drawn rows」の QA が付く）。所有開始211は上の 212→213。
+- 接続差分は removed から `c212b`→`c213a` が外れるだけ。ほかの追加・消失・相手変更は変わらない。
+- 4の (a)–(f) がすべて pass。
+
+各親に revision・dirty・tested.diff・command・exit を残し、自分で作った一時物だけを回収して証拠を再読する。原画像との照合（212–213枚目、189枚目の空行）は Root が別の親で行う。
+
+既知の限界：保証するのは 212→213 の1組で、ほかのページへの一般化は保証しない。`code189` の空行は描画行の採用で消え、空行数は行間から決めない（QA だけ残す）。格子外記号の送り幅は、同じ行で次の文字（生成空白を含む）の原点との差から取る（生成空白の位置が送りの終わりと一致する書籍を前提とする）。

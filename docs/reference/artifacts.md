@@ -571,7 +571,7 @@ for block in chunk.blocks:
 
 ### 所有本文の採否とコードの接続（#97・#98・#108・#99・#100）
 
-`correct_pdf` は生回答をattemptへ保存し、それとは別に採用chunkを作ります。採用方式は `request.context.adoption_rule` に記録します。新規補正は `drawn-enclosure-v15`（chunk schema 16）です。補正は、draftの読順・所有page・有効な文字範囲をblock／cellの出典と照合します。案が欠いた読める範囲を、見出し・本文・脚注・コード等の位置と役割に戻し、図内文字や参照ページを独立本文に足しません。chunkは所有部分を保存します。別itemとのページ間接続は後段の組立で判定し、表を再構築しません。
+`correct_pdf` は生回答をattemptへ保存し、それとは別に採用chunkを作ります。採用方式は `request.context.adoption_rule` に記録します。新規補正は `drawn-table-listing-v16`（chunk schema 17）です。補正は、draftの読順・所有page・有効な文字範囲をblock／cellの出典と照合します。案が欠いた読める範囲を、見出し・本文・脚注・コード等の位置と役割に戻し、図内文字や参照ページを独立本文に足しません。chunkは所有部分を保存します。別itemとのページ間接続は後段の組立で判定し、表を再構築しません。
 
 通常本文で案の差が局所的な語間SPACEだけなら、draftのSHA-256を検証した**その原本byte列**を、所有ページのprovenance bbox内だけで照合します。同一出現・同一行の実文字SPACE、または別描画間で通常の字送りを越え、周囲の字間の揺れでは説明できない余白だけを採用します。生成SPACEや描画の分割だけでは採用しません。一意の裏付けがない区切りや行末hyphen、数字などの読みの不一致は抽出文字を採り、両者の違いと位置を要確認に残します。不確かな所属は推測しません。hash不一致は照合失敗であり、文字層のないPDFと同じ扱いにしません。
 
@@ -613,11 +613,19 @@ schema 16（`drawn-enclosure-v15`）では、原本に描かれた囲み（sideb
 
 組立では、schema 16のchunkに限り、相互target等のContradictory continuationの条件のうち「間は脚注だけ」に例外を1つ加えます。前半と後半の間が、脚注と1つ以上の完結した囲み（囲みの全ブロックが間にあり、前半・後半は囲みに属さない）だけなら接続し、間の囲みは接続した段落（と間の脚注）の後に内部順で独立して置きます。表示（units・render）は囲みのない場合と同じで、新しいQAはありません。相手が一意でない、片側だけtarget、囲みでない本文・見出しが間にある、囲みの一部だけが間にある場合は従来どおり接続せず、両断片と位置付きQA・失敗した `pdf_connection` checkが残ります。schema 15以前の記録は旧規則で厳密に再読し、`enclosure` を持つ旧記録や描画が与えない `enclosure` を持つ記録は読めません。
 
-次の既知の未解決では、接続されずに両断片と位置付きQA・失敗した `pdf_connection` checkが残ります。抽出の読順で囲みが段落の前半と次ページの続きの間に入る場合（[#109](https://github.com/minorunakamura/doc-translate/issues/109)）は、上のschema 16で解決しました。
+schema 17（`drawn-table-listing-v16`）では、schema 13の描画行による確認を次のように広げます。いずれも新方式の採用時だけで、ページ番号・ref・固有の文字列・固定座標は判定に使いません。
 
-- ページをまたぐコードで、最終行が不正なcharspanのため省かれ、続きが表を出典にしている場合（Unresolved code continuation。前半の1行への縮約や罫線断片の重複も残ります。schema 15以前からある問題。[#110](https://github.com/minorunakamura/doc-translate/issues/110)）。
+- **描画行の回復の入口**：無効な文字範囲のrefを含むコード案の出典が読順で連続しているかを見るとき、子がすべて案のrefであるlistグループ（`#/groups/N`）は間に入っても連続とみなします。案のevidenceに含まれるsection_headerも、その描画行が案の行と一致すればコードの行として扱います。同じページ・単一provenance・body層・図や隣接項目と重ならない等の他の条件は変えません。
+- **格子の決め方**：行内で隣り合う描画文字ごとに、前の文字の原点にその文字自身の送り幅を足した位置から次の文字の原点までを測ります。全行のすべての隙間が整数倍（0を含む）になる描画文字の送り幅を格子とします。そうした送り幅が複数あっても、すべての隙間の空白数が同じなら、その中で描画文字の送り幅として最も多く現れるもの（同数なら先に現れたもの）を格子とします。ない場合と、送り幅によって空白数が変わる場合は、描画行を採用しません（従来の扱い）。格子に乗らない記号（`→ ✓ │` など）は、描画されていれば行の文字として認めます。
+- **空白数**：描画のない隙間（生成空白）の空白数だけを、描画の格子から決めます。抽出の生成空白の数や案の空白数とは一致しなくてよく、案の行内空白数の違いは不一致としません。描画された空白文字・タブは文字として案と一致しなければなりません。非空白文字・行の数と順・行頭の字下げは、すべて描画と一致する必要があります。
+- **格子外記号の後の空白のQA**：格子外の記号の直後の空白数を描画から決めた場合は、`Space count after an off-grid symbol was set from the drawn grid` を、該当する行の描画位置（`line origin`）付きで1つ残します。
+- **表を出典とするコード**：所有ページの表（`#/tables/N`、単一ページ・単一provenance、文字範囲・cell指定なし）だけを出典とし、その表を他のブロックが出典に挙げないコード案は、原本の描画行で確かめます。罫線の行の候補は、読順で表の直前・直後に途切れず続く、同じページ・単一provenance・body層・未所有のテキスト項目のうち、bboxが表のbboxと交わるものです（交わらない項目で連続を止めます）。表と候補のbboxの外接矩形の描画行が上の規則で案の全行と一致し、外接矩形が他の項目（他のブロックが所有する項目や未所有の本文）と重ならず、各候補の描画行が外接矩形の描画行の一部である場合だけ、描画で決めた表示を採用します。候補の罫線項目はコードの出典として `evidence` に入り、本文ブロックにも `Readable owned range omitted by correction` にもなりません。各行の描画位置も `evidence` に残ります。成立しなければ従来どおり案のまま残し、`No unique owned extraction range for the proposed display lines; ...` のQAを付け、罫線の項目は本文ブロックになります。表をコードと判定する新しい規則は加えず、表の構造・セルの判定は変えません。
 
-`load_pdf_correction`・成功再利用・未採用attempt回収も記録された方式で再構成します。方式なし（schema 1）は旧回答の採用、`owned-text-v1`（schema 2）と`owned-ranges-v2`（schema 3）、`owned-layout-v3`（schema 4）、`printed-lines-v4`（schema 5、印刷行）、`printed-ranges-v5`（schema 6、caption等の局所所有）、`printed-margin-v6`（schema 7、共通余白）、`printed-separators-v7`（schema 8、提案の共通余白を除く区切り照合）、`printed-display-v8`（schema 9、最終表示による照合）、`printed-ownership-v9`（schema 10）、`printed-roles-v10`（schema 11）、`reciprocal-code-v11`（schema 12）、`drawn-code-v12`（schema 13）、`drawn-punctuation-v13`（schema 14）、`drawn-caption-listing-v14`（schema 15）はそれぞれ当時の採否をbyte単位で維持します。新方式へ移行・再送せず、方式値と実入力、再構成した保存内容を検証します。未知の方式のchunk、方式取り違え、再hashだけした不一致chunkは読めません。今回の要求・設定に該当する検証済み成功attemptの方式が未知なら、回収時にエラーとし、新規送信には進みません。
+組立（`assemble_pdf_source`）の接続規則は変えません。表を出典とするコードの間の罫線ブロックがなくなることで、前ページのコードと既存の規則で接続されます。不正なcharspanは従来どおりclipも補完もせず、`orig` も使いません。schema 16以前の記録は旧規則で厳密に再読します。
+
+以前の既知の未解決（接続されずに両断片と位置付きQA・失敗した `pdf_connection` checkが残る場合）のうち、抽出の読順で囲みが段落の前半と次ページの続きの間に入る場合（[#109](https://github.com/minorunakamura/doc-translate/issues/109)）は、上のschema 16で解決しました。ページをまたぐコードで、最終行が不正なcharspanのため省かれ、続きが表を出典にしている場合（[#110](https://github.com/minorunakamura/doc-translate/issues/110)）は、上のschema 17で解決しました（schema 16以前の記録は旧規則のまま、前半の1行への縮約・罫線断片の本文ブロック・Unresolved code continuationが残ります）。
+
+`load_pdf_correction`・成功再利用・未採用attempt回収も記録された方式で再構成します。方式なし（schema 1）は旧回答の採用、`owned-text-v1`（schema 2）と`owned-ranges-v2`（schema 3）、`owned-layout-v3`（schema 4）、`printed-lines-v4`（schema 5、印刷行）、`printed-ranges-v5`（schema 6、caption等の局所所有）、`printed-margin-v6`（schema 7、共通余白）、`printed-separators-v7`（schema 8、提案の共通余白を除く区切り照合）、`printed-display-v8`（schema 9、最終表示による照合）、`printed-ownership-v9`（schema 10）、`printed-roles-v10`（schema 11）、`reciprocal-code-v11`（schema 12）、`drawn-code-v12`（schema 13）、`drawn-punctuation-v13`（schema 14）、`drawn-caption-listing-v14`（schema 15）、`drawn-enclosure-v15`（schema 16）はそれぞれ当時の採否をbyte単位で維持します。新方式へ移行・再送せず、方式値と実入力、再構成した保存内容を検証します。未知の方式のchunk、方式取り違え、再hashだけした不一致chunkは読めません。今回の要求・設定に該当する検証済み成功attemptの方式が未知なら、回収時にエラーとし、新規送信には進みません。
 
 ### 図の所属と採用結果
 

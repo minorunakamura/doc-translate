@@ -1513,7 +1513,7 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
             "printed-margin-v6": 7,
             "printed-separators-v7": 8,
             "printed-display-v8": 9,
-            "current": 16,
+            "current": 17,
         }[base]
     )
 
@@ -2302,6 +2302,12 @@ def prose_pdf(lines, font="Helvetica"):
         objects[2] = objects[2].replace(
             b"/F 4 0 R",
             b"/F 4 0 R /Other << /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>",
+        )
+    if b"/Sym " in content:
+        objects[2] = objects[2].replace(
+            b"/F 4 0 R",
+            b"/F 4 0 R /Sym << /Type /Font /Subtype /Type1 /BaseFont /Symbol >>"
+            b" /Dings << /Type /Font /Subtype /Type1 /BaseFont /ZapfDingbats >>",
         )
     pdf = bytearray(b"%PDF-1.4\n")
     offsets = []
@@ -3117,10 +3123,10 @@ def test_unknown_successful_orphan_refuses_only_its_request_before_launch(
     ).owned_pages == [1]
 
 
-def listing_reply(draft, lines, original, proposed):
+def listing_reply(draft, lines, original, proposed, font="Courier"):
     workspace, _, model = draft
     model.document = model.document.model_copy(
-        update=artifact(workspace, "originals", "pdf", prose_pdf(lines, font="Courier"))
+        update=artifact(workspace, "originals", "pdf", prose_pdf(lines, font=font))
     )
     node = {
         "self_ref": "#/texts/0",
@@ -3800,6 +3806,11 @@ def test_printed_code_can_supply_boundary_or_indent_missing_from_extraction(
     "rule,version,signature",
     [
         (
+            "drawn-enclosure-v15",
+            16,
+            "e5a70bc53c18cb4d0a9b9cf891d52680ece9c207251bbe6f3bcf5026f216ca5b",
+        ),
+        (
             "drawn-caption-listing-v14",
             15,
             "81372a05009558a8c6eb5cd9f08bbf2d178bdf2906a8d1cb1da1741ad184210a",
@@ -3896,7 +3907,7 @@ def test_named_orphan_recovers_historical_bytes_without_resending(
         # Both named saves can be loaded in one workspace without promotion.
         ref = ws / current.run.artifact
         ref.with_suffix(".unrelated").rename(ref)
-        assert load_pdf_correction(ws, new) == current and current.schema_version == 16
+        assert load_pdf_correction(ws, new) == current and current.schema_version == 17
         assert (
             load_pdf_correction(ws, digest) == chunk and path.read_bytes() == original
         )
@@ -4980,9 +4991,9 @@ def test_owned_body_punctuation_requires_the_local_drawing(tmp_path, draft, case
     visible = case == "supported"
     chunk = load_pdf_correction(ws, run(tmp_path, draft, reply, reference_pages=[]))
     (body,) = [b for b in chunk.blocks if b.kind == "body"]
-    assert chunk.schema_version == 16
+    assert chunk.schema_version == 17
     record = json.loads((ws / chunk.run.artifact).read_bytes())
-    assert record["request"]["context"]["adoption_rule"] == "drawn-enclosure-v15"
+    assert record["request"]["context"]["adoption_rule"] == "drawn-table-listing-v16"
     assert any(
         q.reason == "Separate note on page" and q.target_ids == [body.block_id]
         for q in chunk.uncertainties
@@ -6302,7 +6313,7 @@ def test_drawn_sidebar_between_split_paragraph_is_kept_whole_after_joining(
     )
     if expected is not None:
         assert texts == expected and not failed
-        assert chunk.schema_version == 16
+        assert chunk.schema_version == 17
         return
     assert "Words start" in texts and "continue here." in texts and failed
 
@@ -6316,7 +6327,7 @@ def test_drawn_sidebar_record_is_bound_to_its_adoption_rule(tmp_path, draft):
         [
             sys.executable,
             "-c",
-            "import sys; from pathlib import Path; from doc_translate.pdf_correction import load_pdf_correction; c=load_pdf_correction(Path(sys.argv[1]),sys.argv[2]); assert c.schema_version==16 and [b.enclosure for b in c.blocks[:2]]==[1,1]",
+            "import sys; from pathlib import Path; from doc_translate.pdf_correction import load_pdf_correction; c=load_pdf_correction(Path(sys.argv[1]),sys.argv[2]); assert c.schema_version==17 and [b.enclosure for b in c.blocks[:2]]==[1,1]",
             str(ws),
             saved,
         ],
@@ -6347,6 +6358,10 @@ def test_drawn_sidebar_record_is_bound_to_its_adoption_rule(tmp_path, draft):
         load(tampered)
     # The previous rule re-reads strictly: no identity, extraction order kept.
     record = json.loads((ws / data["run"]["artifact"]).read_bytes())
+    # A schema 16 record keeps its sidebar identity under its own rule.
+    record["request"]["context"]["adoption_rule"] = "drawn-enclosure-v15"
+    sixteen = load({**data, "schema_version": 16}, record)
+    assert [b.enclosure for b in sixteen.blocks[:2]] == [1, 1]
     record["request"]["context"]["adoption_rule"] = "drawn-caption-listing-v14"
     with pytest.raises(ValueError):
         load({**data, "schema_version": 15}, record)
@@ -6372,3 +6387,385 @@ def test_drawn_sidebar_record_is_bound_to_its_adoption_rule(tmp_path, draft):
             reference_pages=[],
             policy="Claimed sidebar.",
         )
+
+
+def headed_listing_reply(draft, case):
+    """A Courier listing headed by a section header; its invalid last row sits in a list group."""
+    import pypdfium2 as pdfium
+
+    pitch = 5.4  # Courier at 9pt
+    font = "Courier"
+    if case == "narrow":
+        # Declared advances narrower than the glyphs: loose boxes no longer measure the pitch.
+        pitch = 4.68
+        font += " /FirstChar 32 /LastChar 126 /Widths [" + " 520" * 95 + "]"
+    arrow, check = 8.883, 6.795  # Symbol and ZapfDingbats advances, off the grid
+    code, rows = "run tests GET /x", "run tests\n  GET /x\n  - ok"
+    lines = [
+        (80, "newman"),
+        (68, "run tests"),
+        (56, "GET /x", 8 + 2 * pitch),
+        (44, "- ok", 8 + 2 * pitch),
+    ]
+    if case not in ("headed", "other child", "drawn indent", "ambiguous grid"):
+        code, rows = (
+            "\u2192 Home Starter GET /x",
+            "\u2192 Home  Starter\n  GET /x\n  \u2713 ok",
+        )
+        lines[1:2] = [
+            (68, b"/Sym 9 Tf (\\256) Tj"),
+            (68, "Home", 8 + arrow + pitch),
+            (68, "Starter", 8 + arrow + 7 * pitch),
+        ]
+        # Two grid cells after the check mark; the extraction and proposal say one space.
+        cells = 1.5 if case == "off grid" else 2
+        lines[-1:] = [
+            (44, b"/Dings 9 Tf (3) Tj", 8 + 2 * pitch),
+            (44, "ok", 8 + 2 * pitch + check + cells * pitch),
+        ]
+    if case == "no gap":
+        # No gap in any row: every drawn advance fits with the same counts.
+        code, rows = "\u2192Home GET/x", "\u2192Home\n  GET/x\n  \u2713ok"
+        lines[1:] = [
+            (68, b"/Sym 9 Tf (\\256) Tj"),
+            (68, "Home", 8 + arrow),
+            (56, "GET/x", 8 + 2 * pitch),
+            (44, b"/Dings 9 Tf (3) Tj", 8 + 2 * pitch),
+            (44, "ok", 8 + 2 * pitch + check),
+        ]
+    if case == "ambiguous grid":
+        # Spaced letters draw a second grid; the one gap is 4 cells on one, 2 on the other.
+        lines[1:2] = [
+            (68, b"5.4 Tc (run) Tj"),
+            (68, b"0 Tc (tests) Tj", 35 + 4 * pitch),
+        ]
+    if case == "drawn indent":
+        # The row is indented by drawn space glyphs, not by its origin.
+        lines[2] = (56, " GET /x", 8 + pitch)
+    if case == "other child":
+        lines.append((32, "- no", 8 + 2 * pitch))
+    draft, reply = listing_reply(draft, lines, code, "", font=font)
+    ws, _, model = draft
+    with pdfium.PdfDocument(ws / model.document.artifact) as pdf:
+        buffer = BytesIO()
+        image = pdf[0].render(scale=1).to_pil()
+        image.save(buffer, format="PNG")
+    page = model.pages[0]
+    page.image = PDFArtifact(
+        **artifact(ws, "drafts/pdf/images", "png", buffer.getvalue())
+    )
+    page.width_pixels, page.height_pixels = image.size
+    page.scale_x, page.scale_y = image.width / 200, image.height / 100
+    page.rendering["render_scale"] = 1
+
+    def item(ref, label, text, span, b, t):
+        box = {"l": 5, "r": 100, "b": b, "t": t, "coord_origin": "BOTTOMLEFT"}
+        return {
+            "self_ref": ref,
+            "label": label,
+            "text": text,
+            "prov": [{"page_no": 1, "charspan": span, "bbox": box}],
+        }
+
+    # Docling records a list item's span over its marker-bearing `orig`, past `text`.
+    texts = [
+        item("#/texts/0", "section_header", "newman", [0, 6], 78, 88),
+        item("#/texts/1", "code", code, [0, len(code)], 54, 77),
+        item("#/texts/2", "list_item", "ok", [0, 4], 42, 53),
+    ]
+    children = [{"$ref": "#/texts/2"}]
+    if case == "other child":
+        texts.append(item("#/texts/3", "list_item", "no", [0, 4], 30, 41))
+        children.append({"$ref": "#/texts/3"})
+    group = {"self_ref": "#/groups/0", "label": "list", "children": children}
+    raw = {
+        "body": {
+            "children": [
+                {"$ref": "#/texts/0"},
+                {"$ref": "#/texts/1"},
+                {"$ref": "#/groups/0"},
+            ]
+        },
+        "texts": texts,
+        "groups": [group],
+    }
+    draft = rewrite_raw(draft, raw)
+    reply["draft_sha256"] = draft[1]
+    proposal = "newman\n\n" + rows
+    if case == "symbol space":
+        proposal = proposal.replace("\u2713 ok", "\u2713  ok")
+    if case == "letter":
+        proposal = proposal.replace("GET /x", "GET /y")
+    reply["blocks"] = [
+        {
+            "kind": "code",
+            "block_id": "example",
+            "text": proposal,
+            "evidence": [evidence(ref=f"#/texts/{i}") for i in range(3)],
+        }
+    ]
+    if case == "other child":
+        reply["blocks"].append(
+            {
+                "kind": "body",
+                "block_id": "other",
+                "text": "no",
+                "evidence": [evidence(ref="#/texts/3")],
+            }
+        )
+    return draft, reply
+
+
+SYMBOL_SPACE = "Space count after an off-grid symbol was set from the drawn grid"
+
+
+@pytest.mark.parametrize(
+    "case,expected",
+    [
+        ("headed", "newman\nrun tests\n  GET /x\n  - ok"),
+        ("drawn indent", "newman\nrun tests\n  GET /x\n  - ok"),
+        ("symbols", "newman\n\u2192 Home  Starter\n  GET /x\n  \u2713  ok"),
+        ("symbol space", "newman\n\u2192 Home  Starter\n  GET /x\n  \u2713  ok"),
+        ("narrow", "newman\n\u2192 Home  Starter\n  GET /x\n  \u2713  ok"),
+        ("other child", None),
+        ("letter", None),
+        ("off grid", None),
+        ("ambiguous grid", None),
+        ("no gap", "newman\n\u2192Home\n  GET/x\n  \u2713ok"),
+    ],
+)
+def test_headed_listing_with_an_invalid_last_row_is_read_from_its_drawing(
+    tmp_path, draft, case, expected
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    draft, reply = headed_listing_reply(draft, case)
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply, reference_pages=[])
+    chunk = load_pdf_correction(ws, saved)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="headed"
+    )
+    (code,) = [b for b in source.blocks if b.kind == "code"]
+    reasons = [q.reason for q in chunk.uncertainties]
+    # The invalid span is never clipped; its row comes from the drawing.
+    assert any(
+        e.ref == "#/texts/2" and e.charspan is None
+        for q in chunk.uncertainties
+        for e in q.evidence
+    )
+    if expected is not None:
+        assert code.text == expected and chunk.schema_version == 17
+        assert "Proposed listing rows not verified in the owned drawing" not in reasons
+        symbol = [q for q in chunk.uncertainties if q.reason == SYMBOL_SPACE]
+        if case in ("symbols", "symbol space", "narrow"):
+            (q,) = symbol
+            assert [e.position.startswith("line origin") for e in q.evidence] == [
+                True,
+                True,
+            ]
+        else:
+            assert not symbol
+        return
+    # Otherwise the drawn rows are not adopted (the previous fallback).
+    assert "Proposed listing rows not verified in the owned drawing" in reasons
+    assert "ok" not in code.text
+
+
+def table_listing_reply(draft, case):
+    """Two Courier pages: code on page 1 continues as a code proposal cited only by a table."""
+    import pypdfium2 as pdfium
+
+    workspace, _, model = draft
+    rows = ["+-----+", "| a b |", "| c d |", "+-----+"]
+    pages = [
+        [(80, "a = 1")],
+        [(80 - 12 * i, row) for i, row in enumerate(rows)] + [(20, "After.")],
+    ]
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+    ]
+    for i in range(2):
+        objects.append(
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Font << /F 5 0 R >> >> /Contents {6 + i} 0 R >>".encode()
+        )
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>")
+    for lines in pages:
+        content = b"".join(
+            f"BT /F 9 Tf 8 {y} Td ({text}) Tj ET\n".encode() for y, text in lines
+        )
+        objects.append(
+            f"<< /Length {len(content)} >>\nstream\n".encode() + content + b"endstream"
+        )
+    pdf = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, obj in enumerate(objects, 1):
+        offsets.append(len(pdf))
+        pdf.extend(f"{i} 0 obj\n".encode() + obj + b"\nendobj\n")
+    xref = len(pdf)
+    pdf.extend(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode())
+    pdf.extend(b"".join(f"{offset:010d} 00000 n \n".encode() for offset in offsets))
+    pdf.extend(
+        f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    )
+    model.document = model.document.model_copy(
+        update=artifact(workspace, "originals", "pdf", bytes(pdf))
+    )
+    with pdfium.PdfDocument(bytes(pdf)) as document:
+        for page, number in zip(model.pages, range(2), strict=False):
+            buffer = BytesIO()
+            image = document[number].render(scale=1).to_pil()
+            image.save(buffer, format="PNG")
+            page.image = PDFArtifact(
+                **artifact(workspace, "drafts/pdf/images", "png", buffer.getvalue())
+            )
+            page.width_pixels, page.height_pixels = image.size
+            page.scale_x, page.scale_y = image.width / 200, image.height / 100
+            page.rendering["render_scale"] = 1
+
+    def item(ref, label, text, page, b, t):
+        box = {"l": 5, "r": 60, "b": b, "t": t, "coord_origin": "BOTTOMLEFT"}
+        return {
+            "self_ref": ref,
+            "label": label,
+            "text": text,
+            "prov": [{"page_no": page, "charspan": [0, len(text)], "bbox": box}],
+        }
+
+    # The rule rows are separate text items just outside the table box, read before it.
+    top = "+--x--+" if case == "undrawn rule" else rows[0]
+    texts = [
+        item("#/texts/0", "code", "a = 1", 1, 78, 88),
+        item("#/texts/1", "text", top, 2, 78, 88),
+        item("#/texts/2", "text", rows[3], 2, 42, 51),
+        item("#/texts/3", "text", "After.", 2, 18, 28),
+    ]
+    table = {
+        "self_ref": "#/tables/0",
+        "label": "table",
+        "prov": [
+            {
+                "page_no": 2,
+                "charspan": [0, 0],
+                "bbox": {
+                    "l": 6,
+                    "r": 58,
+                    "b": 50,
+                    "t": 79,
+                    "coord_origin": "BOTTOMLEFT",
+                },
+            }
+        ],
+        "data": {"num_rows": 2, "num_cols": 2, "table_cells": []},
+    }
+    order = ["#/texts/0", "#/texts/1", "#/texts/2", "#/tables/0", "#/texts/3"]
+    if case == "bare table":
+        # No separate rule items: the table box alone covers every drawn row.
+        texts[1:3] = []
+        order[1:3] = []
+        texts[1]["self_ref"] = order[-1] = "#/texts/1"
+        table["prov"][0]["bbox"].update(b=42, t=88)
+    if case == "unread table":
+        # The cited table is not in the body reading order at all.
+        order.remove("#/tables/0")
+    draft = rewrite_raw(
+        draft,
+        {
+            "body": {"children": [{"$ref": ref} for ref in order]},
+            "texts": texts,
+            "tables": [table],
+        },
+    )
+    reply = answer(draft[1])
+    reply["owned_pages"] = [1, 2]
+    proposal = "\n".join(rows)
+    if case == "unlike drawing":
+        proposal = proposal.replace("| c d |", "| c x |")
+    reply["blocks"] = [
+        {
+            "kind": "code",
+            "block_id": "head",
+            "text": "a = 1",
+            "evidence": [evidence(1, "#/texts/0")],
+            "outgoing": {"target": evidence(2, "#/tables/0"), "mode": "newline"},
+        },
+        {
+            "kind": "code",
+            "block_id": "table",
+            "text": proposal,
+            "evidence": [evidence(2, "#/tables/0")],
+            "incoming": {"target": evidence(1, "#/texts/0"), "mode": "newline"},
+        },
+        {
+            "kind": "body",
+            "block_id": "after",
+            "text": "After.",
+            "evidence": [evidence(2, order[-1])],
+        },
+    ]
+    if case == "owned rule":
+        # The table box alone draws these two rows, but other blocks own the rules.
+        reply["blocks"][1]["text"] = "\n".join(rows[1:3])
+        reply["blocks"][1:1] = [
+            {
+                "kind": "body",
+                "block_id": f"rule{i}",
+                "text": rows[0],
+                "evidence": [evidence(2, f"#/texts/{i}")],
+            }
+            for i in (1, 2)
+        ]
+    return draft, reply
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "table",
+        "bare table",
+        "unlike drawing",
+        "undrawn rule",
+        "owned rule",
+        "unread table",
+    ],
+)
+def test_code_cited_by_a_table_is_read_from_its_drawing_with_its_rule_rows(
+    tmp_path, draft, case
+):
+    from doc_translate.pdf_source import assemble_pdf_source
+
+    draft, reply = table_listing_reply(draft, case)
+    ws = draft[0]
+    saved = run(tmp_path, draft, reply, owned_pages=[1, 2], reference_pages=[])
+    chunk = load_pdf_correction(ws, saved)
+    source = assemble_pdf_source(
+        workspace=ws, chunk_sha256s=[saved], snapshot_id="table"
+    )
+    failed = [c for c in source.checks if c.name == "pdf_connection" and not c.passed]
+    reasons = [q.reason for q in chunk.uncertainties]
+    code = next(b for b in chunk.blocks if b.block_id == "table")
+    unverified = (
+        "No unique owned extraction range for the proposed display lines; "
+        "retained the evidenced code without confirming its layout"
+    )
+    if case in ("table", "bare table"):
+        assert chunk.schema_version == 17
+        assert [b.text for b in source.blocks] == [
+            "a = 1\n+-----+\n| a b |\n| c d |\n+-----+",
+            "After.",
+        ]
+        assert not failed and unverified not in reasons
+        assert "Readable owned range omitted by correction" not in reasons
+        refs = [e.ref for e in code.evidence]
+        if case == "table":
+            assert refs.count("#/texts/1") == refs.count("#/texts/2") == 1
+        drawn = [e for e in code.evidence if e.position.startswith("line origin")]
+        assert len(drawn) == 4 and {e.ref for e in drawn} == {"#/tables/0"}
+        return
+    # Otherwise the proposal is kept unconfirmed and the rule rows stay body text.
+    # A table outside the reading order has no ordered boundary for assemble to check.
+    assert unverified in reasons and (bool(failed) or case == "unread table")
+    assert [e.ref for e in code.evidence] == ["#/tables/0"]
+    texts = [b.text for b in source.blocks]
+    assert texts.count("+-----+") + texts.count("+--x--+") == 2
