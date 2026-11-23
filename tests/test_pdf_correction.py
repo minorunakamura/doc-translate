@@ -1513,7 +1513,7 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
             "printed-margin-v6": 7,
             "printed-separators-v7": 8,
             "printed-display-v8": 9,
-            "current": 17,
+            "current": 18,
         }[base]
     )
 
@@ -3907,7 +3907,7 @@ def test_named_orphan_recovers_historical_bytes_without_resending(
         # Both named saves can be loaded in one workspace without promotion.
         ref = ws / current.run.artifact
         ref.with_suffix(".unrelated").rename(ref)
-        assert load_pdf_correction(ws, new) == current and current.schema_version == 17
+        assert load_pdf_correction(ws, new) == current and current.schema_version == 18
         assert (
             load_pdf_correction(ws, digest) == chunk and path.read_bytes() == original
         )
@@ -4991,9 +4991,9 @@ def test_owned_body_punctuation_requires_the_local_drawing(tmp_path, draft, case
     visible = case == "supported"
     chunk = load_pdf_correction(ws, run(tmp_path, draft, reply, reference_pages=[]))
     (body,) = [b for b in chunk.blocks if b.kind == "body"]
-    assert chunk.schema_version == 17
+    assert chunk.schema_version == 18
     record = json.loads((ws / chunk.run.artifact).read_bytes())
-    assert record["request"]["context"]["adoption_rule"] == "drawn-table-listing-v16"
+    assert record["request"]["context"]["adoption_rule"] == "adopted-edge-target-v17"
     assert any(
         q.reason == "Separate note on page" and q.target_ids == [body.block_id]
         for q in chunk.uncertainties
@@ -6313,7 +6313,7 @@ def test_drawn_sidebar_between_split_paragraph_is_kept_whole_after_joining(
     )
     if expected is not None:
         assert texts == expected and not failed
-        assert chunk.schema_version == 17
+        assert chunk.schema_version == 18
         return
     assert "Words start" in texts and "continue here." in texts and failed
 
@@ -6327,7 +6327,7 @@ def test_drawn_sidebar_record_is_bound_to_its_adoption_rule(tmp_path, draft):
         [
             sys.executable,
             "-c",
-            "import sys; from pathlib import Path; from doc_translate.pdf_correction import load_pdf_correction; c=load_pdf_correction(Path(sys.argv[1]),sys.argv[2]); assert c.schema_version==17 and [b.enclosure for b in c.blocks[:2]]==[1,1]",
+            "import sys; from pathlib import Path; from doc_translate.pdf_correction import load_pdf_correction; c=load_pdf_correction(Path(sys.argv[1]),sys.argv[2]); assert c.schema_version==18 and [b.enclosure for b in c.blocks[:2]]==[1,1]",
             str(ws),
             saved,
         ],
@@ -6555,7 +6555,7 @@ def test_headed_listing_with_an_invalid_last_row_is_read_from_its_drawing(
         for e in q.evidence
     )
     if expected is not None:
-        assert code.text == expected and chunk.schema_version == 17
+        assert code.text == expected and chunk.schema_version == 18
         assert "Proposed listing rows not verified in the owned drawing" not in reasons
         symbol = [q for q in chunk.uncertainties if q.reason == SYMBOL_SPACE]
         if case in ("symbols", "symbol space", "narrow"):
@@ -6750,7 +6750,7 @@ def test_code_cited_by_a_table_is_read_from_its_drawing_with_its_rule_rows(
         "retained the evidenced code without confirming its layout"
     )
     if case in ("table", "bare table"):
-        assert chunk.schema_version == 17
+        assert chunk.schema_version == 18
         assert [b.text for b in source.blocks] == [
             "a = 1\n+-----+\n| a b |\n| c d |\n+-----+",
             "After.",

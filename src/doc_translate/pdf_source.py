@@ -73,6 +73,7 @@ def assemble_pdf_source(
     if len(owned) != len(set(owned)):
         raise ValueError("PDF source chunks have overlapping ownership")
     raw_items = {digest: items for digest, (_draft, items, _raw) in drafts.items()}
+    raw_docs = {digest: raw for digest, (_draft, _items, raw) in drafts.items()}
     document = next(iter(drafts.values()))[0].document
     if any(draft.document != document for draft, _items, _raw in drafts.values()):
         raise ValueError("PDF source chunks must use the same original document")
@@ -89,6 +90,7 @@ def assemble_pdf_source(
     drawn_proposal_order = {}
     selector_evidence = {}
     sidebars = {}
+    schema_versions = {}
     for digest, chunk, answer in chunks:
         # Adoption preserves the validated local ID of a linked code proposal;
         # newly allocated/split fragments never inherit continuations.
@@ -115,6 +117,7 @@ def assemble_pdf_source(
         for block in chunk.blocks:
             key = ids[block.block_id]
             originals[key] = block
+            schema_versions[key] = chunk.schema_version
             if chunk.schema_version >= 16 and getattr(block, "enclosure", None):
                 sidebars[key] = (digest, block.enclosure)
             proposal_evidence = body_selectors.get(block.block_id)
@@ -283,6 +286,66 @@ def assemble_pdf_source(
             for part in (linked_proposals[other], originals[other])
         )
 
+    def adopted_edge_target(link, key, other, *, first_line):
+        """Schema 18: a target adopted into `other` from its proposed edge line only.
+
+        The text of the target's adopted ranges must be in the first (or last)
+        line of the partner's proposed text, with all proposed evidence on the
+        other lines. Only those characters are compared, whitespace aside.
+        The adopted ranges must also come first (or last) among the partner's
+        adopted ranges in the extraction reading order (character position
+        within one item); a range without a reading position is rejected.
+        """
+        from doc_translate.pdf_adoption import _reading_order
+
+        if link is None or link.mode != "newline" or link.target is None:
+            return False
+        source, partner = raw_items[block_drafts[key]], raw_items[block_drafts[other]]
+
+        def hits(evidence, owner=other):
+            items = raw_items[block_drafts[owner]]
+            return [e for e in evidence if _matches(link.target, e, source, items)]
+
+        proposal = linked_proposals[other]
+        owners = [k for k in originals if hits(originals[k].evidence, k)]
+        ranges = hits(originals[other].evidence)
+        if owners != [other]:
+            return False
+        sequence = {
+            ref: i
+            for i, (ref, _node, _container) in enumerate(
+                _reading_order(raw_docs[block_drafts[other]], nested=True)
+            )
+        }
+        rest_ranges = [e for e in originals[other].evidence if e not in ranges]
+        if any(e.ref not in sequence for e in ranges + rest_ranges):
+            return False
+
+        def key(e):
+            return (sequence[e.ref], e.charspan[0] if e.charspan is not None else -1)
+
+        before = (lambda a, b: a < b) if first_line else (lambda a, b: a > b)
+        if not all(before(key(a), key(b)) for a in ranges for b in rest_ranges):
+            return False
+
+        def printed(evidence):
+            text = partner[evidence.ref].get("text") if evidence.ref else None
+            if not isinstance(text, str):
+                return None
+            if evidence.charspan is not None:
+                text = text[evidence.charspan[0] : evidence.charspan[1]]
+            return "".join(text.split()) or None
+
+        adopted = [printed(e) for e in ranges]
+        cited = [printed(e) for e in proposal.evidence]
+        if None in adopted or None in cited:
+            return False
+        lines = ["".join(line.split()) for line in proposal.text.splitlines()]
+        if len(lines) < 2:
+            return False
+        edge, rest = (lines[0], lines[1:]) if first_line else (lines[-1], lines[:-1])
+        return "".join(adopted) in edge and all(text in "".join(rest) for text in cited)
+
     def ordered_proposals(left, right):
         if left not in drawn_proposal_order and right not in drawn_proposal_order:
             return True
@@ -303,9 +366,21 @@ def assemble_pdf_source(
                 and proposal.language == partner.language
                 and max(e.page for e in originals[left].evidence)
                 <= min(e.page for e in originals[right].evidence)
-                and points_to(proposal.outgoing, left, right)
-                and points_to(partner.incoming, right, left)
             ):
+                outgoing = points_to(proposal.outgoing, left, right)
+                incoming = points_to(partner.incoming, right, left)
+                both = schema_versions[left] >= 18 and schema_versions[right] >= 18
+                # One direction only; the reverse link must match both evidences.
+                if both and incoming and not outgoing:
+                    outgoing = adopted_edge_target(
+                        proposal.outgoing, left, right, first_line=True
+                    )
+                elif both and outgoing and not incoming:
+                    incoming = adopted_edge_target(
+                        partner.incoming, right, left, first_line=False
+                    )
+                if not (outgoing and incoming):
+                    continue
                 forward[left].append(right)
                 backward[right].append(left)
 
