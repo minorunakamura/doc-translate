@@ -1374,7 +1374,7 @@ PROOFS="$BASELINE_PARENT/proof:$CURRENT_PARENT/proof" python "$S" adoption-diff 
 
 ## 描かれた囲みとページ間接続（#109）
 
-[#109 Plan](../../../../docs/plans/pdf-sidebar-continuation-109.md)の完了条件のうち、全70件の再生・採用差分・接続差分・囲みの一覧・人工CLIを扱う。条件と禁止事項は#101節と同じ。#109 の再生は `drawn-enclosure-v15`／schema 16 で行った。現行の `pdf_preservation_comparison.py` は `drawn-table-listing-v16`／schema 17 だけを受け付ける（#110節。schema 16 以前の再生には使えない）。
+[#109 Plan](../../../../docs/plans/pdf-sidebar-continuation-109.md)の完了条件のうち、全70件の再生・採用差分・接続差分・囲みの一覧・人工CLIを扱う。条件と禁止事項は#101節と同じ。#109 の再生は `drawn-enclosure-v15`／schema 16 で行った。現行の `pdf_preservation_comparison.py` は `adopted-edge-target-v17`／schema 18 だけを受け付ける（#111節。schema 17 以前の再生には使えない）。
 
 1. **全70件：** #101節の shell を `mode=all` として新規0700親で1回実行する。合格は exit 0・`population-status.json` で `saved` 70・`rejected` 0・`not attempted` 0。拒否があれば比較に進まない。
 2. **採用差分：** #101節「第3版・第4版」の `adoption-diff` を別の新規0700親 `D` で、`PROOFS="$PWD/work/preservation-all-GvSexcSD/proof:<1の親>/proof"`（基準は#101 r6 の最終再生、private）として実行する。続けて `python .pi/skills/verify-project/scripts/pdf_enclosure_comparison.py "$D" >"$D/enclosure.stdout" 2>"$D/enclosure.stderr"`。`$D/enclosure.json` の `enclosure_or_schema_only`（schema 15→16 と `enclosure` の追加だけ）と `other`（ブロック内容・順序の差）に分かれる。`enclosures` は囲みブロックごとの所有開始・囲み番号・ページ・ref・旧→新の位置・移動の有無。期待：`other` は所有開始91の順序だけ（`p91-note-title`・`p91-note` が見出し `p91-descriptors-heading` の前へ移動）。それ以外の `other` と、`enclosures` の全ページは原画像と照合して説明する。p155 の囲み3（`#/texts/2272`、Docling が section_header と付けたコードのファイル名バー）は囲みとして記録されるが、移動・接続・出力の変化はない（既知の誤判定）。
@@ -1387,7 +1387,7 @@ PROOFS="$BASELINE_PARENT/proof:$CURRENT_PARENT/proof" python "$S" adoption-diff 
 
 ## ページをまたぐコードと表の接続（#110）
 
-[#110 第2版Plan](../../../../docs/plans/pdf-code-table-continuation-110-r2.md)の完了条件のうち、全70件の再生・採用差分・接続差分・212→213 の観測・人工CLIを扱う。対象版は `drawn-table-listing-v16`／schema 17（現行の `pdf_preservation_comparison.py` が受け付ける版）。条件と禁止事項は#101節と同じ。
+[#110 第2版Plan](../../../../docs/plans/pdf-code-table-continuation-110-r2.md)の完了条件のうち、全70件の再生・採用差分・接続差分・212→213 の観測・人工CLIを扱う。#110 の再生は `drawn-table-listing-v16`／schema 17 で行った（現行の script は #111節の版だけを受け付ける）。条件と禁止事項は#101節と同じ。
 
 1. **全70件：** #101節の shell を `mode=all` として新規0700親で1回実行する。合格は exit 0・`population-status.json` で `saved` 70・`rejected` 0・`not attempted` 0。拒否があれば比較に進まない。
 2. **採用差分：** #101節「第3版・第4版」の `adoption-diff` を別の新規0700親 `D` で、`PROOFS="$PWD/work/preservation-all-9drsIXYe/proof:<1の親>/proof"`（基準は#109 の最終再生、private）として実行する。`$D/proof/observations.json` の `schema_only`（差が `schema_version` だけの chunk）とそれ以外に分け、それ以外の各差を原画像で判定する。
@@ -1409,3 +1409,23 @@ PROOFS="$BASELINE_PARENT/proof:$CURRENT_PARENT/proof" python "$S" adoption-diff 
 各親に revision・dirty・tested.diff・command・exit を残し、自分で作った一時物だけを回収して証拠を再読する。原画像との照合（212–213枚目、189枚目の空行）は Root が別の親で行う。
 
 既知の限界：保証するのは 212→213 の1組で、ほかのページへの一般化は保証しない。`code189` の空行は描画行の採用で消え、空行数は行間から決めない（QA だけ残す）。格子外記号の送り幅は、同じ行で次の文字（生成空白を含む）の原点との差から取る（生成空白の位置が送りの終わりと一致する書籍を前提とする）。
+
+## 採用後にだけ一致するコードのtarget（#111）
+
+[#111 第2版Plan](../../../../docs/plans/pdf-code-continuation-adopted-target-111-r2.md)の完了条件のうち、全70件の再生・採用差分・接続差分・73→74 の観測・人工CLIを扱う。対象版は `adopted-edge-target-v17`／schema 18（現行の `pdf_preservation_comparison.py` が受け付ける版）。条件と禁止事項は#101節と同じ。基準は#110 の最終再生 `work/preservation-all-tum3kOHp/proof/`（private）。
+
+1. **全70件：** #101節の shell を `mode=all` として新規0700親で1回実行する（約2時間。ツールの実行時間制限がある場合は `nohup` で起動し、`exit` の出現を待つ）。合格は exit 0・`population-status.json` で `saved` 70・`rejected` 0・`not attempted` 0。拒否があれば比較に進まない。
+2. **採用差分：** #101節「第3版・第4版」の `adoption-diff` を別の新規0700親 `D` で、`PROOFS="$PWD/work/preservation-all-tum3kOHp/proof:<1の親>/proof"` として実行する。期待：`schema_only` と `changed` が同じ70件で、各 chunk の差は `other_fields: ["schema_version"]` だけ（方式名は attempt 側で、`run` は比べない）。
+3. **接続差分：** 1と基準の `observations.json` の `connections` を比べる。期待：`added` に `p73-code`→`p74-code1` の1件だけが増え、ほかの追加・消失・相手変更は block_id まで同じ。
+4. **73→74 の観測：** 別の新規0700親 `O` で、1の `proof/capture.json` を読取専用で使う。
+
+   ```sh
+   (cd .pi/skills/verify-project/scripts && python pdf_adopted_edge_observation.py "$OLDPWD/<1の親>/proof" "$O/proof") >"$O/stdout" 2>"$O/stderr"
+   ```
+
+   結果は `$O/proof/observations.json`（private）、stdout は pass/fail だけ。期待（すべて pass）：fragments が `p73-code`・`p74-code1` の2つで1 block、断片の行（5行＋10行）が紙面順に各1回、locations が73・74枚目、英語出力に block 本文が1回、コードは units に入らない、この組の Unresolved outgoing／incoming code continuation の QA と失敗した `pdf_connection` check がない、「Additional blank-line count not evidenced by the original」の QA が1件残る。基準の proof を渡すと1 block にならず失敗する（対照）。
+5. **人工CLI：** 別の新規0700親で `export CHECK_BODY_SYMBOL=1` として#97節の「別の人工実操作」を実行する（実行時間制限がある場合は `nohup`）。期待：`cli.exit` 0、`results.json` の各 `resume_sends` 0（immutable不変はassert）。
+
+各親に revision・dirty・tested.diff・command・exit を残し、自分で作った一時物だけを回収して証拠を再読する。原画像（73–74枚目）との照合は Root が別の親で行う。
+
+既知の限界：p74 の2つの例の間の空行は、抽出・描画の根拠がないため出力にない（空行数の QA だけ残る。#110 以前と同じ）。保証するのは 73→74 の1組で、75→76 などほかの未接続は対象外。

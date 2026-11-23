@@ -949,23 +949,242 @@ def test_unique_code_pair_only_crosses_independent_footnotes(tmp_path, draft, ki
     assert all(c.passed for c in source.checks)
 
 
-def test_added_listing_range_cannot_substitute_for_original_target(tmp_path, draft):
+def adopted_edge_pair(draft, left_text, left_target, right_text, right_target):
+    """L and R propose rows 0 and 2; the middle row is adopted by whichever cites it."""
     from test_pdf_correction import competing_listing_reply
 
     draft, reply = competing_listing_reply(draft)
     left, right = reply["blocks"]
-    # The second printed row belongs to L after adoption, but R targets that
-    # row, not L's proposed source (the first row).
     left.update(
-        text="left\nmiddle",
-        outgoing={"mode": "newline", "target": evidence(ref="#/texts/2")},
+        text=left_text,
+        outgoing={"mode": "newline", "target": evidence(ref=left_target)},
     )
     right.update(
-        text="right", incoming={"mode": "newline", "target": evidence(ref="#/texts/1")}
+        text=right_text,
+        incoming={"mode": "newline", "target": evidence(ref=right_target)},
+    )
+    return draft, left, right
+
+
+def assert_joined(source, texts, pages_refs):
+    (code,) = source.blocks
+    assert code.text == "\n".join(texts)
+    assert [f["block"]["text"] for f in code.structure["fragments"]] == texts
+    assert [(l.page, l.extraction_ref) for l in code.locations] == pages_refs
+    assert not any(q.stage == "pdf_connection" for q in source.uncertainties)
+    assert not any(c.name == "pdf_connection" and not c.passed for c in source.checks)
+
+
+def test_target_adopted_from_partner_first_proposed_line_joins(tmp_path, draft):
+    # R's proposal starts with the middle row, outside its proposed source (row 2);
+    # L targets that row, which only R's adopted range holds.
+    draft, left, right = adopted_edge_pair(
+        draft, "left", "#/texts/1", "middle\nright", "#/texts/0"
     )
     source = assemble(draft, [accept(tmp_path, draft, [left, right], [1], [])])
+    assert_joined(
+        source,
+        ["left", "middle\nright"],
+        [(1, "#/texts/0"), (1, "#/texts/2"), (1, "#/texts/1")],
+    )
+
+
+def test_target_adopted_from_partner_last_proposed_line_joins(tmp_path, draft):
+    # Mirror: L's proposal ends with the middle row after its proposed source (row 0).
+    draft, left, right = adopted_edge_pair(
+        draft, "left\nmiddle", "#/texts/2", "right", "#/texts/1"
+    )
+    source = assemble(draft, [accept(tmp_path, draft, [left, right], [1], [])])
+    assert_joined(
+        source,
+        ["left\nmiddle", "right"],
+        [(1, "#/texts/0"), (1, "#/texts/1"), (1, "#/texts/2")],
+    )
+
+
+def test_schema_17_record_with_adopted_edge_target_keeps_fragments(tmp_path, draft):
+    import json
+
+    from test_pdf_correction import artifact
+
+    draft, left, right = adopted_edge_pair(
+        draft, "left", "#/texts/1", "middle\nright", "#/texts/0"
+    )
+    ws = draft[0]
+    current = accept(tmp_path, draft, [left, right], [1], [])
+    data = json.loads((ws / f"corrections/pdf/{current}.json").read_bytes())
+    record = json.loads((ws / data["run"]["artifact"]).read_bytes())
+    record["request"]["context"]["adoption_rule"] = "drawn-table-listing-v16"
+    data |= {
+        "schema_version": 17,
+        "run": artifact(
+            ws, "attempts/pdf-correction", "json", json.dumps(record).encode()
+        ),
+    }
+    old = artifact(
+        ws,
+        "corrections/pdf",
+        "json",
+        json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode(),
+    )["sha256"]
+    chunk = load_pdf_correction(ws, old)
+    assert chunk.schema_version == 17
     assert_separate(
-        source, [left | {"evidence": [evidence(), evidence(ref="#/texts/1")]}, right]
+        assemble(draft, [old]),
+        [
+            b.model_dump(mode="json", include={"block_id", "text", "evidence"})
+            for b in chunk.blocks
+        ],
+    )
+
+
+def printed_rows(draft, rows):
+    """One extraction item per (text, label); each line of its text is a printed row."""
+    from test_pdf_correction import listing_reply, rewrite_raw
+
+    lines = [line for text, _ in rows for line in text.split("\n")]
+    step = min(20, 80 // len(lines))  # keep every row on the 100-point page
+    draft, _ = listing_reply(
+        draft, [(80 - step * i, t) for i, t in enumerate(lines)], "", ""
+    )
+    nodes, row = [], 0
+    for i, (text, label) in enumerate(rows):
+        prov, start = [], 0
+        for line in text.split("\n"):
+            y = 80 - step * row
+            box = {"l": 0, "r": 100, "t": y + 10, "b": y - 2}
+            prov.append(
+                {
+                    "page_no": 1,
+                    "charspan": [start, start + len(line)],
+                    "bbox": box | {"coord_origin": "BOTTOMLEFT"},
+                }
+            )
+            start += len(line) + 1
+            row += 1
+        nodes.append(
+            {"self_ref": f"#/texts/{i}", "label": label, "text": text, "prov": prov}
+        )
+    return rewrite_raw(
+        draft,
+        {
+            "body": {"children": [{"$ref": n["self_ref"]} for n in nodes]},
+            "texts": nodes,
+        },
+    )
+
+
+def linked_code(key, text, ref, **targets):
+    return fragment(key, text, 1, kind="code") | {
+        "evidence": [evidence(ref=ref)],
+        **{
+            direction: {"mode": "newline", "target": evidence(ref=target)}
+            for direction, target in targets.items()
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "case,rows,left,right",
+    [
+        # R's adopted second line, not its first.
+        (
+            "not edge",
+            ["left", "aa", "bb", "right"],
+            ("left", "#/texts/2"),
+            ("aa\nbb\nright", "#/texts/0"),
+        ),
+        # The targeted row is not in R's proposed text, so R never adopts it.
+        (
+            "not proposed",
+            ["left", "aa", "bb", "right"],
+            ("left", "#/texts/1"),
+            ("bb\nright", "#/texts/0"),
+        ),
+        # R's adopted row follows its proposed source instead of preceding it.
+        (
+            "inside evidence",
+            ["left", "head", "mid"],
+            ("left", "#/texts/2"),
+            ("head\nmid", "#/texts/0"),
+        ),
+        # One item printed on both sides: L and R each adopt one of its rows.
+        (
+            "also adopted",
+            ["left", "aa\nbb", "right"],
+            ("left\naa", "#/texts/1"),
+            ("bb\nright", "#/texts/0"),
+        ),
+        # Each target is valid alone, but neither matches the other's proposal.
+        (
+            "both directions",
+            ["left", "m1", "m2", "right"],
+            ("left\nm1", "#/texts/2"),
+            ("m2\nright", "#/texts/1"),
+        ),
+        # R cites its second line and adopts the rest; its first and third lines
+        # print the same text, and L targets the third.
+        (
+            "repeated edge text",
+            ["left", "Home", "-> Account", "Home", "-> Home"],
+            ("left", "#/texts/3"),
+            ("Home\n-> Account\nHome\n-> Home", "#/texts/0"),
+        ),
+        # The same, printed as one item: L targets the third line's charspan.
+        (
+            "repeated text in one item",
+            ["left", "Home\n-> Account\nHome\n-> Home"],
+            ("left", "#/texts/1"),
+            ("Home\n-> Account\nHome\n-> Home", "#/texts/0"),
+        ),
+    ],
+)
+def test_target_adopted_only_outside_the_partner_edge_keeps_fragments(
+    tmp_path, draft, case, rows, left, right
+):
+    code = {0, len(rows) - 1} | (
+        {1} if case in ("inside evidence", "also adopted") else set()
+    )
+    if case == "repeated edge text":
+        code.add(2)
+    draft = printed_rows(
+        draft, [(t, "code" if i in code else "text") for i, t in enumerate(rows)]
+    )
+    last = f"#/texts/{len(rows) - 1}"
+    head = "#/texts/1" if case == "inside evidence" else last
+    pieces = [
+        linked_code("L", left[0], "#/texts/0", outgoing=left[1]),
+        linked_code("R", right[0], head, incoming=right[1]),
+    ]
+    if case == "repeated edge text":
+        pieces[1]["evidence"] = [evidence(ref="#/texts/2")]
+    if case == "repeated text in one item":
+        pieces[0]["outgoing"]["target"]["charspan"] = [16, 20]
+        pieces[1]["evidence"] = [evidence(ref="#/texts/1", charspan=[5, 15])]
+    digest = accept(tmp_path, draft, pieces, [1], [])
+    adopted = load_pdf_correction(draft[0], digest).blocks
+    target = pieces[0]["outgoing"]["target"]
+    owners = [
+        b.block_id
+        for b in adopted
+        if b.block_id in ("L", "R")
+        and any(
+            e.ref == target["ref"]
+            and (
+                target.get("charspan") is None
+                or list(e.charspan or []) == target["charspan"]
+            )
+            for e in b.evidence
+        )
+    ]
+    assert owners == {"not proposed": [], "also adopted": ["L", "R"]}.get(case, ["R"])
+    source = assemble(draft, [digest])
+    assert_separate(
+        source,
+        [
+            b.model_dump(mode="json", include={"block_id", "text", "evidence"})
+            for b in adopted
+        ],
     )
 
 

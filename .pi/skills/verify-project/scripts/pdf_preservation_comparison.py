@@ -41,10 +41,10 @@ def capture(workspace, ids):
     pages = [page for chunk in chunks for page in chunk.owned_pages]
     assert pages == (list(range(81, 86)) if len(ids) == 1 else list(range(1, 347)))
     for chunk in chunks:
-        assert chunk.schema_version == 17
+        assert chunk.schema_version == 18
         record = json.loads(checked(workspace / chunk.run.artifact, chunk.run.sha256))
         assert (
-            record["request"]["context"]["adoption_rule"] == "drawn-table-listing-v16"
+            record["request"]["context"]["adoption_rule"] == "adopted-edge-target-v17"
         )
     return capture_output(
         workspace, digests, list(ids), chunks, "preservation-101", assets=True
