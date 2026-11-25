@@ -105,6 +105,91 @@ PY
 
 証拠：`revision.txt/dirty.txt/scope.diff/saved-status.py.txt/preflight.txt/help.txt/initial-files.json/observations.json/cleanup.txt`と各`.stdout/.stderr`。失敗時もobservationsとcleanupを確認し、成功に書き換えない。証拠はworkspace外に残り、末尾でcleanup後の再読を行う。手順変更後はこの公開入口を再実行する。
 
+### コード例reference QA（Issue #102）
+
+上の第1ブロック（revision／dirty／diff／preflight証拠）と同じ`files`/`invoke`・cleanup・再読の型を再利用し、自作PDF source（`tests/test_render.py::save_source`相当）とEPUB（同`epub_workspace`）でコード例の`id/href/src`が参照と誤認されないことだけを補う。翻訳／run／Node／認証／推論は不要。上の第1ブロックの後、同じshellで実行する。
+
+```sh
+PYTHONPATH=tests .venv/bin/python - <<'PY'
+import hashlib, html, json, os, subprocess, sys, tempfile
+from pathlib import Path
+from test_render import epub_workspace, save_source
+
+evidence = Path(os.environ['EVIDENCE'])
+cli = str(Path(sys.executable).with_name('doc-translate'))
+env = {**os.environ, 'PATH': '', 'HF_HUB_OFFLINE': '1', 'TRANSFORMERS_OFFLINE': '1'}
+literal = '<a id="block-1" href="#absent"><img src="not-an-asset"></a>'
+observations = []
+
+def files(workspace):
+    return {str(p.relative_to(workspace)): [hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_mtime_ns]
+            for p in workspace.rglob('*') if p.is_file()}
+
+def invoke(workspace, name, operation, flags, expected):
+    before = files(workspace)
+    command = [cli, operation, str(workspace), *flags]
+    result = subprocess.run(command, env=env, capture_output=True, text=True, check=False)
+    (evidence / (name + '.stdout')).write_text(result.stdout)
+    (evidence / (name + '.stderr')).write_text(result.stderr)
+    observations.append({'name': name, 'command': command, 'expected_exit': expected, 'exit': result.returncode})
+    assert result.returncode == expected, (name, result.stderr)
+    if operation == 'status':
+        assert files(workspace) == before, 'status changed bytes or mtime'
+    return result.stdout
+
+def references(summary):
+    return next(c['passed'] for c in summary['machine_checks'] if c['name'] == 'render_references')
+
+try:
+    with tempfile.TemporaryDirectory(prefix='reference-owned-', dir=evidence) as owned:
+        escaped = html.escape(literal)
+        for format in ('pdf', 'epub'):
+            case = Path(owned) / format
+            case.mkdir()
+            workspace = save_source(case, [
+                {'block_id': 'one', 'kind': 'code', 'text': literal},
+                {'block_id': 'two', 'kind': 'code', 'text': literal},
+                {'block_id': 'inline', 'kind': 'body', 'text': literal + literal, 'structure': {'inline': [
+                    {'kind': 'code', 'text': literal}, {'kind': 'literal', 'text': literal}]}},
+            ]) if format == 'pdf' else epub_workspace(case, '<html xmlns="http://www.w3.org/1999/xhtml"><head/><body><pre>'
+                + escaped + '</pre><pre>' + escaped + '</pre><p><code>' + escaped + '</code></p></body></html>')
+            rendered = json.loads(invoke(workspace, format + '-render', 'render', [], 1))
+            assert references(rendered)
+            for language in ('english', 'japanese'):
+                document = (workspace / rendered['artifacts'][language]).read_text()
+                assert document.count('```\n' + literal + '\n```') == 2
+                assert '<code>' + escaped + '</code>' in document
+            # Simulate a summary saved by the old regex QA: render_references failed.
+            summary = workspace / rendered['artifacts']['summary']
+            legacy = json.loads(summary.read_bytes())
+            next(c for c in legacy['machine_checks'] if c['name'] == 'render_references')['passed'] = False
+            summary.write_text(json.dumps(legacy))
+            manifest = json.loads((workspace / 'render.json').read_bytes())
+            manifest['files'][str(summary.relative_to(workspace))] = hashlib.sha256(summary.read_bytes()).hexdigest()
+            (workspace / 'render.json').write_text(json.dumps(manifest))
+            invoke(workspace, format + '-light', 'status', [], 0)
+            current = json.loads(invoke(workspace, format + '-verify-json', 'status', ['--verify', '--json'], 0))
+            assert references(current) and current['render_current'] is False
+            assert current['adopted_output_current'] is True and current['previous_artifacts'] == rendered['artifacts']
+            again = json.loads(invoke(workspace, format + '-rerender', 'render', [], 1))
+            assert references(again)
+            assert json.loads(invoke(workspace, format + '-after-json', 'status', ['--json'], 0))['render_current'] is True
+            observations.append({'format': format, 'expected': 'literals kept; references pass in ja/en; legacy failed summary shown as previous by detailed status; current after rerender', 'observed': 'matched'})
+finally:
+    (evidence / 'reference-observations.json').write_text(json.dumps(observations, ensure_ascii=False, indent=2))
+    leftovers = list(evidence.glob('reference-owned-*'))
+    (evidence / 'reference-cleanup.txt').write_text('owned workspaces removed; short-lived children reaped\n' if not leftovers else 'cleanup incomplete\n')
+    assert not leftovers
+for path in evidence.iterdir():
+    if path.is_file():
+        path.read_bytes()
+print(evidence)
+print('PDF/EPUB code-literal reference QA and legacy summary status matched; cleanup and evidence reread complete')
+PY
+```
+
+期待：各renderは未訳のためexit1、statusは全てexit0でfile hash／mtime不変。両言語でcode fence／inline code／literalは原文どおり残り、`render_references`は成功。旧summary（参照失敗）に対し軽量statusは保存当時のprojectionのまま、`--verify --json`は現在のQA・`render_current: false`・`adopted_output_current: true`・旧出力を`previous_artifacts`として返し、保存byte／pointerを書き換えない。再render後は`render_current: true`。証拠は各stdout／stderr・`reference-observations.json`・`reference-cleanup.txt`。本物の重複anchor／存在しない内部target／未認可assetの失敗は直接注入できないため`tests/test_render.py::test_render_references_detect_generated_markup_faults`で補完する。viewer表示・意味品質・実書籍は未確認。
+
 ### 想定外の失敗記録（Issue #116）
 
 focused回帰は`tests/test_run.py::test_run_unexpected_stage_exception_leaves_failure_record_without_secrets`、`tests/test_run.py::test_run_expected_inference_failure_writes_no_failure_record`、`tests/test_resume.py::test_resume_unexpected_validation_failure_records_cause_without_book_text`。

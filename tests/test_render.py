@@ -133,6 +133,217 @@ def test_render_preserves_code_formula_and_marks_only_display_outside_protected_
     assert load_source_snapshot(workspace).model_dump_json() == before
 
 
+def test_render_references_ignore_code_inline_code_and_literal_html(tmp_path):
+    import html
+
+    from doc_translate.render import render_document
+
+    literal = '<div id="block-1"><a href="#not-a-reference"><img src="not-an-asset"></a></div>'
+    workspace = save_source(
+        tmp_path,
+        [
+            {"block_id": "first", "kind": "code", "text": literal},
+            {"block_id": "second", "kind": "code", "text": literal},
+            {
+                "block_id": "inline",
+                "kind": "body",
+                "text": literal + literal,
+                "structure": {
+                    "inline": [
+                        {"kind": "code", "text": literal},
+                        {"kind": "literal", "text": literal},
+                    ]
+                },
+            },
+        ],
+    )
+    pointer = (workspace / "source-snapshot.json").read_bytes()
+    result = render_document(workspace)
+    assert next(
+        c["passed"]
+        for c in result["machine_checks"]
+        if c["name"] == "render_references"
+    )
+    for language in ("english", "japanese"):
+        document = artifact(workspace, result, language)
+        assert document.count("```\n" + literal + "\n```") == 2
+        assert "<code>" + html.escape(literal) + "</code>" in document
+        assert html.unescape(document).count(literal) == 4
+    assert (workspace / "source-snapshot.json").read_bytes() == pointer
+
+
+@pytest.mark.parametrize("fault", ["duplicate-anchor", "internal-target", "asset"])
+def test_render_references_detect_generated_markup_faults(tmp_path, monkeypatch, fault):
+    from doc_translate.render import _Markdown, render_document
+    from doc_translate.render_assets import RenderAssets
+
+    workspace = save_source(
+        tmp_path,
+        [
+            {"block_id": "one", "kind": "body", "text": "First"},
+            {
+                "block_id": "two",
+                "kind": "body",
+                "text": "Link",
+                "structure": {
+                    "inline": [
+                        {
+                            "kind": "link",
+                            "target": "https://example.test/",
+                            "children": [{"kind": "text", "text": "Link"}],
+                        }
+                    ]
+                },
+            },
+            {"block_id": "image", "kind": "picture", "text": ""},
+        ],
+    )
+    # Inject only the faulty generated value; exercise the real public render and QA.
+    if fault == "duplicate-anchor":
+        original_init = _Markdown.__init__
+
+        def duplicate_anchor(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            self.anchors["two"] = self.anchors["one"]
+
+        monkeypatch.setattr(_Markdown, "__init__", duplicate_anchor)
+    elif fault == "internal-target":
+        monkeypatch.setattr(_Markdown, "link", lambda self, value: "#absent")
+    else:
+        monkeypatch.setattr(
+            RenderAssets, "pdf_picture", lambda self, structure: "assets/unapproved.png"
+        )
+    result = render_document(workspace)
+    assert not next(
+        c["passed"]
+        for c in result["machine_checks"]
+        if c["name"] == "render_references"
+    )
+    for language in ("english", "japanese"):
+        document = artifact(workspace, result, language)
+        if fault == "duplicate-anchor":
+            assert document.count('<a id="block-1"></a>') == 2
+        elif fault == "internal-target":
+            assert 'href="#absent"' in document
+        else:
+            assert 'src="assets/unapproved.png"' in document
+
+
+def test_epub_code_literals_do_not_hide_generated_node_anchors(tmp_path):
+    import html
+
+    from doc_translate.render import render_document
+
+    literal = '<a id="node-1-2" href="#absent"><img src="not-an-asset"></a>'
+    workspace = epub_workspace(
+        tmp_path,
+        '<html xmlns="http://www.w3.org/1999/xhtml"><head/><body>'
+        + "<pre>"
+        + html.escape(literal)
+        + "</pre>"
+        + "<pre>"
+        + html.escape(literal)
+        + "</pre>"
+        + "<p><code>"
+        + html.escape(literal)
+        + "</code></p></body></html>",
+    )
+    result = render_document(workspace)
+    assert next(
+        c["passed"]
+        for c in result["machine_checks"]
+        if c["name"] == "render_references"
+    )
+    for language in ("english", "japanese"):
+        document = artifact(workspace, result, language)
+        assert document.count("```\n" + literal + "\n```") == 2
+        assert '<a id="node-1-2"></a>' in document
+        assert "<code>" + html.escape(literal) + "</code>" in document
+
+
+def test_code_literal_does_not_claim_hidden_block_output_reached(tmp_path):
+    from doc_translate.render import render_document
+
+    workspace = save_source(
+        tmp_path,
+        [
+            {"block_id": "inside", "kind": "body", "text": "Hidden figure text"},
+            {
+                "block_id": "figure",
+                "kind": "picture",
+                "text": "",
+                "structure": {
+                    "members": [{"target_id": "inside", "status": "confirmed"}]
+                },
+            },
+            {"block_id": "example", "kind": "code", "text": '<a id="block-1"></a>'},
+        ],
+    )
+    result = render_document(workspace)
+    assert result["processing"]["output_reached_blocks"] == ["figure", "example"]
+    mapping = json.loads(artifact(workspace, result, "source_map"))
+    assert mapping["blocks"][0]["output_anchor"] is None
+
+
+def test_detailed_status_marks_legacy_reference_check_summary_previous_without_rewriting(
+    tmp_path,
+):
+    import hashlib
+
+    from doc_translate.render import render_document, workspace_status
+
+    workspace = save_source(
+        tmp_path,
+        [{"block_id": "code", "kind": "code", "text": '<a id="sample"></a>'}],
+    )
+    rendered = render_document(workspace)
+    summary_path = workspace / rendered["artifacts"]["summary"]
+    legacy = json.loads(summary_path.read_bytes())
+    next(c for c in legacy["machine_checks"] if c["name"] == "render_references")[
+        "passed"
+    ] = False
+    summary_path.write_text(json.dumps(legacy))
+    manifest_path = workspace / "render.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest["files"][str(summary_path.relative_to(workspace))] = hashlib.sha256(
+        summary_path.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
+    before = {
+        p: (p.read_bytes(), p.stat().st_mtime_ns)
+        for p in workspace.rglob("*")
+        if p.is_file()
+    }
+    cli = subprocess.run(
+        [
+            str(Path(sys.executable).parent / "doc-translate"),
+            "status",
+            str(workspace),
+            "--json",
+        ],
+        env={**os.environ, "PATH": ""},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert cli.returncode == 0, cli.stderr
+    for result in (workspace_status(workspace), json.loads(cli.stdout)):
+        assert next(
+            c["passed"]
+            for c in result["machine_checks"]
+            if c["name"] == "render_references"
+        )
+        assert result["render_current"] is False
+        assert result["adopted_output_current"] is True
+        assert result["previous_artifacts"] == rendered["artifacts"]
+    assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before} == before
+    render_document(workspace)
+    assert workspace_status(workspace)["render_current"] is True
+    assert {
+        p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before if p != manifest_path
+    } == {p: value for p, value in before.items() if p != manifest_path}
+
+
 def test_render_and_status_cli_do_not_require_node_or_pdf_dependencies(tmp_path):
     workspace = tmp_path / "workspace"
     fixture = Path(__file__).parent / "fixtures/render-source.pdf.json"
