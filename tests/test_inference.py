@@ -305,9 +305,9 @@ def test_image_max_bytes_counts_base64_not_raw_png(tmp_path, mode):
 
 
 def test_selection_priority_is_per_field_and_has_no_defaults(monkeypatch):
-    monkeypatch.setenv("PI_PROVIDER", "environment-provider")
-    monkeypatch.setenv("PI_MODEL", "environment-model")
-    monkeypatch.setenv("PI_REASONING_LEVEL", "low")
+    monkeypatch.setenv("DOC_TRANSLATE_PROVIDER", "environment-provider")
+    monkeypatch.setenv("DOC_TRANSLATE_MODEL", "environment-model")
+    monkeypatch.setenv("DOC_TRANSLATE_THINKING", "low")
     config = resolve_config(
         stage=Selection(model="stage-model"),
         shared=Selection(provider="shared-provider"),
@@ -317,7 +317,8 @@ def test_selection_priority_is_per_field_and_has_no_defaults(monkeypatch):
         "stage-model",
         "low",
     )
-    monkeypatch.delenv("PI_REASONING_LEVEL")
+    monkeypatch.delenv("DOC_TRANSLATE_THINKING")
+    monkeypatch.setenv("PI_REASONING_LEVEL", "low")
     with pytest.raises(ValueError):
         resolve_config()
 

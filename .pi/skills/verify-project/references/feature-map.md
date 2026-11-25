@@ -1429,3 +1429,71 @@ PROOFS="$BASELINE_PARENT/proof:$CURRENT_PARENT/proof" python "$S" adoption-diff 
 各親に revision・dirty・tested.diff・command・exit を残し、自分で作った一時物だけを回収して証拠を再読する。原画像（73–74枚目）との照合は Root が別の親で行う。
 
 既知の限界：p74 の2つの例の間の空行は、抽出・描画の根拠がないため出力にない（空行数の QA だけ残る。#110 以前と同じ）。保証するのは 73→74 の1組で、75→76 などほかの未接続は対象外。
+
+## 環境変数の取り違え（Issue #113）
+
+入口は公開`run INPUT --workspace DIR`だけ。provider/model/thinkingフラグを付けず、既定値が`DOC_TRANSLATE_PROVIDER`／`DOC_TRANSLATE_MODEL`／`DOC_TRANSLATE_THINKING`からだけ解決され、pi agentの`PI_PROVIDER`／`PI_MODEL`／`PI_REASONING_LEVEL`では送信しないことを確認する。前提・entry構成は「EPUB run／resumeと共通進捗」と同じ（既存`.venv`、Node、`ai/dist`、実CLI→実Node `run-process.mjs`→network拒否付き公開faux、`tests/fixtures/resume_process.py --helper <json> --`）。childのenvは`os.environ`から両系統を除去してから明示設定する。repository rootで実行する。
+
+```sh
+EVIDENCE=$(mktemp -d "$PWD/work/test-verification-env113-XXXXXX")
+export EVIDENCE
+PYTHONPATH=tests .venv/bin/python - <<'PY'
+import json, os, shutil, subprocess, sys, tempfile
+from pathlib import Path
+from test_epub import make_epub
+root, evidence = Path.cwd(), Path(os.environ['EVIDENCE'])
+python = str(Path(sys.executable).absolute())
+(evidence / 'revision.txt').write_text(subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True))
+(evidence / 'dirty.txt').write_text(subprocess.check_output(['git', 'status', '--short'], text=True))
+(evidence / 'scope.diff').write_text(subprocess.check_output(['git', 'diff'], text=True))
+names = ['PI_PROVIDER', 'PI_MODEL', 'PI_REASONING_LEVEL',
+         'DOC_TRANSLATE_PROVIDER', 'DOC_TRANSLATE_MODEL', 'DOC_TRANSLATE_THINKING']
+base = {k: v for k, v in os.environ.items() if k not in names}
+cases = [
+    ('pi-only', {'PI_PROVIDER': 'faux', 'PI_MODEL': 'text', 'PI_REASONING_LEVEL': 'off'}, 2),
+    ('doc-translate', {'DOC_TRANSLATE_PROVIDER': 'faux', 'DOC_TRANSLATE_MODEL': 'text', 'DOC_TRANSLATE_THINKING': 'off'}, 0),
+]
+observations = []
+try:
+    with tempfile.TemporaryDirectory(prefix='env113-owned-') as owned:
+        temporary = Path(owned)
+        source = make_epub(temporary)  # 既存の自作入力のみ
+        for name, variables, expected in cases:
+            case = temporary / name
+            case.mkdir()
+            settings = case / 'settings.json'
+            settings.write_text('{}')
+            requests = case / 'requests.jsonl'
+            helper = [shutil.which('node'), str(root / 'ai/tests/run-process.mjs'),
+                      str(case / 'credentials'), str(settings), str(requests)]
+            entry = [python, str(root / 'tests/fixtures/resume_process.py'), '--helper', json.dumps(helper), '--']
+            workspace = case / 'workspace'
+            command = [*entry, 'run', str(source), '--workspace', str(workspace), '--json']
+            result = subprocess.run(command, env={**base, **variables}, capture_output=True, text=True, check=False)
+            sent = len(requests.read_text().splitlines()) if requests.exists() else 0
+            status = json.loads(result.stdout)['processing']['status'] if result.stdout.strip() else None
+            assert result.returncode == expected, (name, result.returncode)
+            if expected == 2:
+                assert sent == 0 and not workspace.exists() and status is None
+                assert all(field in result.stderr for field in ('provider', 'model', 'thinking'))
+                stderr_summary = [line for line in result.stderr.splitlines() if not line.startswith(' ')]
+            else:
+                assert status == 'completed' and sent > 0
+                stderr_summary = ['(progress only; not stored)']
+            observations.append({'case': name, 'variables_set': sorted(variables),
+                'command': ['python', 'tests/fixtures/resume_process.py', '--helper', '<faux helper>', '--',
+                            'run', '<artificial.epub>', '--workspace', '<owned temp>', '--json'],
+                'exit': result.returncode, 'status': status, 'requests_sent': sent,
+                'workspace_created': workspace.exists(), 'stderr_summary': stderr_summary})
+finally:
+    (evidence / 'observations.json').write_text(json.dumps(observations, ensure_ascii=False, indent=2))
+# owned tempだけ回収済み。証拠の全参照をcleanup後に再読。
+assert len(observations) == 2
+for file in evidence.rglob('*'):
+    if file.is_file():
+        file.read_bytes()
+print(evidence, '2 isolated CLI cases; cleanup complete; evidence reread')
+PY
+```
+
+期待：`pi-only`はexit 2・`requests_sent` 0・workspace未作成・stderrにprovider/model/thinkingの不足表示。`doc-translate`はexit 0・`completed`・`requests_sent` > 0。証拠は変数名・command・exit・stderrの不足行・送信件数だけで、値・本文・秘密を保存しない。resume／reviewが`DOC_TRANSLATE_*`を読まないことは`tests/test_resume.py`・`tests/test_review.py`の回帰で確認する。実provider・実認証・実書籍は対象外。正式チェック・Rootの別invocation直接確認は代用しない。

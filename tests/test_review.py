@@ -118,7 +118,7 @@ def test_review_units_saves_scoped_findings_without_changing_snapshots(
         p: p.read_bytes() for p in workspace.glob("snapshots/*/*.json")
     }
     count = len(requests(tmp_path))
-    monkeypatch.setenv("PI_PROVIDER", "must-not-use-ambient")
+    monkeypatch.setenv("DOC_TRANSLATE_PROVIDER", "must-not-use-ambient")
     main(
         ["review", "--json", "--events-json", str(workspace), "--units", "unit-2"],
         process_command=helper(

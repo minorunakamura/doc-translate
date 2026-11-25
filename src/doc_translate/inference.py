@@ -65,12 +65,12 @@ def resolve_config(
     shared: Selection | None = None,
     options: GenerationOptions | None = None,
 ) -> GenerationConfig:
-    """Resolve each field: stage > shared > PI_* environment; require all three."""
+    """Resolve each field: stage > shared > DOC_TRANSLATE_* environment; require all three."""
     values = {}
     for name, environment in (
-        ("provider", "PI_PROVIDER"),
-        ("model", "PI_MODEL"),
-        ("thinking", "PI_REASONING_LEVEL"),
+        ("provider", "DOC_TRANSLATE_PROVIDER"),
+        ("model", "DOC_TRANSLATE_MODEL"),
+        ("thinking", "DOC_TRANSLATE_THINKING"),
     ):
         value = getattr(stage, name, None)
         if value is None:

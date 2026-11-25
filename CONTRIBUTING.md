@@ -783,7 +783,7 @@ Pythonの`authenticate`はCLIから実helperへJSONLを送り、controlling TTY�
 
 ## 推論adapterの実装・検証境界
 
-`doc_translate.inference.generate`は文書workflowとは独立したPython APIです。段階指定→共通指定→`PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL`で設定を解決し、文書を含まないpreflightで正確なmodel／thinking・画像能力・認証sourceを確認してから、明示policy／text／context／glossaryと必要なPNGだけを送ります。各試行は新しいNode processで、Pi CLI設定・履歴・tools・探索・agent loopを使いません。文書CLIとの接続は`run.py`が担当します。APIの型・固定code・JSONLは[artifact契約](docs/reference/artifacts.md)を参照してください。
+`doc_translate.inference.generate`は文書workflowとは独立したPython APIです。段階指定→共通指定→`DOC_TRANSLATE_PROVIDER/DOC_TRANSLATE_MODEL/DOC_TRANSLATE_THINKING`で設定を解決し、文書を含まないpreflightで正確なmodel／thinking・画像能力・認証sourceを確認してから、明示policy／text／context／glossaryと必要なPNGだけを送ります。各試行は新しいNode processで、Pi CLI設定・履歴・tools・探索・agent loopを使いません。文書CLIとの接続は`run.py`が担当します。APIの型・固定code・JSONLは[artifact契約](docs/reference/artifacts.md)を参照してください。
 
 Pythonは回答JSONを別に解析してcallerのPydantic model（domain validatorを含む）で検証します。ID／根拠・送信許可範囲・座標説明の意味検証、artifact保存・採用は文書callerが所有します。PDF補正・準備・翻訳のcallerと、文書全体のsource採用は各文書stage／`run.py`に実装しています。画像は完全decode・実寸・hash等を検証して元byte列と順序を保持し、縮小・再encode・保存しません。公表入力上限超過は`input_limit`で停止します。`inputLimits.images.resize.maxBytes`はraw PNGではなくcanonical base64 payloadのASCII byte量に適用します。
 
