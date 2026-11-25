@@ -46,11 +46,63 @@ def test_cli_revision_and_candidate_help_is_available_offline(
         assert "validated data, never code" in output
 
 
+PYDANTIC_WORDING = (
+    "validation error",
+    "GenerationConfig",
+    "pydantic.dev",
+    "input_value",
+)
+
+
+def unset_selection_env():
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith(("DOC_TRANSLATE_", "PI_"))
+    }
+
+
 def test_cli_workflow_does_not_pretend_to_succeed(tmp_path):
     workspace = tmp_path / "workspace"
-    result = cli("run", "artificial.epub", "--workspace", str(workspace))
+    result = cli(
+        "run",
+        "artificial.epub",
+        "--workspace",
+        str(workspace),
+        env=unset_selection_env(),
+    )
     assert result.returncode == 2
     assert not workspace.exists()
+    for text in (
+        "--provider",
+        "DOC_TRANSLATE_PROVIDER",
+        "--model",
+        "DOC_TRANSLATE_MODEL",
+        "--thinking",
+        "DOC_TRANSLATE_THINKING",
+    ):
+        assert text in result.stderr
+    assert not any(text in result.stderr for text in PYDANTIC_WORDING)
+
+
+def test_cli_run_names_only_the_missing_setting(tmp_path):
+    workspace = tmp_path / "workspace"
+    result = cli(
+        "run",
+        "artificial.epub",
+        "--workspace",
+        str(workspace),
+        "--model",
+        "some-model",
+        env={**unset_selection_env(), "DOC_TRANSLATE_THINKING": "low"},
+    )
+    assert result.returncode == 2
+    assert not workspace.exists()
+    assert "--provider" in result.stderr
+    assert "DOC_TRANSLATE_PROVIDER" in result.stderr
+    assert "DOC_TRANSLATE_MODEL" not in result.stderr
+    assert "DOC_TRANSLATE_THINKING" not in result.stderr
+    assert not any(text in result.stderr for text in PYDANTIC_WORDING)
 
 
 def test_metadata_without_setup_stops_with_setup_guidance(tmp_path):
