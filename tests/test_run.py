@@ -375,6 +375,9 @@ def test_run_without_any_corrected_source_reports_failure_and_saved_paths(
     assert (workspace / summary["artifacts"]["original"]).is_file()
     assert (workspace / summary["artifacts"]["pdf_draft"]).is_file()
     assert not (workspace / "source-snapshot.json").exists()
+    _, record = saved_failure_record(workspace, summary["scope"]["run"]["error"])
+    assert "RuntimeError: No PDF correction chunk was accepted" in record
+    assert "Traceback (most recent call last):" in record
     main(["status", "--json", str(workspace)])
     assert json.loads(capsys.readouterr().out)["scope"] == summary["scope"]
 
@@ -2621,3 +2624,62 @@ def test_cli_rejects_invalid_correction_concurrency(tmp_path, operation, value):
     with pytest.raises(SystemExit) as failure:
         main([*arguments, "--correction-concurrency", value])
     assert failure.value.code == 2 and not workspace.exists()
+
+
+def saved_failure_record(workspace, error):
+    location = error.rpartition("details: ")[2].partition(";")[0]
+    assert location.startswith("failures/") and location.endswith(".txt")
+    assert (workspace / location).is_file()
+    return location, (workspace / location).read_text()
+
+
+@pytest.mark.parametrize(
+    ("error", "recorded"),
+    [
+        (OSError("artificial disk failure"), "OSError: artificial disk failure"),
+        (KeyError("artificial key"), "KeyError: 'artificial key'"),
+    ],
+)
+def test_run_unexpected_stage_exception_leaves_failure_record_without_secrets(
+    tmp_path, capsys, monkeypatch, error, recorded
+):
+    import doc_translate.run
+
+    def unexpected(**_):
+        raise error
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-artificial-credential")
+    monkeypatch.setattr(doc_translate.run, "prepare_document", unexpected)
+    source = make_epub(tmp_path)
+    workspace = tmp_path / "new"
+    with pytest.raises(SystemExit) as stopped:
+        main(
+            [arg for arg in run_args(source, workspace) if arg != "--json"],
+            process_command=helper(tmp_path),
+        )
+    assert stopped.value.code == 1
+    terminal = capsys.readouterr().out
+    run = json.loads((workspace / "run.json").read_text())
+    location, record = saved_failure_record(workspace, run["error"])
+    assert run["error"].startswith("prepare failed")
+    error_lines = [line for line in terminal.splitlines() if location in line]
+    assert len(error_lines) == 1 and error_lines[0].startswith("処理エラー")
+    assert recorded in record
+    assert "Traceback (most recent call last):" in record
+    assert "in unexpected" in record
+    assert "Original" not in record
+    assert "sk-artificial-credential" not in record
+    assert "Original" in next((workspace / "renders").rglob("japanese.md")).read_text()
+
+
+def test_run_expected_inference_failure_writes_no_failure_record(tmp_path, capsys):
+    source = make_epub(tmp_path)
+    workspace = tmp_path / "new"
+    with pytest.raises(SystemExit):
+        main(
+            run_args(source, workspace),
+            process_command=helper(tmp_path, fail_stage="prepare"),
+        )
+    summary = json.loads(capsys.readouterr().out)
+    assert "details:" not in summary["scope"]["run"]["error"]
+    assert not (workspace / "failures").exists()

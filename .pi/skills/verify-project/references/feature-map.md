@@ -105,6 +105,12 @@ PY
 
 証拠：`revision.txt/dirty.txt/scope.diff/saved-status.py.txt/preflight.txt/help.txt/initial-files.json/observations.json/cleanup.txt`と各`.stdout/.stderr`。失敗時もobservationsとcleanupを確認し、成功に書き換えない。証拠はworkspace外に残り、末尾でcleanup後の再読を行う。手順変更後はこの公開入口を再実行する。
 
+### 想定外の失敗記録（Issue #116）
+
+focused回帰は`tests/test_run.py::test_run_unexpected_stage_exception_leaves_failure_record_without_secrets`、`tests/test_run.py::test_run_expected_inference_failure_writes_no_failure_record`、`tests/test_resume.py::test_resume_unexpected_validation_failure_records_cause_without_book_text`。
+直接確認は所有tmpだけで、既存faux Node helperと公開`cli.main(["run"/"resume", ...])`を使い、工程関数へこのprocess内でだけ例外を注入する（実provider・実認証なし、`work/`配下へアクセスしない）。
+期待：exit 1、端末の「処理エラー」1行、`failures/`記録に型名・メッセージ・tracebackがあり、書籍本文・人工credentialがない。cleanupは所有tmpだけ。
+
 ## 補助のfocused回帰と未確認範囲
 
 `.venv/bin/pytest tests/test_render.py tests/test_cli_output.py`がrun-only／source-only／leaf分類・取消／旧source・preparation・run設定差／candidate／schema・型・hash・path・symlink／限定再読／詳細検査中更新を扱う。生成手順の一機能成立だけで全保証を検証済みとしない。内部workflowやJSON consumerへの影響はCONTRIBUTINGの選定手順に従い別途正式チェックする。

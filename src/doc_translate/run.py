@@ -5,14 +5,16 @@ import json
 import shlex
 import signal
 import threading
+import traceback
 from collections import deque
 from collections.abc import Generator, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from doc_translate import ai_runtime
 from doc_translate.epub import MAX_ARCHIVE_BYTES, EPUBError, read_epub
@@ -652,8 +654,13 @@ def _continue_run(
                 cancelled,
                 observer,
             )
-        except RuntimeError:
-            manifest.error = "PDF acquisition/correction failed; inspect saved original, draft and attempts"
+        except RuntimeError as error:
+            manifest.error = _failure_message(
+                workspace,
+                "PDF acquisition/correction",
+                error,
+                "inspect saved original, draft and attempts",
+            )
             _save_run(workspace, manifest)
             emit(observer, "run", "finished", reason="source_unavailable")
             if (workspace / "source-snapshot.json").exists():
@@ -742,7 +749,7 @@ def _continue_run(
         elif not (manifest.failed_pages or manifest.not_processed_pages):
             manifest.error = manifest.error_code = None
         _save_run(workspace, manifest)
-    except (OSError, ValueError, RuntimeError) as error:
+    except Exception as error:  # noqa: BLE001 - any stage failure is recorded and partially rendered; interrupts still propagate.
         if cancelled.is_set():
             emit(observer, stage, "cancelled")
         emit(observer, stage, "failed", reason="stage_failed")
@@ -751,7 +758,9 @@ def _continue_run(
             if isinstance(error, (InferenceError, PreparationValidationError))
             else None
         )
-        manifest.error = f"{stage} failed; inspect saved source and attempts"
+        manifest.error = _failure_message(
+            workspace, stage, error, "inspect saved source and attempts"
+        )
         _atomic_write(workspace / "run.json", manifest.model_dump_json().encode())
     if cancelled.is_set():
         emit(observer, "render", "cancelled")
@@ -768,6 +777,71 @@ def _continue_run(
     )
     emit(observer, "render", "finished")
     return result
+
+
+def _failure_message(workspace: Path, stage: str, error: Exception, guide: str) -> str:
+    """Record an unexpected stage exception under failures/ and point run.error at it.
+
+    Classified inference/preparation failures already keep safe codes and attempts.
+    The record holds exception types, messages and tracebacks without frame locals;
+    pydantic validation errors omit input values and locations (dict keys may be
+    book or AI-generated terms) so book text is not copied.
+    """
+    if isinstance(error, (InferenceError, PreparationValidationError)):
+        return f"{stage} failed; {guide}"
+    sections = []
+    seen = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ValidationError):
+            errors = [
+                {key: value for key, value in item.items() if key != "loc"}
+                for item in current.errors(
+                    include_url=False, include_context=False, include_input=False
+                )
+            ]
+            summary = (
+                f"{type(current).__name__}: {current.error_count()} validation "
+                f"error(s) for {current.title}\n"
+                + json.dumps(errors, ensure_ascii=False, indent=2)
+                + "\n"
+            )
+        else:
+            summary = "".join(traceback.format_exception_only(current))
+        sections.append(
+            "Traceback (most recent call last):\n"
+            + "".join(traceback.format_tb(current.__traceback__))
+            + summary
+        )
+        if current.__cause__ is not None:
+            sections.append(
+                "\nThe above exception was the direct cause of the following exception:\n\n"
+            )
+            current = current.__cause__
+        elif current.__context__ is not None and not current.__suppress_context__:
+            sections.append(
+                "\nDuring handling of the above exception, another exception occurred:\n\n"
+            )
+            current = current.__context__
+        else:
+            current = None
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    slug = stage.split()[0].replace("/", "-").lower()
+    name = f"{stamp}-{slug}.txt"
+    try:
+        (workspace / "failures").mkdir(exist_ok=True)
+        index = 1
+        while (workspace / "failures" / name).exists():
+            index += 1
+            name = f"{stamp}-{slug}-{index}.txt"
+        _atomic_write(
+            workspace / "failures" / name, "".join(reversed(sections)).encode()
+        )
+    except OSError:
+        # The stage failure itself must still be saved and rendered.
+        return f"{stage} failed; {guide}"
+    return f"{stage} failed; details: failures/{name}; {guide}"
 
 
 def _pdf_source(
