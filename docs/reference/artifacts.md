@@ -381,6 +381,7 @@ print([item.model_dump() for item in translated.uncertainties])
 - `processing.status: completed`は全unitの機械的受理であり、内容品質承認ではありません。`translations`は受理済みunitだけを入力順に返すproperty、`uncertainties`は元位置付きのproperty、`content_reviews`は常に空のpropertyです。要確認があっても機械検証を満たせば受理します。
 - marker inventory／釣合い／包含構造の違反だけは、同じchunkの全違反unitを集め、unit ID・理由・原文側のmarker列・回答側のmarker列・不足／余分なmarker（重複数を含む）・不正な訳文を`context.translation_feedback`へ入れ、初回込み最大3回答まで訂正生成します。model由来の訳文は未信頼dataとしてJSONで渡し、system指示へ埋め込みません。markerをunit間で移さず、完全なspanの同じ親内での並替えは引き続き許容します。本文投影・glossary・元のpolicy／schema・configは維持し、訂正用の固定指示だけを追加します。ID不一致・schema不正・認証・保存・timeout・取消等にはこの訂正生成を適用しません。独立推論の通信retry（初回込み3試行、3／6秒）は別に維持するため、分割しない1chunkの新規helper試行は最大9回です。`length/input_limit`だけは要約を要求せず、複数unitならchunkを分け、単一unitなら文字上限を半減して再分割します。対象は必ず小さくし、不可分inline spanや1文字まで縮めても不成立なら理由を残して失敗とします。
 - 並列処理は既定2。main-threadのSIGINT／SIGTERMを共有cancelへ伝え、新規送信を止め、実adapterのchild取消／最大30秒のgraceとcredential drainを待ってから戻ります。
+- helperの`auth_failed`／`storage_failed`は全体停止です（Issue #104）。認識後は未開始job・分割の次の子・通信retry・marker訂正の新規送信をしません。送信境界で確認し、未送信分はattemptを残さずchunk `not_processed`とし、取消や失敗に計上しません。認識前に送信済みのrequestは中断せず結果を回収し、成功は採用、失敗は実際のerrorのままです。利用者取消時だけ未処理を`cancelled`にします。局所の回答拒否やlength／input_limitの縮小は従来どおり他jobを続けます。停止観測より前に送信境界を通過済みだった競合送信をゼロとは保証しません。
 
 ### 翻訳wire v1／v2と追跡binding（Issue #59）
 
@@ -406,7 +407,7 @@ WORKSPACE/
 
 `runs`は継承した過去記録と今回の記録digest（並列処理では完了順）。実行記録は`stage/status/request/config/error/elapsed_seconds/attempts`を持ち、`status`は`validated/rejected/adjusted`、ローカル分割調整は追加の`adjustment`と空の`attempts`を持ちます。各adapter attemptのraw回答・要求／確認済み設定・terminal／終了code・retry・usage生値を保持します。marker拒否のrecordには`validation_feedback`を追加し、訂正の各回答を実際のrequestとともに別recordで保存します。生成前の拒否やローカル処理ではusageは未観測であり、0として加算しません。失敗でも観測済みusageを失わず、準備のusageとは分離します。
 
-attempt→検証済みchunk artifact→snapshot→採用参照の順でfsync／atomic replaceします。各並列jobが完了するごとに部分snapshotを採用し、別chunkの失敗で正常採用を破棄しません。`translate_document`は部分失敗でもsnapshot digestを返すので、callerは`processing.status`と各chunk.errorを確認してください。保存失敗は例外になり、直前の採用参照と保存済みattemptを保持します。参照されない保存途中artifactを自動採用するengineはありません。応答喪失・採用参照確定前のcrashによる再送／exactly-once課金は保証しません。
+attempt→検証済みchunk artifact→snapshot→採用参照の順でfsync／atomic replaceします。各並列jobが完了するごとに部分snapshotを採用し、別chunkの失敗で正常採用を破棄しません。`translate_document`は部分失敗でもsnapshot digestを返すので、callerは`processing.status`と各chunk.errorを確認してください。保存失敗は例外になり、直前の採用参照と保存済みattemptを保持します。ローカル保存例外でも新規送信を止め、進行中jobの終了と保存を待ってから例外を送出します。採用参照は最後の整合版のままです（Issue #104）。原因解消後のresumeは保存済み成功を無送信で再利用し、欠けた分だけ送信します。参照されない保存途中artifactを自動採用するengineはありません。応答喪失・採用参照確定前のcrashによる再送／exactly-once課金は保証しません。
 
 再利用はloadで検証できた採用済みchunk（manual含む）を優先し、次に辞書順の保存attemptから正常回答を回収します。現在の連続unit・分割対応と、版付き実wire request（aliasまたは旧ID／種別／marker原文／unit context・固定context／glossary／policy・schema等）およびconfig（provider/model/thinking/options）を完全一致で照合します。訂正requestは、現在の入力に処方済みの固定指示と`context.translation_feedback`だけを加えた形と完全一致する場合に限り認め、回答のID／marker・正常terminal等を再検証します。artifactとrunには同じ実requestを保存し、訂正済み結果も採用後のresumeや採用途中で中断した後に無送信で再利用できます。非splitではsource snapshot hashや保護payload込みsource_hashだけでは無効化せず、codeだけの変更は現在のunit／token／位置へ結び直します。splitでは上記の親source_hash／元範囲も実入力として照合します。準備方式・根拠・usage metadataだけの変更でも本文入力が同じなら再送しません。本文・context・固定入力・schema・実設定が変わったchunkは旧版を残して更新します。曖昧な旧訳を分割・接合して使いません。
 

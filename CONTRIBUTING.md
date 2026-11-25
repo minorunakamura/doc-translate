@@ -419,6 +419,7 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 - lengthと公開input上限によるchunk縮小／lossless unit分割・不可分spanの失敗、正常採用を残した部分失敗／再開、有限retryと失敗usage／不明usage生値の保持を検査します。marker違反の全unit・不足／余分なmarker等を未信頼dataとして返す最大3回答の訂正生成、訂正結果のload／無送信再利用・中断回復、入力改変の拒否、実CLI resumeで失敗chunkだけを訂正することも検査します。
 - marker入力が同じcode変更・準備metadataだけの変更の無送信再利用、原文／context／glossary／policy／実設定改版、artifact破損・再hashした不正attempt、artifact先／採用参照最後のreplace故障と旧版保持、writer排他を検査します。
 - main-thread SIGINT／SIGTERMを実processへ送り、2つのchildが取消・usage保持・drain／回収を終えるまで戻らず、未開始chunkを新規送信しないことを検査します。
+- Issue #104の全体停止はfocused `pytest tests/test_translation.py -k "stop or save_failure"`で、`auth_failed`／`storage_failed`後の未開始job・分割の次の子・retryの非送信、進行中成功の回収、局所失敗の対照、保存例外での採用pointer保持とresumeで欠けた分だけの送信を検査します。注入は`before_send`の`InferenceError`とOS replace境界だけで、並列の順序はfixtureの`hold`／`release`とobserver同期で決定的にします。直接操作は[Feature Mapの全体障害停止節](.pi/skills/verify-project/references/feature-map.md#翻訳の全体障害停止issue-104)を参照してください。
 
 Issue #59は新規自動翻訳のwire v2を対象にし、[Feature Mapの翻訳ID節](.pi/skills/verify-project/references/feature-map.md#翻訳request内idと追跡bindingissue-59)の公開prepare→translate→load／revise手順を新しい隔離workspaceで実行します。PDF合成sourceと実EPUB archive reader／extractorのprefix追加、raw alias→現在ID、実context／本文変更miss、manual優先／非転写、旧immutableとbyte-original v1を照合します。splitは親全文を送らず親source_hash＋元範囲をwire入力に残し、全split再生成で親・座標・part順を検証します。
 

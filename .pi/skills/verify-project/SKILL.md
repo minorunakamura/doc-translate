@@ -121,3 +121,7 @@ Mapの同節と[送信前準備・単一trial・人工直接確認](../../../doc
 ## 環境変数の取り違え（Issue #113）
 
 `run`の既定値が`DOC_TRANSLATE_*`だけから解決され、`PI_*`だけでは送信前にexit 2で止まることを確認するときは[Mapの#113節](references/feature-map.md#環境変数の取り違えissue-113)を選ぶ。envを明示した実CLI＋実Node fauxの2ケースで、所有tempだけcleanup後に`work/test-verification-env113-<unique>/`の証拠を再読する。
+
+## 翻訳の全体障害停止（Issue #104）
+
+翻訳の`auth_failed`／`storage_failed`後に新規送信を止め、送信済みの成功を回収し、resumeで欠けた分だけ送ることを確認するときは[Mapの#104節](references/feature-map.md#翻訳の全体障害停止issue-104)を選ぶ。公開`translate_document`と実Node faux、`before_send`／OS replace注入だけで、所有tempだけcleanup後に`work/issue104-stop-<unique>/`の証拠を再読する。再利用は`/skill:verify-project translation global stop`。
