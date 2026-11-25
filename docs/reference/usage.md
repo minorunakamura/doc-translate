@@ -147,7 +147,7 @@ doc-translate run own.pdf --workspace work/pdf-book \
   --pages 2-6 --reference-pages 7-7
 ```
 
-各設定fieldの優先順位は`--correction-*`／`--translation-*` → 共通`--provider/--model/--thinking` → `PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL`です。準備は翻訳設定を使い、EPUBでは補正設定を使いません。不足・未知model・非対応thinking／画像能力は送信前に停止します。providerはOpenAI固定ではありません。ChatGPTサブスクリプションOAuthでの実認証・小範囲推論を確認済みですが、任意account／modelの利用権や意味品質を保証しません。
+各設定fieldの優先順位は`--correction-*`／`--translation-*` → 共通`--provider/--model/--thinking` → `DOC_TRANSLATE_PROVIDER/DOC_TRANSLATE_MODEL/DOC_TRANSLATE_THINKING`です。`PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL`は読まないため、pi agent内から実行しても指定していないAIへは送りません。準備は翻訳設定を使い、EPUBでは補正設定を使いません。不足・未知model・非対応thinking／画像能力は送信前に停止します。providerはOpenAI固定ではありません。ChatGPTサブスクリプションOAuthでの実認証・小範囲推論を確認済みですが、任意account／modelの利用権や意味品質を保証しません。
 
 準備collectは`--preparation-concurrency 1|2|4`で上限を指定できます（run既定1、PDF／EPUB共通）。例えば`doc-translate resume ./work/book --preparation-concurrency 2`は2を保存し、次のresume未指定時も2です。旧manifestでfieldがなければ1です。設定変更だけで準備を再送せず、group・送信本文／設定・根拠検査・整理順は変えません。翻訳の既定並列数2やPDF補正はこのoptionの対象外です。
 
@@ -192,7 +192,7 @@ doc-translate resume ./work/book --artifacts-path /path/to/prepared-models
 
 resumeの既定stdoutはrunと共通の人向け要約です。従来のJSONを読むscript／pipeには`--json`、stderr送信前通知を読むscriptには独立して`--events-json`を追加してください。
 
-resumeは保存原本・範囲・非秘密設定を基準に、artifact hashと回答／入力対応を検査し、未処理・失敗・明示変更で無効になった部分だけを送信します。元の外部INPUTは不要です。取得済みPDFならlocal model directoryも不要で、EPUBにPDF依存は要求しません。完了済みで推論不要ならNode／認証も不要です。**resumeではambientな`PI_*`を設定変更として採用しません。** `--provider/model/thinking`と段階別指定、`--glossary`／`--policy`は明示変更として保存されます。policyは例えば`{"version":"2","text":"本文はですます調。見出しは体言止め。"}`というデータで、実行コードではありません。glossary／文体変更ではPDF取得／補正をやり直しません。補正設定の明示変更は再補正の対象になりますが、取得入力が同じならPDFを再取得しません。ページ範囲を拡大するoptionはありません。
+resumeは保存原本・範囲・非秘密設定を基準に、artifact hashと回答／入力対応を検査し、未処理・失敗・明示変更で無効になった部分だけを送信します。元の外部INPUTは不要です。取得済みPDFならlocal model directoryも不要で、EPUBにPDF依存は要求しません。完了済みで推論不要ならNode／認証も不要です。**resumeではambientな`DOC_TRANSLATE_*`環境変数を設定変更として採用しません。** `--provider/model/thinking`と段階別指定、`--glossary`／`--policy`は明示変更として保存されます。policyは例えば`{"version":"2","text":"本文はですます調。見出しは体言止め。"}`というデータで、実行コードではありません。glossary／文体変更ではPDF取得／補正をやり直しません。補正設定の明示変更は再補正の対象になりますが、取得入力が同じならPDFを再取得しません。ページ範囲を拡大するoptionはありません。
 
 SIGINT／SIGTERMは新規requestを止め、実行中helperの取消・認証保存drainを待ちます（強制killまで原則30秒）。SIGKILL・disk障害では応答・usageやOAuth refresh保存を保証できません。**送信済み応答を失うとusageは不明で、再送により重複課金される可能性があります。exactly-once課金は保証しません。** token保存に失敗した場合は必要に応じ再loginしてください。
 
@@ -225,7 +225,7 @@ doc-translate render ./work/book
 - `--units`と`--pages`はどちらか1つが必須です。unit一覧は入力順でなく文書順に送ります。unitモードは選択した原文・対応訳・選択unit内のinline保護内容、表の行列情報、固定policy／glossaryだけを送り、他unit本文を含む祖先contextや文書全体context、ページ画像は送りません。
 - PDFページモードは保存済み送信許可範囲・ページ画像内だけです。指定外の画像・抽出下書きは送りません。code／formula／図など訳文unitのないblockやページ画像だけにも位置付き指摘を残せます。block・table cell・unitが選択外に跨る場合は、全体本文／訳文を漏らしたり黙ってskip／範囲拡大したりせず、必要なページ範囲を示してexit 2で止まります。
 - 現在の採用原文・準備・設定に対応する保存済み訳文が必要です。未知ID・未訳／staleの場合も送信せず、条件を表示します。必要な翻訳は利用者が別途`resume`してください。候補採用待ちだけを理由に拒否せず、有効な採用版のhashに結び付けます。
-- 設定はこの操作の明示`--provider/--model/--thinking` > 保存済みの該当段階設定（unitsはtranslation、pagesはcorrection）。`PI_*`で保存設定は変わりません。該当設定がない場合は不足fieldを明示指定してください。別provider／modelへ自動fallbackしません。既定のstderr進捗は原本名・文書hashを冒頭に、実選択unit／block／画像ページ・provider／model／thinking・実preflightの非秘密認証source／typeを送信前に表示します。source／translation snapshot両hashを含む完全な従来の送信前通知は、`--events-json`指定時だけstderrへJSONで出力します。
+- 設定はこの操作の明示`--provider/--model/--thinking` > 保存済みの該当段階設定（unitsはtranslation、pagesはcorrection）。`DOC_TRANSLATE_*`環境変数で保存設定は変わりません。該当設定がない場合は不足fieldを明示指定してください。別provider／modelへ自動fallbackしません。既定のstderr進捗は原本名・文書hashを冒頭に、実選択unit／block／画像ページ・provider／model／thinking・実preflightの非秘密認証source／typeを送信前に表示します。source／translation snapshot両hashを含む完全な従来の送信前通知は、`--events-json`指定時だけstderrへJSONで出力します。
 - stdoutは既定で今回の保存結果・実対象・指摘件数・記録先と品質未承認を表示し、本文／指摘全文／raw回答は表示しません。`--json`は従来の`review.status`・不変artifactのpath／hashと終了時の詳細statusを返します。stderrは共通進捗、独立した`--events-json`は従来の送信前JSONのみです（全工程streamではありません）。既存stdout／stderr解析にはそれぞれのflagを追加してください。exit 0は範囲の照合記録が保存できたこと、1は推論／保存等の失敗、2は入力・範囲・設定エラーです。指摘があっても記録成功なら0です。元原文／訳文・採用参照は変更せず、修正は次の`revise`で明示します。
 - findings・確認者（provider/model）・独立LLMという方法・範囲・usageを保持します。QA／statusの`content_review.translation_records`は現行source／translation hashに対応する記録だけ、`review_history`には旧版も残します。原文block／unitと訳文unitの未確認範囲を別記し、機械検査と内容確認は別です。空findingsやmodelの自己申告で`meaning_quality_approved`をtrueにしません。修正後の旧reviewは現行確認済みには数えません。
 - `review`はQAの自動再出力をせず、`render_current: false`なら保存-onlyの`render`で反映できます。失敗・未採用の回答／usageも保存し、未観測usageを0としません。繰返すreviewは新しい独立呼出しです。応答／保存を失った後の再送による重複課金は保証できません。

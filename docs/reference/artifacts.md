@@ -11,7 +11,7 @@ Issue #1／#2／#3、Issue #4のNode generation境界・Python推論adapter、Is
 - exactly oneの明示unit IDs／ページ範囲が必要です。IDは現在の有効translation chunkの分割済みunit（`.part-N`含む）を使い、未知ID／親IDの推測展開・古い訳のIDだけjoinはしません。現在のsource、準備、runのpolicy／terms／translation設定に対応し、選択unitの受理済み訳文が必要です。未訳・staleなら無送信で不足条件を示し、勝手に翻訳しません。candidateがpendingでも有効な採用版の照合は可能です。
 - unitモードの`text.units`には選択unitのID・block/cell/node/attribute・親unit／source_range、種別、marker原文・対応訳、選択inline tokenのmarker／kind／text、表の行列・spanだけを投影します。tokenの任意metadata／属性や他unit本文を含む`unit.context`、全文`preparation.context`、block全文、画像を無条件に送りません。固定policy／採用glossaryを添えます。
 - PDFページモードは保存`page_images`のうち指定ページだけをページ順に使い、PNG bytes／hash／実寸／scale／座標・描画条件を既存画像境界で検査します。指定ページのblock本文・最小構造（table cells等）と対応unit訳だけを送ります。全chunkの画像／fragments／raw下書きを送りません。block位置だけでなく保存table cell evidence・unit位置・図regionのページも検査し、選択外へ跨る本文／訳文は送らず具体的な範囲エラーにします。黙ってskipや送信範囲の拡大はしません。
-- 明示設定 > 保存該当段階設定（unitsはtranslation snapshot、pagesはrunまたは採用sourceのcorrection設定）。不足は明示エラーで、ambient `PI_*`／別providerへのfallbackや保存設定の変更はありません。CLIの既定のstderr進捗は原本名・文書hashを冒頭に、実選択unit／block／画像ページと、preflightで判明したprovider/model/thinking・非秘密auth source/typeを送信前に表示します。原資料hash・source／translation snapshot両hash、選択ID／ページ／画像とprovider/model/thinking・非秘密auth source/typeを含む完全な従来の送信前JSON通知は、`--events-json`指定時だけstderrへ出力します。
+- 明示設定 > 保存該当段階設定（unitsはtranslation snapshot、pagesはrunまたは採用sourceのcorrection設定）。不足は明示エラーで、ambient `DOC_TRANSLATE_*`環境変数／別providerへのfallbackや保存設定の変更はありません。CLIの既定のstderr進捗は原本名・文書hashを冒頭に、実選択unit／block／画像ページと、preflightで判明したprovider/model/thinking・非秘密auth source/typeを送信前に表示します。原資料hash・source／translation snapshot両hash、選択ID／ページ／画像とprovider/model/thinking・非秘密auth source/typeを含む完全な従来の送信前JSON通知は、`--events-json`指定時だけstderrへ出力します。
 
 ### 回答・保存・QA
 
@@ -39,7 +39,7 @@ Python戻り値とCLIの`--json`は終了時の詳細statusに`review: {status: 
 - EPUBは原archiveを`originals/<sha256>.epub`へatomicにコピーし、その同じbyte列を既存bounded readerで読み、hash／artifact付き`SourceDocument`を渡して構造取得します。PDF依存や補正modelを読み込みません。ページ指定は拒否します。
 - PDFは`--artifacts-path`で準備済みlocal modelを要求し、既存`acquire_pdf`のraw／original／PNG保存→所有5ページ＋許可済みの前後各1ページで補正→`assemble_pdf_source`→source保存です。`--pages A-B`省略時は実draftの全対象ページが所有範囲です。`--reference-pages A-B`は参照専用許可で所有対象を増やしません。離れた参照指定はmin–maxの連続ローカル取得を許しますが、補正requestへは所有＋許可済み隣接ページだけを投影します。
 - `length/input_limit`なら所有chunkを2分し、毎回許可範囲内の隣接contextを再計算します。singletonでも失敗する場合はfailedを残し、要約・欠落成功にはしません。成功chunkを保持し、`pdf_run_scope`機械検査とsource処理状態／uncertaintyで、成功した所有unionを指定範囲全体と誤認しないようにします。
-- PDF／EPUBともcontext／glossary準備は翻訳設定です。段階設定→共通設定→既存`PI_*`のfield単位優先順位を再利用します。`--glossary FILE`は既存`Glossary(version/book/style/terms)`を検証し`terms`だけを利用者優先指定として取り込みます。bookは入力stem、versionは`1`、styleは固定`StylePolicy`から生成します。
+- PDF／EPUBともcontext／glossary準備は翻訳設定です。段階設定→共通設定→`DOC_TRANSLATE_*`環境変数のfield単位優先順位を再利用します。`--glossary FILE`は既存`Glossary(version/book/style/terms)`を検証し`terms`だけを利用者優先指定として取り込みます。bookは入力stem、versionは`1`、styleは固定`StylePolicy`から生成します。
 
 ```text
 WORKSPACE/
@@ -937,7 +937,7 @@ SIGINT／SIGTERM／stdin EOF／stdout write failureは推論をAbortSignalで取
 
 ### Python inference adapter（Issue #4）
 
-公開APIは`doc_translate.inference.generate(config, inputs, *, response_model, images=(), cancel=None, process_command=None, before_send=None, observer=None)`です。`GenerationConfig`は完全な`provider/model/thinking`と`GenerationOptions`を持ち、`resolve_config(stage=Selection(...), shared=Selection(...), options=...)`はfieldごとに段階指定→共通指定→`PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL`を解決します。不足・未知thinking・非有限optionsは送信前に拒否し、model能力・認証・実在modelは同じprocessのpreflightで確認します。defaults／Pi CLI設定／fallbackはありません。
+公開APIは`doc_translate.inference.generate(config, inputs, *, response_model, images=(), cancel=None, process_command=None, before_send=None, observer=None)`です。`GenerationConfig`は完全な`provider/model/thinking`と`GenerationOptions`を持ち、`resolve_config(stage=Selection(...), shared=Selection(...), options=...)`はfieldごとに段階指定→共通指定→`DOC_TRANSLATE_PROVIDER/DOC_TRANSLATE_MODEL/DOC_TRANSLATE_THINKING`を解決します（`PI_*`は読みません）。不足・未知thinking・非有限optionsは送信前に拒否し、model能力・認証・実在modelは同じprocessのpreflightで確認します。defaults／Pi CLI設定／fallbackはありません。
 
 `GenerationInput`は`stage: correction | prepare | translation | review`と、必須の`policy/text/context/glossary`です。不要なcontext／glossaryも明示的に`None`を指定します。`prepare/translation`で画像を指定するとprocess起動前に拒否します。`GenerationImage(data=<PNG bytes>, mimeType="image/png", width=..., height=..., coordinates=...)`はcorrection／reviewでのみ渡せます。画像を黙って省略・変換せず、配列順のSHA-256・byte量・base64 byte量・MIME・実寸・座標説明・`scale:1`をattempt内の`ImageMetadata`へ保持します。送信許可範囲・座標説明の意味検証は後続callerの責務であり、文書／ページschemaはここで定義しません。
 

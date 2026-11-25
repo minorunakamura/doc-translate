@@ -180,7 +180,7 @@ def main(
     review = commands.add_parser(
         "review",
         help="Independently review explicit saved units or PDF pages; never rewrite text.",
-        description="Send only comma-separated explicit unit IDs (--units unit-1,unit-2), or PDF pages A-B with selected page images. Requires current saved translations. Records findings, reviewer, scope and usage; empty findings never approve quality. Uses explicit provider/model/thinking over saved translation (units) or correction (pages) settings, never ambient PI_*. Does not modify saved stage settings or snapshots. Progress on stderr; readable saved result on stdout (--json for full result, --events-json for pre-send notices only). Exit 0 accepted review, 1 inference/save failure, 2 invalid scope/inputs.",
+        description="Send only comma-separated explicit unit IDs (--units unit-1,unit-2), or PDF pages A-B with selected page images. Requires current saved translations. Records findings, reviewer, scope and usage; empty findings never approve quality. Uses explicit provider/model/thinking over saved translation (units) or correction (pages) settings, never ambient DOC_TRANSLATE_* environment. Does not modify saved stage settings or snapshots. Progress on stderr; readable saved result on stdout (--json for full result, --events-json for pre-send notices only). Exit 0 accepted review, 1 inference/save failure, 2 invalid scope/inputs.",
     )
     review.add_argument("workspace", type=Path)
     scope = review.add_mutually_exclusive_group(required=True)
@@ -198,14 +198,14 @@ def main(
     run = commands.add_parser(
         "run",
         help="Translate a local PDF/EPUB in a new workspace.",
-        description="First use: setup-ai once, then login if needed. providers/models are optional lookups. Regular use: run with stage or shared provider/model/thinking (or PI_* environment). Creates a new workspace; existing paths including empty directories/symlinks are refused. Shows progress on stderr (--events-json selects pre-send JSON notices); summary/artifact paths on stdout. Exit 0 includes needs-attention, 1 partial/failure, 2 input/configuration error.",
+        description="First use: setup-ai once, then login if needed. providers/models are optional lookups. Regular use: run with stage or shared provider/model/thinking (or DOC_TRANSLATE_PROVIDER/DOC_TRANSLATE_MODEL/DOC_TRANSLATE_THINKING environment; PI_* is never read). Creates a new workspace; existing paths including empty directories/symlinks are refused. Shows progress on stderr (--events-json selects pre-send JSON notices); summary/artifact paths on stdout. Exit 0 includes needs-attention, 1 partial/failure, 2 input/configuration error.",
     )
     run.add_argument("input", type=Path)
     run.add_argument("--workspace", type=Path, required=True)
     resume = commands.add_parser(
         "resume",
         help="Verify saved inputs and continue only unfinished or explicitly changed stages.",
-        description="Saved settings are defaults; ambient PI_* never changes them. Explicit glossary/style policy/provider/model/thinking overrides are persisted. Glossary/style changes do not repeat PDF correction; changed correction inputs may require new calls, not unnecessary acquisition. Transmission scope cannot expand. Changed PDF machine content after source revision is saved as a candidate: stop before preparation/translation, compare H/B/C, then revise --source --reason and resume; no automatic merge. Pending adoption exits 1; input/configuration errors exit 2. Lost responses may have unknown usage and resending may duplicate charges. Completed saved results need no Node/authentication.",
+        description="Saved settings are defaults; ambient DOC_TRANSLATE_* environment never changes them. Explicit glossary/style policy/provider/model/thinking overrides are persisted. Glossary/style changes do not repeat PDF correction; changed correction inputs may require new calls, not unnecessary acquisition. Transmission scope cannot expand. Changed PDF machine content after source revision is saved as a candidate: stop before preparation/translation, compare H/B/C, then revise --source --reason and resume; no automatic merge. Pending adoption exits 1; input/configuration errors exit 2. Lost responses may have unknown usage and resending may duplicate charges. Completed saved results need no Node/authentication.",
     )
     resume.add_argument("workspace", type=Path)
     resume.add_argument(

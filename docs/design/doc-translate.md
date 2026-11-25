@@ -226,7 +226,7 @@ glossary・文体policyを変更した場合は旧版・旧訳を保持し、影
 
 PDFの補正と、両入力形式で共通の翻訳について、provider・model・thinking levelを独立して指定できる。共通設定を適用することもできる。EPUBの通常経路では補正LLMの設定は使用しない。
 
-優先順位は、段階個別指定 → 共通指定 → 起動環境の`PI_PROVIDER`・`PI_MODEL`・`PI_REASONING_LEVEL`。Pi CLIのmodel設定を自動読込み・コピーしない。値がない場合は送信前に不足を示し、未知のmodelへ暗黙に切り替えない。pi-aiの公開metadataで正確なprovider／model・対応thinkingを解決する。
+優先順位は、段階個別指定 → 共通指定 → 起動環境の`DOC_TRANSLATE_PROVIDER`・`DOC_TRANSLATE_MODEL`・`DOC_TRANSLATE_THINKING`。`PI_PROVIDER`・`PI_MODEL`・`PI_REASONING_LEVEL`は読まない（移行期間・fallbackなし）。Pi CLIのmodel設定を自動読込み・コピーしない。値がない場合は送信前に不足を示し、未知のmodelへ暗黙に切り替えない。pi-aiの公開metadataで正確なprovider／model・対応thinkingを解決する。
 
 PDFの補正modelには画像対応が必要であり、実行前に確認する。テキストEPUBの翻訳modelに画像対応は必須としない。要求したthinkingと、確認できた実効値を区別し、不明な実効値は推測で記録しない。
 

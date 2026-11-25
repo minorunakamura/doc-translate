@@ -113,3 +113,7 @@ Mapの同節と[送信前準備・単一trial・人工直接確認](../../../doc
 [Mapの#101節](references/feature-map.md#局所所有と全書籍の接続差分101)だけを選ぶ。`local` は題名と多出典コードの実出力、`all` は同じ製品版の全70件を対象とする別の検査。失敗分や未試行分を除外した比較はしない。実AI／認証・追加retry・外部trial markerへのアクセスなし。原資料・英語・画像・詳細エラーは非表示。範囲別の旧版手順の成功を今回に足さず、正式検査・Rootの独立照合・Reviewと区別する。第4版の全70件の各1回試行・拒否記録と、第2版製品との56件の採用差分（`adoption-diff`）は同節の「第3版・第4版」を使う。
 
 第5版の既知の未解決2組（91→92は[#109](https://github.com/minorunakamura/doc-translate/issues/109)、212→213は[#110](https://github.com/minorunakamura/doc-translate/issues/110)）は、73→74・61→62と同じく成功に数えず別欄に記録する。判定条件は同節の「第5版」を使い、ほかの組へ広げない。
+
+## 環境変数の取り違え（Issue #113）
+
+`run`の既定値が`DOC_TRANSLATE_*`だけから解決され、`PI_*`だけでは送信前にexit 2で止まることを確認するときは[Mapの#113節](references/feature-map.md#環境変数の取り違えissue-113)を選ぶ。envを明示した実CLI＋実Node fauxの2ケースで、所有tempだけcleanup後に`work/test-verification-env113-<unique>/`の証拠を再読する。

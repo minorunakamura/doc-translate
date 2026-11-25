@@ -467,6 +467,45 @@ def test_run_unknown_model_is_config_error_without_generation_or_fallback(
     )
 
 
+AMBIENT_SETTINGS = {"PROVIDER": "faux", "MODEL": "text", "THINKING": "off"}
+
+
+def ambient_args(source, workspace):
+    return ["run", "--json", str(source), "--workspace", str(workspace)]
+
+
+def test_run_ignores_pi_environment_and_stops_before_transmission(
+    tmp_path, capsys, monkeypatch
+):
+    for field in AMBIENT_SETTINGS:
+        monkeypatch.delenv(f"DOC_TRANSLATE_{field}", raising=False)
+    monkeypatch.setenv("PI_PROVIDER", "faux")
+    monkeypatch.setenv("PI_MODEL", "text")
+    monkeypatch.setenv("PI_REASONING_LEVEL", "off")
+    source = make_epub(tmp_path)
+    workspace = tmp_path / "new"
+    with pytest.raises(SystemExit) as stopped:
+        main(ambient_args(source, workspace), process_command=helper(tmp_path))
+    assert stopped.value.code == 2
+    err = capsys.readouterr().err
+    assert all(field in err for field in ("provider", "model", "thinking"))
+    assert not (tmp_path / "requests.jsonl").exists()
+    assert not workspace.exists()
+
+
+def test_run_uses_doc_translate_environment_defaults(tmp_path, capsys, monkeypatch):
+    for name in ("PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL"):
+        monkeypatch.delenv(name, raising=False)
+    for field, value in AMBIENT_SETTINGS.items():
+        monkeypatch.setenv(f"DOC_TRANSLATE_{field}", value)
+    source = make_epub(tmp_path)
+    workspace = tmp_path / "new"
+    main(ambient_args(source, workspace), process_command=helper(tmp_path))
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["processing"]["status"] == "completed"
+    assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == 3
+
+
 def test_run_pdf_without_pages_owns_actual_full_document(
     tmp_path, pdf_input, local_models, capsys
 ):
