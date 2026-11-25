@@ -166,6 +166,10 @@ class _Markdown:
         self.marked_units = set()
         self.mapping = {"blocks": [], "units": []}
         self.seen = {True: set(), False: set()}
+        self.output_anchors = {True: set(), False: set()}
+        self.duplicate_anchors = {True: set(), False: set()}
+        self.internal_targets = {True: set(), False: set()}
+        self.image_paths = {True: set(), False: set()}
         for item in [
             *source.uncertainties,
             *(translation.uncertainties if translation else []),
@@ -308,6 +312,13 @@ class _Markdown:
                 }
             )
 
+    def anchor(self, anchor: str, japanese: bool, attributes: str = "") -> str:
+        # Track generated markup only; protected code may contain identical HTML literals.
+        if anchor in self.output_anchors[japanese]:
+            self.duplicate_anchors[japanese].add(anchor)
+        self.output_anchors[japanese].add(anchor)
+        return f'<a id="{anchor}"{attributes}></a>'
+
     def unit_anchor(self, unit: TranslationUnit) -> str:
         location = unit.locations[0]
         return (
@@ -380,6 +391,7 @@ class _Markdown:
             data = self.assets.epub().resources[ref["resource_path"]]
             path = self.assets.image(data)
         if path:
+            self.image_paths[japanese].add(path)
             attrs = self.attributes(value, japanese)
             return f'<img src="{path}"{attrs} />'
         self.problem(
@@ -440,6 +452,8 @@ class _Markdown:
                     if kind == "link":
                         target = self.link(value)
                         if target:
+                            if target.startswith("#"):
+                                self.internal_targets[japanese].add(target[1:])
                             tag, attrs = (
                                 "a",
                                 f' href="{html.escape(target, quote=True)}"',
@@ -518,7 +532,7 @@ class _Markdown:
                 )
                 for u in self.units_by_node.get((block.block_id, path), [])
             )
-            return f'<a id="{anchor}"{self.attributes(node, japanese)}></a>' + (
+            return self.anchor(anchor, japanese, self.attributes(node, japanese)) + (
                 "※" if marked else ""
             )
 
@@ -884,7 +898,7 @@ class _Markdown:
 
         rendered = walk(tree["root"])
         # Non-text nodes still have addressable source positions (e.g. table rows).
-        present = set(re.findall(r'id="([^"]+)"', rendered))
+        present = self.output_anchors[japanese]
         extra = [
             node_anchor(path)
             for (resource, path), anchor in self.node_anchors.items()
@@ -1048,6 +1062,7 @@ class _Markdown:
                                     },
                                 }
                             )
+                            self.image_paths[japanese].add(image)
                             rendered += f'\n\n<img src="{image}" alt="" />'
 
                 else:
@@ -1071,6 +1086,8 @@ class _Markdown:
                         rendered += "\n\n※"
             elif block.kind in {"picture", "figure"}:
                 image = self.assets.pdf_picture(structure)
+                if image:
+                    self.image_paths[japanese].add(image)
                 rendered = (
                     f'<img src="{image}" alt="" />' + ("\n\n※" if marked else "")
                     if image
@@ -1090,7 +1107,8 @@ class _Markdown:
                     rendered = (
                         "    " * (structure.get("depth", 1) - 1)
                         + marker
-                        + f' <a id="{self.anchors[block.block_id]}"></a>'
+                        + " "
+                        + self.anchor(self.anchors[block.block_id], japanese)
                         + text
                     )
                 elif block.kind == "callout":
@@ -1103,7 +1121,7 @@ class _Markdown:
             parts.append(
                 rendered
                 if block.kind == "list"
-                else f'<a id="{anchor}"></a>\n\n{rendered}'
+                else self.anchor(anchor, japanese) + "\n\n" + rendered
             )
         return "\n\n".join(parts) + "\n"
 
@@ -1190,16 +1208,12 @@ def _build(workspace: Path):
     unit_ids = {u.unit_id for u in units}
     reached = renderer.seen[True] & renderer.seen[False]
     coverage = reached == unit_ids
-    reference_checks = []
-    for document in (japanese, english):
-        anchors = re.findall(r'id="([^"]+)"', document)
-        references = re.findall(r'href="#([^"]+)"', document)
-        images = re.findall(r'src="([^"]+)"', document)
-        reference_checks.append(
-            len(anchors) == len(set(anchors))
-            and set(references) <= set(anchors)
-            and all(path in renderer.assets.files for path in images)
-        )
+    reference_checks = [
+        not renderer.duplicate_anchors[language]
+        and renderer.internal_targets[language] <= renderer.output_anchors[language]
+        and renderer.image_paths[language] <= renderer.assets.files.keys()
+        for language in (True, False)
+    ]
     output_checks = [
         {
             "name": "render_unit_coverage",
@@ -1231,7 +1245,7 @@ def _build(workspace: Path):
         "output_reached_blocks": [
             b.block_id
             for b in source.blocks
-            if f'id="{renderer.anchors[b.block_id]}"' in japanese
+            if renderer.anchors[b.block_id] in renderer.output_anchors[True]
         ],
         "not_processed": not_processed,
         "failed": failed,
@@ -1284,7 +1298,7 @@ def _build(workspace: Path):
                 "kind": block.kind,
                 "locations": [p.model_dump(mode="json") for p in block.locations],
                 "output_anchor": renderer.anchors[block.block_id]
-                if f'id="{renderer.anchors[block.block_id]}"' in japanese
+                if renderer.anchors[block.block_id] in renderer.output_anchors[True]
                 else None,
             }
         )
@@ -1451,16 +1465,20 @@ def _verified_status(workspace: Path) -> dict:
             == summary["translation_snapshot_sha256"]
             and not summary["stale_translation"]
         )
-        if saved.get("source_adoption") == summary.get("source_adoption") and all(
-            saved[key] == summary[key]
-            for key in (
-                "source_snapshot_sha256",
-                "translation_snapshot_sha256",
-                "usage",
-                "scope",
-                "processing",
-                "content_review",
+        if (
+            saved.get("source_adoption") == summary.get("source_adoption")
+            and all(
+                saved[key] == summary[key]
+                for key in (
+                    "source_snapshot_sha256",
+                    "translation_snapshot_sha256",
+                    "usage",
+                    "scope",
+                    "processing",
+                    "content_review",
+                )
             )
+            and saved.get("machine_checks") == summary["machine_checks"]
         ):
             summary = {
                 **saved,

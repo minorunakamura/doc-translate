@@ -433,7 +433,7 @@ WORKSPACE/
     summary.json
 ```
 
-renderは既存の非再入workspace lockと`_atomic_write`を使い、全出力を確定してから参照を切り替えます。旧版・未採用の途中出力は削除しません。保存例外は伝播し、旧参照を維持します。resume／復旧engineは追加しません。詳細statusは書込みせず、出力参照のschema・workspace内path・全file hashと現在入力／保存attempt集合を比較します。`render_current`と、必要時の`previous_artifacts`で旧出力を区別します。
+renderは既存の非再入workspace lockと`_atomic_write`を使い、全出力を確定してから参照を切り替えます。旧版・未採用の途中出力は削除しません。保存例外は伝播し、旧参照を維持します。resume／復旧engineは追加しません。詳細statusは書込みせず、出力参照のschema・workspace内path・全file hashと現在入力／保存attempt集合を比較します。`render_current`と、必要時の`previous_artifacts`で旧出力を区別します。旧summaryの機械検査が現在と異なる場合も、詳細statusでは現在のQAを返し、保存出力を`previous_artifacts`として扱います。旧byteやpointerは書き換えず、入力対応を示す`adopted_output_current`とは分離します。通常statusの軽量projectionは保存当時のままです。
 
 ### 保存記録reader（Issue #49）
 
@@ -450,7 +450,7 @@ runとpointerを前後比較し、変化時は一度だけ再読、なお変化�
 ### 詳細検査・renderの出力
 
 - **source-map**: `blocks`はblock ID／kind／元locations／出力anchor（図内部等で独立出力しないblockはnull）。`units`は実際の翻訳入力unit全fieldと出力anchor。split時も親unit・元marker文字範囲を保持し、順に組み立てます。EPUBのanchorはsnapshot-bound node位置に対応し、文字精度を主張しません。
-- **QA**: sourceの機械検査、保存入力検証、両言語の実unit到達・anchor一意性／内部参照／local assets検査を分けます。`uncertainties`は元recordに`block_ids/unit_ids/output_anchors`を追加し、render由来の安全fallback／未訳も記録します。目印は表示だけの`※`で、code／formula内部に入れません。EPUBのblock対象uncertaintyに具体的なnode位置がある場合は、resource_pathとnode_snapshotが一致する位置の祖先／子孫unitだけに対応付けます。node pathは区切り単位で比較し、`/1/2/1`を`/1/2/10`へ広げません。head内のCSS参照など、本文unitと重ならない警告も元のtarget_ids・locationsと出力anchorをQAへ保持し、本文全体への目印には変換しません。node位置がrootまたは指定なしの章全体警告、明示的なunit／cell対象、PDFの対象対応は維持します。別node_snapshotの位置から現在のunitへは目印を伝播しません。
+- **QA**: sourceの機械検査、保存入力検証、両言語の実unit到達・anchor一意性／内部参照／local assets検査を分けます。`render_references`はrendererが生成境界で記録したanchor・内部参照・画像assetを検査し、コードフェンス・inline code・literal中の`id/href/src`文字列をHTML参照と混同しません。本物の重複anchor・存在しない内部target・未認可画像assetは失敗にします。blockの出力到達とsource-mapも生成anchorで判定します。`uncertainties`は元recordに`block_ids/unit_ids/output_anchors`を追加し、render由来の安全fallback／未訳も記録します。目印は表示だけの`※`で、code／formula内部に入れません。EPUBのblock対象uncertaintyに具体的なnode位置がある場合は、resource_pathとnode_snapshotが一致する位置の祖先／子孫unitだけに対応付けます。node pathは区切り単位で比較し、`/1/2/1`を`/1/2/10`へ広げません。head内のCSS参照など、本文unitと重ならない警告も元のtarget_ids・locationsと出力anchorをQAへ保持し、本文全体への目印には変換しません。node位置がrootまたは指定なしの章全体警告、明示的なunit／cell対象、PDFの対象対応は維持します。別node_snapshotの位置から現在のunitへは目印を伝播しません。
 - **内容確認**: `content_review.records`はsource snapshotの確認記録、`translation_records`は現行source／translation hashに結び付いた独立review記録です。`review_history`は過去版も含む不変review全記録で、旧hashやstaleな訳の記録を現行確認に数えません。`unreviewed_source_unit_ids/unreviewed_source_block_ids`と`unreviewed_translation_unit_ids`を別記します。unitだけの照合で所属block全体の構造まで確認済みにせず、`meaning_quality_approved`／`viewer_display_checked`はfalseです。
 - **summary**: 正本hash、`processing.status: completed | partial`、unitの`output_reached/not_processed/failed/render_failed`、`output_reached_blocks`、source処理状態、機械検査、要確認／原本欠損件数、内容確認、usage、成果物pathと`render_elapsed_seconds`を持ちます。要確認のみで失敗にはしません。`scope.ownership_records`は保存済みPDF所有記録そのもの、`pages_with_source_blocks`は本文位置で、参照ページやPDF全文被覆とはみなしません。
 - **usage**: `stages.preparation/correction/translation/review`にworkspace内の保存済み全attempt artifact／hash／raw recordを列挙します。失敗・retry・未採用も含め、raw provider usageや要求／確認済み設定・時間・終了を失いません。source/translation採用runだけに絞りません。段階ごとの意味の異なるtoken値を合算せず、reasoningを二重加算しません。過去ローカル処理時間・全体wall time・実請求は保存情報がなくnull／unknownのまま、今回のrender時間と分離します。
