@@ -198,6 +198,8 @@ SIGINT／SIGTERMは新規requestを止め、実行中helperの取消・認証保
 
 旧原本・snapshot・attempt・出力は削除しません。保存途中の一時fileや未検証回答は成功として採用せず、確定artifactだけを再検証します。hash不一致は送信前に明示停止し、破損fileを上書きしません。別writerが稼働中ならresume／直接stage／renderは拒否され、process終了後はOS lockが解放されます。exit codeはrunと同じ0／1／2です。未処理／失敗や次の候補採用待ちが残れば部分出力のままです。
 
+準備・翻訳工程で分類済みのAI推論・準備検証の失敗以外の想定外の例外が起きた場合、またはPDF取得・補正が`RuntimeError`で失敗した場合は、例外の種類・メッセージ・tracebackをworkspace内の`failures/<UTC時刻>-<工程>.txt`へ1失敗1fileで保存し、要約の「処理エラー」行（`--json`では`scope.run.error`）に`details: failures/...`としてそのpathを示します。記録に認証情報・書籍本文・AIの生回答は書きません。それ以外の入力・検証エラーは従来どおりexit 2または`doc-translate: …`の表示だけで、記録を作りません。
+
 #### ページ欠落が残る既存PDFの復旧確認
 
 まず設定を上書きせず`doc-translate status DIR --json`で保存設定・failed/not_processed・candidate/revisionを確認します。実送信前に対象／参照範囲、provider/model/thinking、認証、追加利用量と後段再実行を確認し、別途実行承認を得てから`doc-translate resume DIR`を1回実行し、再度statusを確認してください。新しい`run`やworkspace再生成、lock削除、attemptの手編集は不要です。稼働writerは停止せず待ちます。

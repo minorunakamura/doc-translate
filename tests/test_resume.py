@@ -411,3 +411,57 @@ def test_real_cli_lost_response_is_unaccepted_and_discloses_possible_duplicate_c
     assert len(requests(tmp_path)) == 4  # unaccepted lost response must be sent again
     assert "unknown" in summary["usage"]["note"]
     assert "duplicate provider charges" in summary["usage"]["note"]
+
+
+def test_resume_unexpected_validation_failure_records_cause_without_book_text(
+    tmp_path, capsys, monkeypatch
+):
+    from pydantic import BaseModel, ValidationError
+    from test_run import saved_failure_record
+
+    import doc_translate.run
+    import doc_translate.translation
+    from doc_translate.snapshot import load_source_snapshot
+
+    class Strict(BaseModel):
+        count: dict[str, int]
+
+    def first_unexpected(**_):
+        raise ValueError("artificial first failure")
+
+    def unexpected(*, workspace, **_):
+        try:
+            Strict.model_validate(
+                {"count": {load_source_snapshot(workspace).model_dump_json(): "x"}}
+            )
+        except ValidationError as error:
+            raise RuntimeError("artificial wrapper") from error
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-artificial-credential")
+    source = make_epub(tmp_path)
+    workspace = tmp_path / "run"
+    monkeypatch.setattr(doc_translate.run, "prepare_document", first_unexpected)
+    with pytest.raises(SystemExit) as stopped:
+        main(run_args(source, workspace), process_command=helper(tmp_path))
+    assert stopped.value.code == 1
+    first = json.loads(capsys.readouterr().out)["scope"]["run"]["error"]
+    first_location, first_record = saved_failure_record(workspace, first)
+    monkeypatch.undo()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-artificial-credential")
+    monkeypatch.setattr(doc_translate.translation, "translate_document", unexpected)
+    with pytest.raises(SystemExit) as stopped:
+        main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
+    assert stopped.value.code == 1
+    resumed = json.loads(capsys.readouterr().out)
+    assert resumed["processing"]["status"] == "partial"
+    error = resumed["scope"]["run"]["error"]
+    assert error.startswith("translation failed")
+    location, record = saved_failure_record(workspace, error)
+    assert location != first_location
+    assert (workspace / first_location).read_text() == first_record
+    assert "ValueError: artificial first failure" in first_record
+    assert "RuntimeError: artificial wrapper" in record
+    assert "ValidationError" in record and "int_parsing" in record
+    assert "direct cause" in record and record.count("Traceback") == 2
+    assert "Original" not in record
+    assert "sk-artificial-credential" not in record

@@ -44,11 +44,12 @@ Python戻り値とCLIの`--json`は終了時の詳細statusに`review: {status: 
 ```text
 WORKSPACE/
   run.json                        # RunManifest、非秘密設定と意図した範囲
+  failures/<UTC時刻>-<工程>.txt     # 想定外の例外の種類・メッセージ・traceback（本文・credentialなし）
   originals/<sha256>.pdf|epub      # 受け付けた不変byte列
   ...                             # 既存のdraft／attempt／snapshot／render契約
 ```
 
-`run.json`は`schema_version: 1/document/source_name/owned_pages/reference_pages/correction/translation/preparation_concurrency/correction_concurrency/policy/user_terms/corrected_pages/failed_pages/not_processed_pages/chunk_sha256s/artifacts_path/error/error_code`です。`document`は`SourceDocument`、段階設定は既存`GenerationConfig`、`policy`は既存`StylePolicy`です。EPUBの`owned_pages`／`correction`はnull、ページ集合は空です。PDF全体を指定したときの`owned_pages`は取得前null、取得後に実ページ番号を固定します。明示所有範囲は取得前から保持します。参照指定と補正済み／失敗／未処理ページ、採用chunk digestは区別し、進行に応じatomicに更新します。credential・raw環境・秘密値・raw例外は保存しません。`error_code`は観測できた既存推論分類で、分類未観測時はnull、`error`は非秘密の工程失敗案内です。resume／途中artifact復旧の検証規則は次節を参照してください。
+`run.json`は`schema_version: 1/document/source_name/owned_pages/reference_pages/correction/translation/preparation_concurrency/correction_concurrency/policy/user_terms/corrected_pages/failed_pages/not_processed_pages/chunk_sha256s/artifacts_path/error/error_code`です。`document`は`SourceDocument`、段階設定は既存`GenerationConfig`、`policy`は既存`StylePolicy`です。EPUBの`owned_pages`／`correction`はnull、ページ集合は空です。PDF全体を指定したときの`owned_pages`は取得前null、取得後に実ページ番号を固定します。明示所有範囲は取得前から保持します。参照指定と補正済み／失敗／未処理ページ、採用chunk digestは区別し、進行に応じatomicに更新します。credential・raw環境・秘密値・raw例外は保存しません。`error_code`は観測できた既存推論分類で、分類未観測時はnull、`error`は非秘密の工程失敗案内です。分類済み（`InferenceError`／`PreparationValidationError`）以外の想定外の例外で準備・翻訳が失敗したとき、またはPDF取得・補正が`RuntimeError`で失敗したときは、`error`に`details: failures/<UTC時刻>-<工程>.txt`を含め、そのfileへ例外の種類・メッセージ・traceback（cause／contextの連鎖を含み、frame localsなし）をatomicに保存します。pydanticの検証例外は入力値・URL・`loc`（dict keyに本文や用語が入り得る）を除いた`errors()`だけを書きます。認証情報・環境変数・書籍本文・AIの生回答は書かず、既存fileを上書きしません。記録fileの保存自体に失敗した場合は従来の固定案内だけを保存し、run.json保存・部分出力・exit codeは変えません。resume／途中artifact復旧の検証規則は次節を参照してください。
 
 準備collectの上限は`run_document(preparation_concurrency=1)`／`resume_document(preparation_concurrency=None)`、CLI `--preparation-concurrency {1,2,4}`です。run manifestの`preparation_concurrency`へ保存し、resume未指定時は保存値を継承、旧manifestの欠落は1です。明示overrideは保存されます。公開APIの不正値はworkspace作成／更新・送信前に拒否します。設定は送信request／GenerationConfigに入らず、変更だけでは既存回答を無効化しません。render／saved statusのmanifest読込みも旧field欠落を許容します。
 
