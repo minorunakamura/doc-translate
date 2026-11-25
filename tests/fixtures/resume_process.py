@@ -3,9 +3,13 @@
 import argparse
 import json
 import os
+import signal
 import time
 from pathlib import Path
 from unittest.mock import patch
+
+# Restore Python's SIGINT handler even when the launcher ignored SIGINT (inherited SIG_IGN).
+signal.signal(signal.SIGINT, signal.default_int_handler)
 
 from doc_translate.cli import main
 
