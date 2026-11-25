@@ -39,6 +39,20 @@ faux.setResponses([
         source: units.map((unit) => unit.source_text).join(""),
       });
     }
+    if (response.hold && input.text.includes(response.hold)) {
+      const deadline = Date.now() + 10000;
+      const waitForRelease = async () => {
+        try {
+          await readFile(response.release);
+          return;
+        } catch {
+          if (Date.now() > deadline) throw new Error("Release required");
+        }
+        await delay(10);
+        return waitForRelease();
+      };
+      await waitForRelease();
+    }
     if (response.barrier) {
       const deadline = Date.now() + 5000;
       const waitForPeer = async () => {

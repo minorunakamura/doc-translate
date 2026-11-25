@@ -6,6 +6,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -1665,3 +1666,253 @@ def test_translation_v2_requires_aliases_in_actual_raw_answer(tmp_path, prepared
     digest = translate(tmp_path, prepared, response)
     assert load_translation(prepared, digest).translations == []
     assert len(requests(tmp_path)) == 1
+
+
+def _first_text(request):
+    return json.loads(request["text"])[0]["source_text"][:1]
+
+
+def _job_events(workspace):
+    ids = [
+        u.unit_id for u in generate_translation_units(load_source_snapshot(workspace))
+    ]
+    return lambda event, index: ids[index] in event.unit_ids
+
+
+@pytest.mark.parametrize("concurrency", [1, 2])
+@pytest.mark.parametrize("code", ["auth_failed", "storage_failed", "generation_failed"])
+def test_translation_stops_new_sends_after_auth_or_storage_failure_and_resumes_missing(
+    tmp_path, code, concurrency
+):
+    from doc_translate.inference import InferenceError
+
+    workspace = prepare_blocks(tmp_path, [("body", c * 6500) for c in "abc"])
+    owns = _job_events(workspace)
+    release = tmp_path / "release-a"
+    sent_a = threading.Event()
+    if concurrency == 1:
+        sent_a.set()
+
+    def deny(_config, request, _preflight):
+        if "b" * 100 in request.text:
+            assert sent_a.wait(10)
+            raise InferenceError(code, [])
+
+    def observe(event):
+        # Job a is sent first and stays in flight until b's failure is recognized.
+        if event.kind == "waiting" and owns(event, 0):
+            sent_a.set()
+        elif event.kind == "failed" and owns(event, 1):
+            release.write_text("go")
+
+    response = (
+        {"hold": "a" * 100, "release": str(release)} if concurrency == 2 else None
+    )
+    digest = translate(
+        tmp_path,
+        workspace,
+        response,
+        before_send=deny,
+        observer=observe,
+        concurrency=concurrency,
+    )
+    stopped = load_translation(workspace, digest)
+    assert stopped.processing.status == "failed"
+    global_stop = code != "generation_failed"
+    assert [chunk.error for chunk in stopped.chunks] == [
+        None,
+        code,
+        "not_processed" if global_stop else None,
+    ]
+    assert [_first_text(r) for r in requests(tmp_path)] == (
+        ["a"] if global_stop else ["a", "c"]
+    )
+    success = stopped.chunks[0].artifact_sha256
+    sent = len(requests(tmp_path))
+    digest = translate(tmp_path, workspace, concurrency=concurrency)
+    resumed = load_translation(workspace, digest)
+    assert resumed.processing.status == "completed"
+    assert resumed.chunks[0].artifact_sha256 == success
+    assert sorted(_first_text(r) for r in requests(tmp_path)[sent:]) == (
+        ["b", "c"] if global_stop else ["b"]
+    )
+
+
+def test_translation_stop_blocks_attempts_reaching_send_boundary_after_failure(
+    tmp_path,
+):
+    from doc_translate.inference import InferenceError
+
+    workspace = prepare_blocks(tmp_path, [("body", c * 6500) for c in "abc"])
+    owns = _job_events(workspace)
+    recognized = threading.Event()
+
+    def deny(_config, request, _preflight):
+        if "b" * 100 in request.text:
+            raise InferenceError("auth_failed", [])
+
+    def observe(event):
+        if event.kind == "before_send" and owns(event, 0):
+            assert recognized.wait(10)
+        elif event.kind == "failed" and owns(event, 1):
+            recognized.set()
+
+    events = []
+    digest = translate(
+        tmp_path,
+        workspace,
+        before_send=deny,
+        observer=lambda e: (observe(e), events.append(e)),
+        concurrency=2,
+    )
+    stopped = load_translation(workspace, digest)
+    assert not (tmp_path / "translation-requests.jsonl").exists()
+    assert [chunk.error for chunk in stopped.chunks] == [
+        "not_processed",
+        "auth_failed",
+        "not_processed",
+    ]
+    # Only the denied request leaves an attempt; the unsent one is not a failure.
+    assert len(stopped.runs) == 1
+    assert not any(e.kind == "cancelled" for e in events)
+    translate(tmp_path, workspace, concurrency=2)
+    assert load_translation(workspace).processing.status == "completed"
+    assert sorted(_first_text(r) for r in requests(tmp_path)) == ["a", "b", "c"]
+
+
+def test_translation_stop_does_not_send_next_split_child(tmp_path):
+    from doc_translate.inference import InferenceError
+
+    workspace = prepare_blocks(
+        tmp_path,
+        [("body", "alpha " * 10), ("body", "beta " * 12), ("body", "gamma " * 10)],
+    )
+
+    def deny(_config, request, _preflight):
+        if (
+            json.loads(request.text)[0]["source_text"].startswith("alpha")
+            and len(json.loads(request.text)) == 1
+        ):
+            raise InferenceError("storage_failed", [])
+
+    digest = translate(tmp_path, workspace, {"length_above": 80}, before_send=deny)
+    stopped = load_translation(workspace, digest)
+    assert [len(json.loads(r["text"])) for r in requests(tmp_path)] == [3]
+    assert [(len(c.units), c.error) for c in stopped.chunks] == [
+        (1, "storage_failed"),
+        (2, "not_processed"),
+    ]
+    translate(tmp_path, workspace, {"length_above": 80})
+    assert load_translation(workspace).processing.status == "completed"
+    assert [len(json.loads(r["text"])) for r in requests(tmp_path)[1:]] == [1, 2, 1, 1]
+
+
+def test_translation_stop_does_not_send_retry_of_inflight_job(tmp_path):
+    from doc_translate.inference import InferenceError
+
+    workspace = prepare_blocks(tmp_path, [("body", c * 6500) for c in "ab"])
+    owns = _job_events(workspace)
+    retried, recognized = threading.Event(), threading.Event()
+
+    def deny(_config, request, _preflight):
+        if "b" * 100 in request.text:
+            assert retried.wait(10)
+            raise InferenceError("auth_failed", [])
+
+    def observe(event):
+        if event.kind == "retry" and owns(event, 0):
+            retried.set()
+            assert recognized.wait(10)
+        elif event.kind == "failed" and owns(event, 1):
+            recognized.set()
+
+    digest = translate(
+        tmp_path,
+        workspace,
+        {"retry": "always"},
+        before_send=deny,
+        observer=observe,
+        concurrency=2,
+    )
+    stopped = load_translation(workspace, digest)
+    assert [_first_text(r) for r in requests(tmp_path)] == ["a"]
+    assert [chunk.error for chunk in stopped.chunks] == [
+        "generation_failed",
+        "auth_failed",
+    ]
+    records = [
+        json.loads((workspace / "attempts/translation" / f"{run}.json").read_bytes())
+        for run in stopped.runs
+    ]
+    retried_record = next(r for r in records if r["error"] == "generation_failed")
+    assert [a["wait_seconds"] for a in retried_record["attempts"]] == [3]
+    translate(tmp_path, workspace)
+    assert load_translation(workspace).processing.status == "completed"
+    assert sorted(_first_text(r) for r in requests(tmp_path)[1:]) == ["a", "b"]
+
+
+@pytest.mark.parametrize("concurrency", [1, 2])
+def test_translation_save_failure_stops_new_sends_and_keeps_inflight_success(
+    tmp_path, monkeypatch, concurrency
+):
+    workspace = prepare_blocks(tmp_path, [("body", c * 6500) for c in "abc"])
+    previous = translate(
+        tmp_path,
+        workspace,
+        config=CONFIG.model_copy(update={"options": GenerationOptions(maxTokens=512)}),
+    )
+    pointer = (workspace / "translation-snapshot.json").read_bytes()
+    sent = len(requests(tmp_path))
+    release = tmp_path / "release-a"
+    real_replace = os.replace
+    owns = _job_events(workspace)
+    sent_a = threading.Event()
+    if concurrency == 1:
+        sent_a.set()
+
+    def after_a(_config, request, _preflight):
+        if "b" * 100 in request.text:
+            assert sent_a.wait(10)
+
+    def observe(event):
+        if event.kind == "waiting" and owns(event, 0):
+            sent_a.set()
+
+    def fail_replace(src, dst):
+        # c1: b's chunk artifact (worker); c2: adopting b while a is in flight.
+        target = "translations/chunks" if concurrency == 1 else "snapshots/translation"
+        if target in str(dst) and "b" * 100 in Path(src).read_text():
+            release.write_text("go")
+            raise OSError("injected replace failure")
+        return real_replace(src, dst)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_replace)
+        with pytest.raises(OSError, match="injected replace failure"):
+            translate(
+                tmp_path,
+                workspace,
+                {"hold": "a" * 100, "release": str(release)}
+                if concurrency == 2
+                else None,
+                concurrency=concurrency,
+                before_send=after_a,
+                observer=observe,
+            )
+    if concurrency == 1:
+        # a was adopted before b's local save failed; that pointer stays consistent.
+        saved = load_translation(workspace)
+        assert [c.error for c in saved.chunks] == [
+            None,
+            "not_processed",
+            "not_processed",
+        ]
+    else:
+        # b's adoption failed while a was in flight; nothing is adopted afterwards.
+        assert (workspace / "translation-snapshot.json").read_bytes() == pointer
+        assert load_translation(workspace) == load_translation(workspace, previous)
+    assert sorted(_first_text(r) for r in requests(tmp_path)[sent:]) == ["a", "b"]
+    sent = len(requests(tmp_path))
+    translate(tmp_path, workspace, concurrency=concurrency)
+    assert load_translation(workspace).processing.status == "completed"
+    assert [_first_text(r) for r in requests(tmp_path)[sent:]] == ["c"]

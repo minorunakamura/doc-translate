@@ -395,6 +395,23 @@ class _AttemptCatalog:
             )
 
 
+# Helper failures that affect every later request, unlike one rejected answer.
+_GLOBAL_FAILURES = frozenset({"auth_failed", "storage_failed"})
+
+
+def _gated(gate, before_send):
+    """Refuse new sends after a global failure without aborting sent requests."""
+
+    def permitted(config, request, preflight):
+        if gate.is_set():
+            # Raised before the generate record is written: never sent.
+            raise InferenceError("not_processed", [])
+        if before_send is not None:
+            before_send(config, request, preflight)
+
+    return permitted
+
+
 def _call(
     workspace,
     config,
@@ -403,14 +420,15 @@ def _call(
     units,
     command,
     cancel,
+    gate,
     before_send,
     observer,
     catalog,
 ):
     ids = tuple(unit.unit_id for unit in units)
     observer = scoped_observer(observer, unit_ids=ids)
-    before_send = scoped_before_send(
-        before_send, phase="translation", unit_ids=list(ids)
+    before_send = _gated(
+        gate, scoped_before_send(before_send, phase="translation", unit_ids=list(ids))
     )
     candidates = sorted(
         {
@@ -457,7 +475,15 @@ def _call(
     if leader:
         try:
             result = _generate_call(
-                config, request, units, command, cancel, before_send, observer, catalog
+                config,
+                request,
+                units,
+                command,
+                cancel,
+                gate,
+                before_send,
+                observer,
+                catalog,
             )
         except BaseException as failure:
             future.set_exception(failure)
@@ -476,14 +502,14 @@ def _call(
 
 
 def _generate_call(
-    config, request, units, command, cancel, before_send, observer, catalog
+    config, request, units, command, cancel, gate, before_send, observer, catalog
 ):
     runs = []
     current_request = request
+    error = "not_processed"
     for number in range(3):
         started = time.monotonic()
         answer = None
-        error = None
         feedback = None
         try:
             result = generate(
@@ -497,7 +523,19 @@ def _generate_call(
             )
         except InferenceError as failure:
             attempts = failure.attempts
-            error = failure.code
+            if failure.code == "not_processed":
+                # The gate refused the generate record; persist only sent attempts.
+                attempts = attempts[:-1]
+                if not attempts:
+                    # Nothing new was sent: the first call stays not_processed and an
+                    # unsent repair keeps the previous saved rejection.
+                    return None, current_request, runs, error
+                # A refused adapter retry keeps the real failure it was retrying.
+                error = attempts[-1].code
+            else:
+                error = failure.code
+            if error in _GLOBAL_FAILURES:
+                gate.set()
             if (
                 error == "generation_failed"
                 and attempts
@@ -517,6 +555,7 @@ def _generate_call(
                 error = str(failure)
             else:
                 answer = result.answer
+                error = None
         run = catalog.store(
             {
                 "stage": "translation",
@@ -603,6 +642,7 @@ def _process(
     limit,
     command,
     cancel,
+    gate,
     before_send,
     observer,
     catalog,
@@ -657,12 +697,17 @@ def _process(
             units,
             command,
             cancel,
+            gate,
             before_send,
             observer,
             catalog,
         )
         runs.extend(calls)
-        if chunk.error not in {"length", "input_limit"} or cancel.is_set():
+        if (
+            chunk.error not in {"length", "input_limit"}
+            or cancel.is_set()
+            or gate.is_set()
+        ):
             return [chunk], runs, splits, reused_ids
         if len(units) > 1:
             middle = len(units) // 2
@@ -732,6 +777,9 @@ def _process(
         if cancel.is_set():
             chunks.append(TranslationChunk(units=group, error="cancelled"))
             continue
+        if gate.is_set():
+            chunks.append(TranslationChunk(units=group, error="not_processed"))
+            continue
         results, calls, operations, reused = _process(
             workspace,
             config,
@@ -740,6 +788,7 @@ def _process(
             limit,
             command,
             cancel,
+            gate,
             before_send,
             observer,
             catalog,
@@ -796,6 +845,7 @@ def translate_document(
     ):
         raise ValueError("max_source_chars and concurrency must be positive integers")
     cancelled = cancel if cancel is not None else threading.Event()
+    gate = threading.Event()
     with workspace_lock(workspace):
         source_digest = (
             source_sha256
@@ -950,7 +1000,7 @@ def translate_document(
                 active = {}
 
                 def submit():
-                    if cancelled.is_set():
+                    if cancelled.is_set() or gate.is_set():
                         return False
                     index = next(pending, None)
                     if index is None:
@@ -965,6 +1015,7 @@ def translate_document(
                         max_source_chars,
                         process_command,
                         cancelled,
+                        gate,
                         before_send,
                         scoped_observer(observer, job_id=str(index)),
                         catalog,
@@ -996,13 +1047,19 @@ def translate_document(
                             adopted(chunks, str(index))
                         while len(active) < concurrency and submit():
                             pass
+                except Exception:
+                    # A local save failure stops new sends but lets sent requests
+                    # finish and persist their attempts; the pointer is not updated.
+                    gate.set()
+                    raise
                 except BaseException:
                     cancelled.set()
                     raise
             chunks = [chunk for job in jobs for chunk in job]
-            for chunk in chunks:
-                if chunk.error == "not_processed":
-                    chunk.error = "cancelled"
+            if cancelled.is_set():
+                for chunk in chunks:
+                    if chunk.error == "not_processed":
+                        chunk.error = "cancelled"
             digest = _adopt(
                 workspace, source_digest, prep_digest, config, chunks, runs, splits
             )

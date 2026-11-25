@@ -1588,3 +1588,119 @@ PY
 ```
 
 期待：`pi-only`はexit 2・`requests_sent` 0・workspace未作成・stderrにprovider/model/thinkingの不足表示。`doc-translate`はexit 0・`completed`・`requests_sent` > 0。証拠は変数名・command・exit・stderrの不足行・送信件数だけで、値・本文・秘密を保存しない。resume／reviewが`DOC_TRANSLATE_*`を読まないことは`tests/test_resume.py`・`tests/test_review.py`の回帰で確認する。実provider・実認証・実書籍は対象外。正式チェック・Rootの別invocation直接確認は代用しない。
+
+## 翻訳の全体障害停止（Issue #104）
+
+入口は公開`translate_document`→`load_translation`。helperの`auth_failed`／`storage_failed`を認識した後は未開始job・分割の次の子・通信retry・marker訂正を新規送信せず、認識前に送信済みのrequestは回収して成功を採用することを確認する。局所の`generation_failed`は他jobを続ける対照、ローカル保存例外は新規送信を止めて例外を送出し採用pointerを最後の整合版に保つ。注入は公開`before_send`の`InferenceError`とOS replace境界だけで、内部generate／validator／saveは置換しない。並列の進行中成功は`ai/tests/translation-process.mjs`の`hold`／`release`とobserver同期で決定的にする。前提は既存`.venv`／Node／`ai/dist`。install／build・実provider／実書籍／秘密は使わない。repository rootで非並行・foregroundで実行する。
+
+```sh
+EVIDENCE=$(mktemp -d "$PWD/work/issue104-stop-XXXXXX")
+export EVIDENCE PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+PYTHONPATH=src:tests .venv/bin/python - <<'PY'
+import hashlib, json, os, subprocess, tempfile, threading
+from pathlib import Path
+from unittest.mock import patch
+from test_translation import prepare_blocks, requests, translate
+from doc_translate.inference import InferenceError
+from doc_translate.snapshot import load_source_snapshot
+from doc_translate.translation import load_translation
+from doc_translate.units import generate_translation_units
+
+evidence = Path(os.environ['EVIDENCE'])
+for name, command in (('revision.txt', ['git', 'rev-parse', 'HEAD']), ('dirty.txt', ['git', 'status', '--short']), ('scope.diff', ['git', 'diff'])):
+    (evidence / name).write_text(subprocess.check_output(command, text=True))
+# b is denied (or its chunk save fails); sends are request text heads a/b/c.
+EXPECTED = {
+    'auth_failed': {'sent': ['a'], 'chunks': [None, 'auth_failed', 'not_processed'], 'resume': ['b', 'c']},
+    'storage_failed': {'sent': ['a'], 'chunks': [None, 'storage_failed', 'not_processed'], 'resume': ['b', 'c']},
+    'generation_failed': {'sent': ['a', 'c'], 'chunks': [None, 'generation_failed', None], 'resume': ['b']},
+    'save': {'sent': ['a', 'b'], 'chunks': [None, 'not_processed', 'not_processed'], 'resume': ['c']},
+}
+cases = [(code, c) for code in ('auth_failed', 'storage_failed') for c in (1, 2)] + [('generation_failed', 2), ('save', 1)]
+observations = []
+
+def heads(owned, start=0):
+    return [json.loads(r['text'])[0]['source_text'][:1] for r in requests(owned)[start:]]
+
+def pointer(workspace):
+    return hashlib.sha256((workspace / 'translation-snapshot.json').read_bytes()).hexdigest()
+
+try:
+    for code, concurrency in cases:
+        with tempfile.TemporaryDirectory(prefix='issue104-stop-owned-') as temporary:
+            owned = Path(temporary)
+            workspace = prepare_blocks(owned, [('body', c * 6500) for c in 'abc'])
+            ids = [u.unit_id for u in generate_translation_units(load_source_snapshot(workspace))]
+            owns = lambda event, i: ids[i] in event.unit_ids
+            release, sent_a = owned / 'release-a', threading.Event()
+            if concurrency == 1:
+                sent_a.set()
+            def before_send(_config, request, _preflight):
+                if 'b' * 100 in request.text:
+                    assert sent_a.wait(10)  # a is already sent (in flight when c2)
+                    if code != 'save':
+                        raise InferenceError(code, [])
+            kinds = []
+            def observe(event):
+                kinds.append(event.kind)
+                if event.kind == 'waiting' and owns(event, 0):
+                    sent_a.set()
+                elif event.kind == 'failed' and owns(event, 1):
+                    release.write_text('go')  # release a only after b's failure is recognized
+            hold = {'hold': 'a' * 100, 'release': str(release)} if concurrency == 2 else None
+            record = {'case': code, 'concurrency': concurrency}
+            if code == 'save':
+                real_replace = os.replace
+                def replace(src, dst):
+                    if 'translations/chunks' in str(dst) and 'b' * 100 in Path(src).read_text():
+                        record['pointer_at_injection'] = pointer(workspace)
+                        raise OSError('injected replace failure')
+                    return real_replace(src, dst)
+                try:
+                    with patch('os.replace', replace):
+                        translate(owned, workspace, before_send=before_send, observer=observe, concurrency=1)
+                except OSError as error:
+                    record['exception'] = str(error)
+                else:
+                    raise AssertionError('save failure was not raised')
+                kept = load_translation(workspace)
+                record['pointer_after_failure'] = pointer(workspace)
+                assert record['pointer_after_failure'] == record['pointer_at_injection']  # not updated after the exception
+                errors = [c.error for c in kept.chunks]
+                assert errors == EXPECTED[code]['chunks'], errors
+                assert kept.chunks[0].artifact_sha256 is not None  # a adopted before b's save failed
+            else:
+                digest = translate(owned, workspace, hold, before_send=before_send, observer=observe, concurrency=concurrency)
+                stopped = load_translation(workspace, digest)
+                errors = [c.error for c in stopped.chunks]
+                record['pointer_after_failure'] = pointer(workspace)
+                assert stopped.processing.status == 'failed'
+                assert errors == EXPECTED[code]['chunks'], errors
+                # Unsent c leaves no attempt; only a and the denied b (and c in the local control) are recorded.
+                assert len(stopped.runs) == len(EXPECTED[code]['sent']) + 1, stopped.runs
+                record['runs'] = len(stopped.runs)
+            assert 'cancelled' not in kinds
+            kept_artifact = load_translation(workspace).chunks[0].artifact_sha256
+            before = heads(owned)
+            assert before == EXPECTED[code]['sent'], before
+            resumed = load_translation(workspace, translate(owned, workspace, concurrency=concurrency))
+            added = sorted(heads(owned, len(before)))
+            assert resumed.processing.status == 'completed'
+            assert resumed.chunks[0].artifact_sha256 == kept_artifact
+            assert added == EXPECTED[code]['resume'], added
+            record.update({'sent_before_resume': before, 'chunk_errors': errors, 'resume_added_sends': added,
+                           'pointer_after_resume': pointer(workspace), 'inflight_success_kept': True})
+            (evidence / f'{code}-c{concurrency}-requests.jsonl').write_bytes((owned / 'translation-requests.jsonl').read_bytes())
+            observations.append(record)
+finally:
+    (evidence / 'observations.json').write_text(json.dumps(observations, ensure_ascii=False, indent=2))
+    (evidence / 'cleanup.txt').write_text('only owned TemporaryDirectories removed; helper children drained; evidence retained\n')
+for path in evidence.rglob('*'):
+    if path.is_file():
+        path.read_bytes()
+assert len(observations) == len(cases)
+print(evidence, f'{len(cases)} stop cases matched; cleanup/readback complete')
+PY
+```
+
+期待（Issue #104の完了条件）：`auth_failed`／`storage_failed`はc1・c2とも停止前の送信が`a`だけ。chunkは`[成功, 実error, not_processed]`、runは送信した2件だけで、未送信のcにはattemptがなく`cancelled`もない。c2では認識前に送信済みの`a`を中断せず、`b`の失敗後に解放して成功を採用する。局所`generation_failed`の対照ではcも送られて採用される。保存例外（c1、bのchunk artifact replace）は例外を送出し、注入時と同じpointer、a採用・b/c `not_processed`のまま。障害なし再実行は`a`の成功artifactを無送信で再利用し、追加送信は欠けた分だけ（全体停止は`b,c`、局所は`b`、保存例外は保存済みattemptを回収して`c`）。証拠はrevision／dirty／diff、各caseの`*-requests.jsonl`、`observations.json`（送信先頭・chunk分類・run数・pointer hash・例外・resume追加送信）、`cleanup.txt`。所有TemporaryDirectoryだけを回収し、cleanup後に全fileを再読する。並列の公開race全体・実providerの認証／保存障害・課金は対象外で、focused `pytest tests/test_translation.py -k "stop or save_failure"`と正式チェック・Rootの独立確認を代用しない。再利用はproject trust→新セッションか`/reload`→`/skill:verify-project translation global stop`またはSkill実ファイルread。
