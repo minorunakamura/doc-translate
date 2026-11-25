@@ -66,18 +66,26 @@ def resolve_config(
     options: GenerationOptions | None = None,
 ) -> GenerationConfig:
     """Resolve each field: stage > shared > DOC_TRANSLATE_* environment; require all three."""
-    values = {}
-    for name, environment in (
+    fields = (
         ("provider", "DOC_TRANSLATE_PROVIDER"),
         ("model", "DOC_TRANSLATE_MODEL"),
         ("thinking", "DOC_TRANSLATE_THINKING"),
-    ):
+    )
+    values = {}
+    for name, environment in fields:
         value = getattr(stage, name, None)
         if value is None:
             value = getattr(shared, name, None)
         if value is None:
-            value = os.environ.get(environment)
+            value = os.environ.get(environment) or None
         values[name] = value
+    missing = [
+        f"{name} (--{name} or {environment})"
+        for name, environment in fields
+        if values[name] is None
+    ]
+    if missing:
+        raise ValueError(f"missing run settings: {', '.join(missing)}")
     return GenerationConfig.model_validate(
         {
             **values,
