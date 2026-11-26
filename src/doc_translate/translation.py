@@ -22,7 +22,12 @@ from doc_translate.inference import (
     _saved_answer,
     generate,
 )
-from doc_translate.preparation import PreparationSnapshot, Visible, load_preparation
+from doc_translate.preparation import (
+    SPLIT_UNITS_GUIDANCE,
+    PreparationSnapshot,
+    Visible,
+    load_preparation,
+)
 from doc_translate.progress import Observer, emit, scoped_before_send, scoped_observer
 from doc_translate.snapshot import (
     Contract,
@@ -1102,7 +1107,7 @@ def _load_translation(
     for operation in snapshot.splits:
         units = _split(units, operation)
     if [unit for chunk in snapshot.chunks for unit in chunk.units] != units:
-        raise ValueError("Translation source correspondence mismatch")
+        raise ValueError(SPLIT_UNITS_GUIDANCE)
     if snapshot.processing != Processing(
         stage="translation",
         status="failed" if any(c.error for c in snapshot.chunks) else "completed",

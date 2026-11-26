@@ -125,3 +125,7 @@ Mapの同節と[送信前準備・単一trial・人工直接確認](../../../doc
 ## 翻訳の全体障害停止（Issue #104）
 
 翻訳の`auth_failed`／`storage_failed`後に新規送信を止め、送信済みの成功を回収し、resumeで欠けた分だけ送ることを確認するときは[Mapの#104節](references/feature-map.md#翻訳の全体障害停止issue-104)を選ぶ。公開`translate_document`と実Node faux、`before_send`／OS replace注入だけで、所有tempだけcleanup後に`work/issue104-stop-<unique>/`の証拠を再読する。再利用は`/skill:verify-project translation global stop`。
+
+## 入れ子リストの順序と旧workspaceの停止（Issue #103）
+
+EPUBの`li`で子リストの後に続く親の文の順序、変更前の版で作った該当workspaceの案内付き停止（exit 2・送信0件）、該当リストなしのEPUB／PDFの不変を確認するときは[Mapの#103節](references/feature-map.md#入れ子リストの順序と旧workspaceの停止issue-103)を選ぶ。`scripts/nested_list_order.py`で実CLI＋実Node fauxを動かし、変更前コードは所有tempの`git archive`から読み込む。所有tempだけcleanup後に`work/test-verification-nested-list-<unique>/`の証拠を再読する。再利用は`/skill:verify-project nested list`。

@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+from pathlib import Path
+from zipfile import ZipFile, ZipInfo
 
 import pytest
 from test_epub import make_epub
@@ -25,6 +27,27 @@ def assert_preserved(files):
         hashlib.sha256(path.read_bytes()).hexdigest() == digest
         for path, digest in files.items()
     )
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+SPLIT_UNITS_GUIDANCE = (
+    "保存済みの訳と現在の文の分け方が合いません。"
+    "新しいworkspaceで `run` し直してください。"
+)
+
+
+def nested_list_epub(path):
+    """Byte-stable artificial EPUB: item text continues after a child list."""
+    members = {
+        "mimetype": b"application/epub+zip",
+        "META-INF/container.xml": b'<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="OPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>',
+        "OPS/book.opf": b'<package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata/><manifest><item id="ch" href="text/ch.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="ch"/></spine></package>',
+        "OPS/text/ch.xhtml": b'<html xmlns="http://www.w3.org/1999/xhtml"><head/><body><ol start="3"><li id="p">Before <em>x</em><ul><li>Child</li></ul>After</li></ol></body></html>',
+    }
+    with ZipFile(path, "w") as archive:
+        for name, data in members.items():
+            archive.writestr(ZipInfo(name, (2020, 1, 1, 0, 0, 0)), data)
+    return path
 
 
 def requests(tmp_path):
@@ -465,3 +488,33 @@ def test_resume_unexpected_validation_failure_records_cause_without_book_text(
     assert "direct cause" in record and record.count("Traceback") == 2
     assert "Original" not in record
     assert "sk-artificial-credential" not in record
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [["resume", "--json"], ["render"], ["status", "--verify"]],
+)
+def test_saved_translation_with_old_item_split_stops_with_rerun_guidance(
+    tmp_path, capsys, arguments
+):
+    # Saved by the pre-#103 code (8d4988b) from nested_list_epub via public run.
+    workspace = tmp_path / "run"
+    for name, text in json.loads(
+        (FIXTURES / "epub-nested-list-before-103.json").read_bytes()
+    ).items():
+        path = workspace / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    manifest = RunManifest.model_validate_json((workspace / "run.json").read_bytes())
+    (workspace / "originals").mkdir()
+    original = nested_list_epub(workspace / manifest.document.artifact)
+    assert hashlib.sha256(original.read_bytes()).hexdigest() == manifest.document.sha256
+    before = {p: p.read_bytes() for p in workspace.rglob("*") if p.is_file()}
+    with pytest.raises(SystemExit) as stopped:
+        main([*arguments, str(workspace)], process_command=helper(tmp_path))
+    assert stopped.value.code == 2
+    error = capsys.readouterr().err
+    assert SPLIT_UNITS_GUIDANCE in error
+    assert "correspondence mismatch" not in error
+    assert requests(tmp_path) == []
+    assert {p: p.read_bytes() for p in workspace.rglob("*") if p.is_file()} == before

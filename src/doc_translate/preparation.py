@@ -35,6 +35,10 @@ from doc_translate.units import generate_translation_units
 from doc_translate.workspace import workspace_lock
 
 Visible = Annotated[str, Field(min_length=1, pattern=r"\S")]
+SPLIT_UNITS_GUIDANCE = (
+    "保存済みの訳と現在の文の分け方が合いません。"
+    "新しいworkspaceで `run` し直してください。"
+)
 _METHOD = "chapter-collect-organize-v1"
 _VALIDATION_ERRORS = {
     "prepare_unknown_unit": "Term evidence does not match source text: unknown unit_id.",
@@ -800,7 +804,7 @@ def load_preparation(workspace: Path, sha256: str | None = None) -> PreparationS
         )
         or (evidence.wire_version == 1 and evidence.bindings)
     ):
-        raise ValueError("Preparation evidence source correspondence mismatch")
+        raise ValueError(SPLIT_UNITS_GUIDANCE)
     for group, collection in zip(groups, evidence.collections, strict=True):
         _validate_collection(collection, group)
     _validate_organization(
