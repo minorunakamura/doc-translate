@@ -70,8 +70,8 @@ def translation_measurement(workspace, diagnostic=False):
     glob, executor = Path.glob, translation.ThreadPoolExecutor
     load, read, store = (
         translation.load_translation,
-        translation._read,
-        translation._store,
+        translation.read_json,
+        translation.store_json,
     )
     read_bytes, sha256, loads, replace = (
         Path.read_bytes,
@@ -190,8 +190,8 @@ def translation_measurement(workspace, diagnostic=False):
             stack.enter_context(patch.object(target, name, wrapper))
         if diagnostic:
             for target, name, wrapper in (
-                (translation, "_read", artifact_read),
-                (translation, "_store", stored),
+                (translation, "read_json", artifact_read),
+                (translation, "store_json", stored),
                 (translation, "_request", counted(translation._request, "request")),
                 (
                     translation,

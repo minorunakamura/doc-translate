@@ -23,7 +23,8 @@ from doc_translate.snapshot import (
     Sha256,
     SnapshotReference,
     SourceDocument,
-    _atomic_write,
+    atomic_write,
+    store_bytes,
 )
 from doc_translate.workspace import workspace_lock
 
@@ -98,17 +99,11 @@ def _hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _store(workspace: Path, directory: str, suffix: str, data: bytes) -> PDFArtifact:
-    digest = _hash(data)
-    relative = f"{directory}/{digest}.{suffix}"
-    path = workspace / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        if path.read_bytes() != data:
-            raise ValueError(f"PDF artifact SHA-256 mismatch: {relative}")
-    else:
-        _atomic_write(path, data)
-    return PDFArtifact(artifact=relative, sha256=digest)
+def _store_artifact(
+    workspace: Path, directory: str, suffix: str, data: bytes
+) -> PDFArtifact:
+    digest = store_bytes(workspace, directory, suffix, data)
+    return PDFArtifact(artifact=f"{directory}/{digest}.{suffix}", sha256=digest)
 
 
 def _read_artifact(workspace: Path, artifact: PDFArtifact) -> bytes:
@@ -289,7 +284,7 @@ def acquire_pdf(
     versions.update(python=platform.python_version(), platform=platform.platform())
     with workspace_lock(workspace):
         original = source.read_bytes()
-        original_artifact = _store(workspace, "originals", "pdf", original)
+        original_artifact = _store_artifact(workspace, "originals", "pdf", original)
         converter = DocumentConverter(
             allowed_formats=[InputFormat.PDF],
             format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)},
@@ -303,7 +298,7 @@ def acquire_pdf(
         except Exception as error:
             raise PDFExtractionError(f"Docling conversion failed: {error}") from error
         raw = result.document.export_to_dict()
-        raw_artifact = _store(
+        raw_artifact = _store_artifact(
             workspace,
             "drafts/pdf/raw",
             "json",
@@ -342,7 +337,7 @@ def acquire_pdf(
                         images.append(
                             PDFPageImage(
                                 page=number,
-                                image=_store(
+                                image=_store_artifact(
                                     workspace,
                                     "drafts/pdf/images",
                                     "png",
@@ -444,10 +439,10 @@ def acquire_pdf(
                 _check_charspans(raw),
             ],
         )
-        artifact = _store(
+        artifact = _store_artifact(
             workspace, "drafts/pdf", "json", draft.model_dump_json().encode()
         )
-        _atomic_write(
+        atomic_write(
             workspace / "pdf-draft.json",
             SnapshotReference(sha256=artifact.sha256).model_dump_json().encode(),
         )

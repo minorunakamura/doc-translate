@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
+from doc_translate.preparation import PreparationEvidence, load_preparation
 from doc_translate.render_assets import RenderAssets, safe_latex
 from doc_translate.saved_status import _status_records, read_saved_status
 from doc_translate.snapshot import (
@@ -17,8 +18,9 @@ from doc_translate.snapshot import (
     SnapshotReference,
     SourceSnapshot,
     Uncertainty,
-    _atomic_write,
+    atomic_write,
     load_source_snapshot,
+    read_json,
     source_snapshot_sha256,
 )
 from doc_translate.translation import load_translation
@@ -67,12 +69,6 @@ def _inputs(workspace: Path):
         ).sha256
         translation = load_translation(workspace, translation_digest)
         stale = translation.source_snapshot_sha256 != source_digest
-        from doc_translate.preparation import (
-            PreparationEvidence,
-            _read,
-            load_preparation,
-        )
-
         preparation = load_preparation(workspace, translation.preparation_sha256)
         if (workspace / "preparation-snapshot.json").exists():
             current = load_preparation(workspace)
@@ -85,7 +81,9 @@ def _inputs(workspace: Path):
 
             run = RunManifest.model_validate_json((workspace / "run.json").read_bytes())
             evidence = PreparationEvidence.model_validate(
-                _read(workspace, "preparation/evidence", preparation.evidence_sha256)
+                read_json(
+                    workspace, "preparation/evidence", preparation.evidence_sha256
+                )
             )
             stale |= (
                 run.policy != preparation.policy
@@ -1463,7 +1461,7 @@ def render_document(workspace: Path) -> dict:
         files["summary.json"] = _json(summary)
         for name, data in files.items():
             (directory / name).parent.mkdir(parents=True, exist_ok=True)
-            _atomic_write(directory / name, data)
+            atomic_write(directory / name, data)
         manifest = {
             "schema_version": 1,
             "summary": summary["artifacts"]["summary"],
@@ -1471,7 +1469,7 @@ def render_document(workspace: Path) -> dict:
                 f"{relative}/{name}": _hash(data) for name, data in files.items()
             },
         }
-        _atomic_write(workspace / "render.json", _json(manifest))
+        atomic_write(workspace / "render.json", _json(manifest))
         return summary
 
 
