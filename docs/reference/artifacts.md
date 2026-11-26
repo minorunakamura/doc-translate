@@ -91,7 +91,7 @@ reviewは`review_validate`を`_inputs`・範囲照合・準備／過去review再
 - EPUBは保存原本と現行reader／extractorの入力から原文を再構築し、採用済みsourceとの対応を検査します。PDF依存は読み込みません。
 - PDFは原本・raw・全PNGを`load_pdf_draft`で検査し、取得version／設定と必須成功check・画像被覆を比較します。単にdraft pointerがあるだけでは取得完了としません。必要なら保存／明示model pathで再取得します。検証済みchunkの所有を照合し、進捗manifestの直前に確定したchunkも回収して不足所有だけを補正します。部分source pointerの存在を全所有完了とみなしません。
 - 旧採用source／preparation／translation／render参照とattempt hashを送信前に検査します。hash不一致は停止し、破損artifactを上書き・黙って破棄しません。
-- 補正・準備・翻訳は実request／config／画像metadata・terminal／helper終了と回答domain検証を再度照合し、確定した受理可能結果だけを再利用します。回答保存後・採用pointer前の中断でも再送せず復帰できます。翻訳の上限縮小／分割結果も元入力に照合して再利用します。
+- 補正・準備・翻訳は実request／config／画像metadata・成功code／helper終了と回答domain検証を再度照合し、確定した受理可能結果だけを再利用します。回答保存後・採用pointer前の中断でも再送せず復帰できます。翻訳の上限縮小／分割結果も元入力に照合して再利用します。
 - glossary／文体policy変更は固定準備入力と影響する翻訳を更新し、PDF取得／補正を無効化しません。`resume --policy FILE`は`StylePolicy(version, text)`の検証済みデータであり、コードとして実行しません。model等の明示変更は該当stageの実入力として比較します。原文revisionがあっても不足ページ・補正設定変更を検査し、取得入力が同じなら補正設定変更だけでDoclingを再実行しません。新機械生成内容が取り込み済み基点と異なるときの停止・採用は次節によります。
 - `workspace_lock`の公開手動取得は非再入のままです。内部のrun／resume所有権だけを同PID／threadのstageに限定して貸し、直接stage／renderや別process／threadは通常のflockで拒否します。crash／kill後はOS解放を利用します。
 - 一時fileは採用参照／回答として扱いません。送信後の応答損失を全て記録できる保証はなく、summaryの`usage.note`とusage artifactは常にusage不明・再送による重複課金の可能性を明示します。sourceが無い失敗summaryにも段階attempt件数・同じ注意を返します。
@@ -332,7 +332,7 @@ WORKSPACE/
 
 固定入力hashはsort済みUTF-8 JSONの`{glossary, context, policy}`だけから生成し、準備方式・config／model・usage・根拠artifact hash・参照元snapshot hashを含めません。翻訳callerはunitの実入力hashに加え、この固定入力hashを参照できます。方式だけが変わって採用内容が同じなら翻訳入力を無効化しません。原文とpolicy／book／version／利用者terms、全呼出しの準備方式・configと各版の実requestが現採用版と一致するとき、`prepare_document`はloadで再検証してdigestを返し、再送しません。内容変更後の新版も旧artifactを削除しません。`version`はcaller指定の非空文字列であり、時刻や試行数による自動改版を行いません。
 
-準備attemptの探索はfile名の辞書順で、受理可能な一致に達した時点で止まります。一つの`prepare_document`内では、到達してbyte hashを検証したimmutable raw recordだけをmemo化し、後続collect／organizeで同じ元fileを再read／hashしません。今回新規保存したrecordもatomic保存成功後に同じ正規JSON値を登録します。memo化するのは回答の受理結果ではなくraw recordであり、各候補の方式・実request・規定repair・config・raw回答schema／正常terminal／helper終了と現在の根拠の照合は省きません。到達した破損は従来どおり拒否し、一致より後方の未到達recordを先読みして拒否しません。公開`load_preparation`はこのmemoを共有せず、全runを独立検証します。別のprepareも読み直し、永続index・全履歴snapshot常駐・旧artifact書換えは行いません。
+準備attemptの探索はfile名の辞書順で、受理可能な一致に達した時点で止まります。一つの`prepare_document`内では、到達してbyte hashを検証したimmutable raw recordだけをmemo化し、後続collect／organizeで同じ元fileを再read／hashしません。今回新規保存したrecordもatomic保存成功後に同じ正規JSON値を登録します。memo化するのは回答の受理結果ではなくraw recordであり、各候補の方式・実request・規定repair・config・raw回答schema／成功code／helper終了と現在の根拠の照合は省きません。到達した破損は従来どおり拒否し、一致より後方の未到達recordを先読みして拒否しません。公開`load_preparation`はこのmemoを共有せず、全runを独立検証します。別のprepareも読み直し、永続index・全履歴snapshot常駐・旧artifact書換えは行いません。
 
 `concurrency`は1・2・4（既定1）で、上限までのcollectだけを投入し、完了後に次を投入します。group／実wire／configは同じです。collectionsとrunsは元group順に戻し、全group成功・保存後だけorganizeを1回行います。workerはimmutable attempt保存、親だけが根拠／snapshot／pointerを確定します。workflow lockのthread貸出契約は変えません。
 
@@ -409,13 +409,13 @@ WORKSPACE/
 
 attempt→検証済みchunk artifact→snapshot→採用参照の順でfsync／atomic replaceします。各並列jobが完了するごとに部分snapshotを採用し、別chunkの失敗で正常採用を破棄しません。`translate_document`は部分失敗でもsnapshot digestを返すので、callerは`processing.status`と各chunk.errorを確認してください。保存失敗は例外になり、直前の採用参照と保存済みattemptを保持します。ローカル保存例外でも新規送信を止め、進行中jobの終了と保存を待ってから例外を送出します。採用参照は最後の整合版のままです（Issue #104）。原因解消後のresumeは保存済み成功を無送信で再利用し、欠けた分だけ送信します。参照されない保存途中artifactを自動採用するengineはありません。応答喪失・採用参照確定前のcrashによる再送／exactly-once課金は保証しません。
 
-再利用はloadで検証できた採用済みchunk（manual含む）を優先し、次に辞書順の保存attemptから正常回答を回収します。現在の連続unit・分割対応と、版付き実wire request（aliasまたは旧ID／種別／marker原文／unit context・固定context／glossary／policy・schema等）およびconfig（provider/model/thinking/options）を完全一致で照合します。訂正requestは、現在の入力に処方済みの固定指示と`context.translation_feedback`だけを加えた形と完全一致する場合に限り認め、回答のID／marker・正常terminal等を再検証します。artifactとrunには同じ実requestを保存し、訂正済み結果も採用後のresumeや採用途中で中断した後に無送信で再利用できます。非splitではsource snapshot hashや保護payload込みsource_hashだけでは無効化せず、codeだけの変更は現在のunit／token／位置へ結び直します。splitでは上記の親source_hash／元範囲も実入力として照合します。準備方式・根拠・usage metadataだけの変更でも本文入力が同じなら再送しません。本文・context・固定入力・schema・実設定が変わったchunkは旧版を残して更新します。曖昧な旧訳を分割・接合して使いません。
+再利用はloadで検証できた採用済みchunk（manual含む）を優先し、次に辞書順の保存attemptから正常回答を回収します。現在の連続unit・分割対応と、版付き実wire request（aliasまたは旧ID／種別／marker原文／unit context・固定context／glossary／policy・schema等）およびconfig（provider/model/thinking/options）を完全一致で照合します。訂正requestは、現在の入力に処方済みの固定指示と`context.translation_feedback`だけを加えた形と完全一致する場合に限り認め、回答のID／marker・成功code等を再検証します。artifactとrunには同じ実requestを保存し、訂正済み結果も採用後のresumeや採用途中で中断した後に無送信で再利用できます。非splitではsource snapshot hashや保護payload込みsource_hashだけでは無効化せず、codeだけの変更は現在のunit／token／位置へ結び直します。splitでは上記の親source_hash／元範囲も実入力として照合します。準備方式・根拠・usage metadataだけの変更でも本文入力が同じなら再送しません。本文・context・固定入力・schema・実設定が変わったchunkは旧版を残して更新します。曖昧な旧訳を分割・接合して使いません。
 
 翻訳attempt探索のcatalogは単一操作内だけです。開始時の全元recordのread／hash／JSON検証（無関係な破損も拒否）は維持し、候補索引はrequest text／先頭unit（v1追跡ID、v2 wire投影）をそれぞれキーにし、取得後の全config照合を必須とします。configをJSON byte列のキーにして等値な数値（`-0.0`／`0.0`等）の再利用を狭めず、索引一致だけでは受理しません。全実request／config・規定repair・raw／schema／現在unit検証を各利用箇所で行い、adjustment／length replay・split成功回収の順序も維持します。新規の成功／失敗／repair／adjusted記録はatomic保存後だけ登録し、thread lockで登録と辞書順tuple snapshot取得を直列化します。後から登録したrecordは次の取得から見え、既取得snapshotは変えません。別操作は元fileを再検証し、公開loadの検証を共有cacheで省きません。既存の全raw記録に索引を加えるだけで、全履歴snapshot／画像の一括保持や永続状態は追加しません。
 
 同一operationの同じv2実request＋configの同時missは、catalog内のthread-safeなFutureでraw成功／失敗を共有します。configはJSON byte keyでなく全体等値で照合し、各利用箇所は現在unitsへ独立binding／marker検証します。実attemptのrun digestをsnapshotのrunsへ重複登録しないためusageは一度だけ計上します。保存例外・取消時もFutureを完結させ、失敗で待機者を取り残しません。既存の有限repair／retry、取消drain、atomic保存・親の部分snapshot更新を維持します。
 
-`load_translation`はNode・認証なしで各byte hashとschema、保存原文／準備、分割履歴と全unit対応、受理済みartifactの実入力・raw回答・ID／marker、runの正常terminal／送信先／submitted設定／process終了を再検証します。壊れたartifactを黙って捨てて再送したり、未検証回答を受理したりしません。これは構造・入力対応の検査であり、意味の欠落や誤訳がないことの証明ではありません。
+`load_translation`はNode・認証なしで各byte hashとschema、保存原文／準備、分割履歴と全unit対応、受理済みartifactの実入力・raw回答・ID／marker、runの最終payload schema・`validated`状態と設定・成功code／exit code・preflightを再検証します（terminal・送信先・submitted設定はhelperの検査を信頼し再検査しません）。壊れたartifactを黙って捨てて再送したり、未検証回答を受理したりしません。これは構造・入力対応の検査であり、意味の欠落や誤訳がないことの証明ではありません。
 
 ## 安全Markdown・対応表・QA・render/status（Issue #13）
 
@@ -669,7 +669,7 @@ run／resumeでは親がOS workflow lockを保持し、公開`correct_pdf`のloc
 
 loadはchunk／draft／原資料／raw／PNG／runのhashを照合し、元runのraw回答を再度schema／domain検証し、記録した送信許可範囲・draft投影・図所属からの採用結果と一致することを確認します。このchunk APIは`source-snapshot.json`を作成・変更せず、複数chunkからのsource組立は次節の別APIで行います。
 
-Issue #46／#47では`CORRECTION_POLICY`・回答／chunk schema・公開API・所有許可を変更しません。`correct_pdf`とresumeの保存応答回収は、現在のbase request、または現行baseに規定の訂正contextだけを加えたrequestと全体一致する成功記録に限ります。訂正feedbackは上記code・固定理由・非空で昇順かつ重複のない所有範囲内の整数ページ番号だけを認識します。固定指示の書換え、余分なfeedback field、その他contextの緩い正規化はしません。policy／config／参照範囲／schema／draft投影／実画像等を照合し、保存status・preflight・正常terminal／helper終了・画像metadata・raw回答のschema／全domain検証を再実行します。rejectedや不正hashの保存物は成功として再利用しません。
+Issue #46／#47では`CORRECTION_POLICY`・回答／chunk schema・公開API・所有許可を変更しません。`correct_pdf`とresumeの保存応答回収は、現在のbase request、または現行baseに規定の訂正contextだけを加えたrequestと全体一致する成功記録に限ります。訂正feedbackは上記code・固定理由・非空で昇順かつ重複のない所有範囲内の整数ページ番号だけを認識します。固定指示の書換え、余分なfeedback field、その他contextの緩い正規化はしません。policy／config／参照範囲／schema／draft投影／実画像等を照合し、保存status・preflight・成功code／helper終了・画像metadata・raw回答のschema／全domain検証を再実行します。rejectedや不正hashの保存物は成功として再利用しません。
 
 既存の成功chunkはloadとrun側のdraft／許可範囲／config／policyの照合後に再利用します。base／訂正成功の保存応答は、attempt保存後・chunk保存前の中断でも無送信で回収できます。raw回答・観測usage・旧immutable artifactは書き換えず保持します。明示白紙は受理しますが、空回答・ページの黙示省略は拒否し、空抽出を自動白紙化しません。網羅性はページ結果の根拠があることだけで、ページ内の全文や意味品質の保証ではありません。
 
@@ -931,7 +931,7 @@ login・OAuth TTL判定／refresh・API認証変換はpi-ai／provider所有で�
 
 `retryable`は`generation_failed`かつ正規`error` terminalの場合だけ公開`isRetryableAssistantError`で判定し、それ以外はfalseです。これはlibraryの**heuristic**でありHTTP status／未送信／内部retry 0回の証明ではありません。実OpenAI-compatible HTTP adapterは429等の失敗時に`onResponse`を呼ばないため、`observed_responses:0`も未送信を意味しません。quota／billing／auth／abortedには自動retryを勧めません。Pythonが回答JSON・schema・ID／根拠を検証・採用し、workflow retryを初回込み最大3試行・待機3／6秒で所有します。Nodeはretry／backoff／回答JSON解析を行いません。
 
-成功には`done/stop` terminal、最終messageの`stopReason:"stop"`と正確なprovider/model/api、toolCallなしが必要です。`stream.result()`がresolveしてもerror／aborted／length／toolUse／deferred／terminal欠落／model違いは成功にしません。Pythonはさらに正常process終了を確認します。exitは成功0、入力設定エラー2、生成・認証・保存・取消・timeout失敗1です。preflightや入力検証に失敗した場合は`error/{code}`だけのpayloadもあります。preflight結果の計算後に取消・store drainが失敗した場合は、完全なpreflight payloadに`code`を加えた`error`も返します。Pythonはこの形もversion・送信先・能力を厳密に検証し、文書送信やretryへ進みません。generate結果の計算後に取消・drainが失敗した場合は、最終`code`だけが上書きされ、元のusage／retry projectionは残ります。Pythonはその観測情報を保持しますが、最終`code`が`generation_failed`でない場合はretryしません。codeは`invalid_request/unknown_provider/unknown_model/unsupported_thinking/unsupported_image/invalid_image/input_limit/auth_unavailable/auth_failed/generation_failed/missing_terminal/model_mismatch/tool_call/timeout/cancelled/storage_failed`です。raw error・token・headers・stderr・環境変数はwireに出しません。
+成功には`done/stop` terminal、最終messageの`stopReason:"stop"`と正確なprovider/model/api、toolCallなしが必要です。`stream.result()`がresolveしてもerror／aborted／length／toolUse／deferred／terminal欠落／model違いは成功にしません。helperのexitは成功0、入力設定エラー2、生成・認証・保存・取消・timeout失敗1です。Pythonは成功の最終payloadがexit 0を伴うことだけを確認し、失敗時のexit codeと最終`code`の対応は再検査しません。preflightや入力検証に失敗した場合は`error/{code}`だけのpayloadもあります。preflight結果の計算後に取消・store drainが失敗した場合は、完全なpreflight payloadに`code`を加えた`error`も返します。Pythonはこの形もversion・送信先・能力を厳密に検証し、文書送信やretryへ進みません。generate結果の計算後に取消・drainが失敗した場合は、最終`code`だけが上書きされ、元のusage／retry projectionは残ります。Pythonはその観測情報を保持しますが、最終`code`が`generation_failed`でない場合はretryしません。codeは`invalid_request/unknown_provider/unknown_model/unsupported_thinking/unsupported_image/invalid_image/input_limit/auth_unavailable/auth_failed/generation_failed/missing_terminal/model_mismatch/tool_call/timeout/cancelled/storage_failed`です。raw error・token・headers・stderr・環境変数はwireに出しません。
 
 SIGINT／SIGTERM／stdin EOF／stdout write failureは推論をAbortSignalで取り消し、以後requestを受け付けません。timeout／取消後もstream消費の終了を最大30秒待ち、協調的に終了したproviderのterminal／最終message／観測usageを最終recordへ保持します。終了すれば直ちに待機を終え、`timeout/cancelled`を成功やretryへ変えません。非協調providerのterminal／usageは保証できず、親側の30秒graceによる強制killもあり得ます。store.drainは最終record前とhelper終了前に待ち、取消中のOAuth refresh・rotated credential保存を保護します。typed OAuth refresh失敗は`auth_failed`、実保存失敗は`storage_failed`を優先します。timeoutでもdrainのため即時exitしません。Pythonは原則30秒のgrace後にchildを回収します。SIGKILL／disk障害での保存は保証できません。
 
@@ -947,7 +947,7 @@ SIGINT／SIGTERM／stdin EOF／stdout write failureは推論をAbortSignalで取
 
 成功は`GenerationResult[T](answer=<検証済みresponse_model>, attempts=[...])`、失敗は固定の安全な`InferenceError.code`と`attempts`です。回答textをJSONとして別に解析し、NaN／Infinity／数値overflow・余分な回答textを拒否してからcallerのPydantic modelで検証します。ID・根拠等のdomain validationはcallerのmodel validatorで実装できます。`Attempt`はrequest ID・preflight・安全な最終projection・usage（未観測は`None/unknown`）・終了code・全体経過秒・retry待機秒・画像metadataを保持します。artifactへの永続化・採用・文書pipeline・run/resume CLIは未接続です。
 
-正常JSONL・ID・version・preflight／最終schema・要求／submitted設定・done/stop・messageのprovider/model/api・toolCallなし・正しいprocess終了をPythonでも独立検証します。workflow retryは、正常なerror terminal／stopReason errorかつ最終`generation_failed`・`retryable:true/library_heuristic`だけを対象に最大3試行、新processで待機3／6秒です。schema／protocol／length／認証／storage／timeout／取消にはretryしません。`cancel`は`threading.Event`で、main threadではSIGINT／SIGTERMも取消にします。親側timeoutはpreflightとgenerateそれぞれに適用し、pipe書込み待ちも取消可能です。取消後もstdoutをdrainし、credential保存／refresh失敗を取消より優先して30秒grace後に回収します。強制kill時のcredential保存は保証しません。
+Pythonは正常JSONL・`request_id`の一致・preflight（version・送信先・thinking・能力）・最終payloadのschema、成功時のprocess exit 0を検証します。失敗時のexit codeと`code`の対応は再検査しません。最終payloadのdone/stop・送信先・toolCallなし・submitted設定・usage等はhelperの検査を信頼し、Pythonで再検査しません。workflow retryは、helperが返した最終`generation_failed`かつ`retryable:true`だけを対象に最大3試行、新processで待機3／6秒です。schema／protocol／length／認証／storage／timeout／取消にはretryしません。`cancel`は`threading.Event`で、main threadではSIGINT／SIGTERMも取消にします。親側timeoutはpreflightとgenerateそれぞれに適用し、pipe書込み待ちも取消可能です。取消後もstdoutをdrainし、credential保存／refresh失敗を取消より優先して30秒grace後に回収します。強制kill時のcredential保存は保証しません。
 
 ```python
 from pydantic import BaseModel

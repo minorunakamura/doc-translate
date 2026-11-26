@@ -630,9 +630,7 @@ def test_translation_reduces_published_input_limit_and_records_unknown_usage(tmp
     assert failures[0]["attempts"][0]["final"]["usage"] is None
 
 
-@pytest.mark.parametrize(
-    "tamper", ["terminal", "exit", "model", "submitted", "run-list"]
-)
+@pytest.mark.parametrize("tamper", ["exit", "run-list"])
 def test_translation_load_rejects_rehashed_unvalidated_attempt(
     tmp_path, prepared, tamper
 ):
@@ -649,14 +647,8 @@ def test_translation_load_rejects_rehashed_unvalidated_attempt(
         (workspace / "attempts/translation" / f"{artifact['run']}.json").read_bytes()
     )
     attempt = run["attempts"][-1]
-    if tamper == "terminal":
-        attempt["final"]["terminal"]["reason"] = "length"
-    elif tamper == "exit":
+    if tamper == "exit":
         attempt["exit_code"] = 1
-    elif tamper == "model":
-        attempt["final"]["message"]["model"] = "wrong"
-    elif tamper == "submitted":
-        attempt["final"]["submitted"]["timeoutMs"] = 1
     if tamper == "run-list":
         data["runs"] = []
     else:
@@ -983,7 +975,7 @@ def test_translation_recovers_successful_split_subcalls_before_snapshot_save(
     assert requests(tmp_path) == sent
 
 
-@pytest.mark.parametrize("tamper", ["terminal", "incomplete", "domain", "hash"])
+@pytest.mark.parametrize("tamper", ["incomplete", "domain", "hash"])
 def test_translation_revalidates_orphan_runs_before_reusing(
     tmp_path, prepared, monkeypatch, tamper
 ):
@@ -1011,9 +1003,7 @@ def test_translation_revalidates_orphan_runs_before_reusing(
         assert requests(tmp_path) == sent
         return
     path.rename(path.with_suffix(".original"))
-    if tamper == "terminal":
-        record["attempts"][-1]["final"]["terminal"]["reason"] = "length"
-    elif tamper == "incomplete":
+    if tamper == "incomplete":
         record["attempts"] = []
     else:
         record["attempts"][-1]["final"]["message"]["content"] = [

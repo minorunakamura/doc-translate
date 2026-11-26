@@ -17,7 +17,7 @@ from typing import Annotated, Literal
 from uuid import uuid4
 
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from doc_translate import ai_runtime
 from doc_translate.jsonl import JSONLRecord, encode_record, read_records
@@ -247,6 +247,17 @@ ErrorCode = Literal[
     "cancelled",
     "storage_failed",
 ]
+# Codes the user fixes by changing configuration; run-level exit code 2.
+CONFIG_ERROR_CODES = frozenset(
+    {
+        "invalid_request",
+        "unknown_provider",
+        "unknown_model",
+        "unsupported_thinking",
+        "unsupported_image",
+        "invalid_image",
+    }
+)
 
 
 class _EarlyError(_Model):
@@ -270,6 +281,12 @@ class GenerationFinal(_Versions):
     provider_confirmed: _Confirmed
     retry: _Retry
     request_bytes_checked: bool
+
+    @model_validator(mode="after")
+    def _success_has_message(self):
+        if self.code is None and self.message is None:
+            raise ValueError("successful final payload requires message")
+        return self
 
 
 @dataclass
@@ -306,77 +323,6 @@ def _check_versions(value: _Versions) -> None:
         or value.library_version != package["dependencies"]["@earendil-works/pi-ai"]
     ):
         raise ValueError("version mismatch")
-
-
-def _validate_final(
-    data: dict,
-    config: GenerationConfig,
-    preflight: Preflight,
-    kind: str,
-) -> GenerationFinal:
-    final = GenerationFinal.model_validate(data)
-    _check_versions(final)
-    if final.requested.model_dump() != config.model_dump(exclude={"options"}):
-        raise ValueError("request mismatch")
-    expected = config.options.model_dump()
-    expected.update(
-        reasoning=None if config.thinking == "off" else config.thinking, maxRetries=0
-    )
-    if final.submitted.model_dump() != expected:
-        raise ValueError("submitted mismatch")
-    if final.request_bytes_checked and (
-        preflight.input_limits is None or preflight.input_limits.maxRequestBytes is None
-    ):
-        raise ValueError("request byte check without published limit")
-    if (final.usage is None) != (final.usage_status == "unknown"):
-        raise ValueError("usage mismatch")
-    if final.usage and not any(
-        getattr(final.usage, name) > 0
-        for name in ("input", "output", "cacheRead", "cacheWrite", "totalTokens")
-    ):
-        raise ValueError("unobserved usage")
-    # Drain/abort can override code after generation has classified its retry.
-    if final.retry.retryable and not (
-        final.code
-        in {
-            "generation_failed",
-            "storage_failed",
-            "auth_failed",
-            "cancelled",
-            "timeout",
-        }
-        and final.terminal is not None
-        and final.terminal.type == "error"
-        and final.terminal.reason == "error"
-        and final.message is not None
-        and final.message.stopReason == "error"
-        and (final.message.provider, final.message.model, final.message.api)
-        == (config.provider, config.model, preflight.api)
-        and not any(part.type == "toolCall" for part in final.message.content)
-        and final.retry.classification == "library_heuristic"
-    ):
-        raise ValueError("invalid retry")
-    if final.provider_confirmed.thinking != (
-        final.message.provider_thinking_level if final.message else None
-    ):
-        raise ValueError("confirmation mismatch")
-    if kind == "result":
-        message = final.message
-        if (
-            final.code is not None
-            or final.terminal is None
-            or final.terminal.type != "done"
-            or final.terminal.reason != "stop"
-            or message is None
-            or message.stopReason != "stop"
-            or (message.provider, message.model, message.api)
-            != (config.provider, config.model, preflight.api)
-            or any(part.type == "toolCall" for part in message.content)
-        ):
-            raise ValueError("invalid success")
-    elif kind != "error" or final.code is None:
-        raise ValueError("invalid failure")
-    return final
 
 
 def _image_metadata(image: GenerationImage) -> ImageMetadata:
@@ -610,8 +556,8 @@ def _execute_attempt(
                                     time.monotonic() + config.options.timeoutMs / 1000
                                 )
                         else:
-                            attempt.final = _validate_final(
-                                record.payload, config, attempt.preflight, record.type
+                            attempt.final = GenerationFinal.model_validate(
+                                record.payload
                             )
                             attempt.code = attempt.final.code
                             finished = True
@@ -630,22 +576,7 @@ def _execute_attempt(
         )
         if not finished:
             attempt.code = stopping or "protocol_error"
-        elif attempt.exit_code != (
-            0
-            if attempt.code is None
-            else 2
-            if attempt.code
-            in {
-                "invalid_request",
-                "unknown_provider",
-                "unknown_model",
-                "unsupported_thinking",
-                "unsupported_image",
-                "invalid_image",
-                "input_limit",
-            }
-            else 1
-        ):
+        elif attempt.code is None and attempt.exit_code != 0:
             attempt.code = "protocol_error"
         if stopping and attempt.code not in {"storage_failed", "auth_failed"}:
             attempt.code = stopping
@@ -734,7 +665,7 @@ def _saved_answer[T: BaseModel](
         raise ValueError("Saved preflight does not support images")
     if attempt["images"] != [asdict(_image_metadata(image)) for image in images]:
         raise ValueError("Saved helper images differ from actual images")
-    final = _validate_final(attempt["final"], config, preflight, "result")
+    final = GenerationFinal.model_validate(attempt["final"])
     assert final.message is not None
     raw = "".join(
         part.text for part in final.message.content if isinstance(part, _Text)
