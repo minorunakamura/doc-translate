@@ -905,14 +905,32 @@ def _pdf_source(
             emit(observer, "extract", "cancelled")
             emit(observer, "extract", "partial", reason="cancelled")
             raise InferenceError("cancelled", [])
+
+        # Docling never polls the flag, so one signal must interrupt acquisition.
+        previous = {}
         try:
-            draft_digest = acquire_pdf(
-                workspace / manifest.document.artifact,
-                workspace=workspace,
-                artifacts_path=artifacts_path,
-                pages=acquisition,
-            )
+            try:
+                if threading.current_thread() is threading.main_thread():
+                    for signum in (signal.SIGINT, signal.SIGTERM):
+                        previous[signum] = signal.signal(
+                            signum, signal.default_int_handler
+                        )
+                if cancelled.is_set():
+                    raise KeyboardInterrupt
+                draft_digest = acquire_pdf(
+                    workspace / manifest.document.artifact,
+                    workspace=workspace,
+                    artifacts_path=artifacts_path,
+                    pages=acquisition,
+                )
+            finally:
+                for signum, handler in previous.items():
+                    signal.signal(signum, handler)
             draft = load_pdf_draft(workspace, draft_digest)
+        except KeyboardInterrupt:
+            emit(observer, "extract", "cancelled")
+            emit(observer, "extract", "partial", reason="cancelled")
+            raise InferenceError("cancelled", []) from None
         except RuntimeError:
             emit(observer, "extract", "failed", reason="pdf_acquisition_failed")
             raise

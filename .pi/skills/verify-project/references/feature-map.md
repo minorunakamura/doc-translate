@@ -1606,6 +1606,82 @@ PY
 
 期待：`pi-only`はexit 2・`requests_sent` 0・workspace未作成・stderrにprovider/model/thinkingの不足表示。`doc-translate`はexit 0・`completed`・`requests_sent` > 0。証拠は変数名・command・exit・stderrの不足行・送信件数だけで、値・本文・秘密を保存しない。resume／reviewが`DOC_TRANSLATE_*`を読まないことは`tests/test_resume.py`・`tests/test_review.py`の回帰で確認する。実provider・実認証・実書籍は対象外。正式チェック・Rootの別invocation直接確認は代用しない。
 
+## PDF読み取り中のシグナル（Issue #115）
+
+入口は公開`run INPUT.pdf --workspace DIR --pages 2-3 --artifacts-path MODELS --correction-model vision`。PDF読み取り（`acquire_pdf`）の途中、Docling raw保存のOS replace境界（`drafts/pdf/raw/*.json`）でpauseしたまま、SIGINT／SIGTERMを各1回だけ送り、releaseせずに数秒以内にexit 1で終わること、送信0件、シグナル前の確定済み保存物（`originals/`・`run.json`の`error`以外）が不変、raw未保存、その後の`resume --json`がcompletedになることを確認する。childは`tests/fixtures/resume_process.py --boundary ...`（実Docling。人工PDF bytesは無効入力として即座に失敗結果を返しraw保存へ到達する）、helperは実Node `run-process.mjs`→network拒否付き公開faux。対照はsignalなしでreleaseしたcase（raw保存に到達すること＝pauseが読み取り内である証拠）。resumeは新しいharnessや`pdf_progress_fixture.py`の拡張を作らず、Map内で既存`test_pdf.conversion`／`test_run.pdf_input`をMonkeyPatchで当てて公開`main`をin-processで呼ぶ（Docling converterだけを自作fixtureへ置換。保存済み`artifacts_path`の人工modelを使う）。前提は既存`.venv`（PDF extra）・Node・`ai/dist`。install／sync・実provider・実認証・実書籍・model取得はしない。repository rootで非並行・foregroundで実行する。
+
+```sh
+EVIDENCE=$(mktemp -d "$PWD/work/test-verification-issue115-XXXXXX")
+export EVIDENCE HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+PYTHONPATH=src:tests .venv/bin/python - <<'PY'
+import contextlib, hashlib, io, json, os, signal, subprocess, tempfile, time
+from pathlib import Path
+import pytest, test_pdf, test_run
+from test_resume import await_boundary, external_cli, requests
+from doc_translate.cli import main
+evidence = Path(os.environ['EVIDENCE'])
+for name, command in (('revision.txt', ['git', 'rev-parse', 'HEAD']), ('dirty.txt', ['git', 'status', '--short']), ('scope.diff', ['git', 'diff'])):
+    (evidence / name).write_text(subprocess.check_output(command, text=True))
+def digests(workspace):
+    files = {str(p.relative_to(workspace)): hashlib.sha256(p.read_bytes()).hexdigest() for p in (workspace / 'originals').rglob('*') if p.is_file()}
+    run = json.loads((workspace / 'run.json').read_bytes()); run.pop('error', None)
+    files['run.json(without error)'] = hashlib.sha256(json.dumps(run, sort_keys=True).encode()).hexdigest()
+    return files
+observations = []
+try:
+    with tempfile.TemporaryDirectory(prefix='issue115-owned-') as owned:
+        for case in ('SIGINT', 'SIGTERM', 'no-signal-release'):
+            tmp = Path(owned) / case; tmp.mkdir()
+            source = tmp / 'own.pdf'; source.write_bytes(b'%PDF-1.7\nsynthetic run converter input')
+            models = test_pdf.local_models.__wrapped__(tmp)
+            workspace = tmp / 'new'
+            arguments = test_run.run_args(source, workspace) + ['--pages', '2-3', '--artifacts-path', str(models), '--correction-model', 'vision']
+            process = external_cli(tmp, test_run.helper(tmp), arguments, boundary='drafts/pdf/raw/*.json')
+            try:
+                await_boundary(tmp, process)
+                before = digests(workspace)
+                started = time.monotonic()
+                if case == 'no-signal-release':
+                    (tmp / 'boundary.release').touch()
+                else:
+                    process.send_signal(getattr(signal, case))
+                code = process.wait(timeout=30)
+                wall = round(time.monotonic() - started, 2)
+            finally:
+                if process.poll() is None:
+                    process.kill(); process.wait()
+            item = {'case': case, 'exit': code, 'wall_seconds_after_action': wall,
+                    'requests_sent': len(requests(tmp)),
+                    'raw_saved': bool(list((workspace / 'drafts/pdf/raw').glob('*'))),
+                    'confirmed_unchanged': digests(workspace) == before,
+                    'run_error': json.loads((workspace / 'run.json').read_bytes()).get('error')}
+            if case != 'no-signal-release':
+                assert code == 1 and wall < 5 and item['requests_sent'] == 0
+                assert item['confirmed_unchanged'] and not item['raw_saved']
+                with pytest.MonkeyPatch.context() as patch, contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+                    (tmp / 'fixture').mkdir()
+                    test_run.pdf_input.__wrapped__(tmp / 'fixture', test_pdf.conversion.__wrapped__(patch), patch)
+                    main(['resume', '--json', str(workspace)], process_command=test_run.helper(tmp))
+                item['resume_status'] = json.loads(out.getvalue())['processing']['status']
+                item['resume_requests_sent'] = len(requests(tmp))
+                item['originals_unchanged_after_resume'] = all(digests(workspace).get(k) == v for k, v in before.items() if k.startswith('originals/'))
+                assert item['resume_status'] == 'completed' and item['originals_unchanged_after_resume']
+            else:
+                assert item['raw_saved']
+            observations.append(item)
+finally:
+    (evidence / 'observations.json').write_text(json.dumps(observations, ensure_ascii=False, indent=2))
+# owned tempとそのchildだけ回収済み。証拠の全参照をcleanup後に再読。
+assert len(observations) == 3
+for file in evidence.rglob('*'):
+    if file.is_file():
+        file.read_bytes()
+print(evidence, '3 cases; cleanup complete; evidence reread')
+PY
+```
+
+期待：`SIGINT`／`SIGTERM`はexit 1・`wall_seconds_after_action` < 5・`requests_sent` 0・`raw_saved` false・`confirmed_unchanged` true・`run_error`は既存の`PDF acquisition/correction failed`、resumeは`completed`でoriginals不変。`no-signal-release`は`raw_saved` true（pauseがPDF読み取り内である対照。終了codeは人工入力の変換失敗に依存し判定しない）。証拠はcase・exit・秒数・件数・真偽・hash比較結果だけで、本文・回答・秘密を保存しない。実Docling／OCR・実モデルでの長いページ画像化の時間は対象外。正式チェック・Rootの別invocation直接確認は代用しない。
+
 ## 翻訳の全体障害停止（Issue #104）
 
 入口は公開`translate_document`→`load_translation`。helperの`auth_failed`／`storage_failed`を認識した後は未開始job・分割の次の子・通信retry・marker訂正を新規送信せず、認識前に送信済みのrequestは回収して成功を採用することを確認する。局所の`generation_failed`は他jobを続ける対照、ローカル保存例外は新規送信を止めて例外を送出し採用pointerを最後の整合版に保つ。注入は公開`before_send`の`InferenceError`とOS replace境界だけで、内部generate／validator／saveは置換しない。並列の進行中成功は`ai/tests/translation-process.mjs`の`hold`／`release`とobserver同期で決定的にする。前提は既存`.venv`／Node／`ai/dist`。install／build・実provider／実書籍／秘密は使わない。repository rootで非並行・foregroundで実行する。
