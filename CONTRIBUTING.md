@@ -295,9 +295,7 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 標準依存 `pypdfium2==5.14.0` はDoclingを起動しないfresh loadでも同じ局所PDF根拠を読むためのものです。native PDFiumはthread-safeではないため、原本のopen／局所read／closeだけをlock内に置き、推論や他jobの検証は直列化しません。wheelのmetadataにあるBSD-3-Clause／Apache-2.0と、対象platformのPDFium・同梱依存の`licenses/data/*/BUILD_LICENSES`も確認してください。lock更新だけを配布条件の確認済みとはしません。
 
-[verify-projectの所有本文手順](.pi/skills/verify-project/references/feature-map.md#所有本文の採用保存再読97)で、保存回答の無送信再生と人工CLI run／resumeを別々に行います。同じ案でも原本が異なる場合の採否、別描画の余白と同一描画内の調整、紙面の非空行・相対字下げと英語fence、追加空行だけの両側QA、旧4方式（方式なしも含む）のbyte保持、未知方式のorphanがresumeのpreflightより前に停止することを区別して検査します。focusedは下記signal wrapperで補正・source・units・render・run／resume・候補採用。正式core／PDF／型・wheel・隔離core導入／licenseは上記の影響選定と配布検査に従い、共有envをsyncしません。
-
-[コード断片・表の4 chunk再生と採点（#98）](.pi/skills/verify-project/references/feature-map.md#コード断片表の閉じた再生98)
+[verify-projectの所有本文手順](.pi/skills/verify-project/references/feature-map.md#所有本文の採用保存再読97)で、人工CLI run／resumeと、現行以外の方式（方式なしも含む）の記録がresumeの送信前に案内付きで止まること（#117）を確認します。focusedは下記signal wrapperで補正・source・units・render・run／resume・候補採用。正式core／PDF／型・wheel・隔離core導入／licenseは上記の影響選定と配布検査に従い、共有envをsyncしません。
 
 #### Issue #46／#47：全所有結果・coverage限定訂正・厳密再利用の再現
 
@@ -340,10 +338,10 @@ test -s "$EVIDENCE/revision.txt" && cat "$EVIDENCE/exits.txt" "$EVIDENCE/cleanup
 期待する観測と証拠は次のとおりです。
 
 - `test_correct_pdf_requests_full_owned_results_and_image_confirmed_blank_pages`と所有／参照許可テストで、実送信requestの全文・白紙・創作禁止指示、画像と許可範囲を確認します。白紙exclusionは公開correct/loadで成功し、空回答はcoverage拒否、空抽出の判断不能ページはexclusionsを自動生成せずuncertaintiesとして保存されます。
-- 旧成功再利用は真正helper成功から今回の`page_results`だけを除き、hashを正しく保存した合成旧形式で確認します。raw回答とusage自体は変更しません。再利用／chunk保存前のOS replace故障からの回収は`before_send`が呼ばれず、旧byteが不変です。policy／config／参照／投影／画像等の差異、不正status／terminal／domain／hashは再利用しません。歴史的な図所属指示欠如のload互換も残します。
+- 成功再利用は真正helper成功の保存記録で確認します。raw回答とusage自体は変更しません。再利用／chunk保存前のOS replace故障からの回収は`before_send`が呼ばれず、旧byteが不変です。policy／config／参照／投影／画像等の差異、不正status／terminal／domain／hashは再利用しません。
 - `test_correct_pdf_repairs_missing_pages_with_complete_chunk_and_retains_usage`は所有[1,2,3]の一部欠落から不足[2,3]の固定feedbackを返し、同じpolicy／投影／画像で全chunkの完全回答だけを採用します。`test_correct_pdf_stops_after_three_incomplete_whole_chunk_answers`は異なるページだけを返す回答もmergeせず、3generateで停止しchunkを保存しません。各回のraw回答・全attempt・人工usageを不変保存し、既知のtransientだけのtransport retryも独立に残ることを確認します。schema／不正tableとの複合不正は追加訂正せず、OS replace境界での拒否record保存失敗・取消も次の送信を止めます。
-- 訂正成功は`test_correct_pdf_recovers_repaired_success_before_chunk_save_without_resending`でOS replace故障後も無送信回収します。固定指示・code・理由・不足番号の型／並び／範囲／余分fieldやその他入力の差異は誤再利用しません。旧base／新baseの既存再利用試験も維持します。
-- CLIのadaptive回収は旧／新base／訂正成功で、保存成功chunkとchunk未確定の成功応答を再送せず、残った所有`[7]`だけを参照`[6]`付きで補正します。`test_resume_pdf_repairs_coverage_only_for_failed_ownership_and_retains_all_usage`は最初のrunで所有[2–6]成功・[7]欠落3回→exit1／answer_invalid／failed[7]／not_processed[]、補正記録4件を期待します。resumeは[7]だけ欠落→訂正成功の2generateで回復し、記録6件に失敗4件と成功2件のraw／観測usageが残りstatusとQA付随usageに対応します。再resumeは空PATHでも無送信、原本・draft・attempt・旧chunk等のhashは不変です。fixtureの従来単一回答／最終request.jsonは保持し、responsesの初回／訂正選択とrequest.json.jsonl追記履歴を補完しています。run-processの既存optionsも維持し、correction_omit_pages／correction_coverage_failureだけで合成欠落を操作します。
+- 訂正成功は`test_correct_pdf_recovers_repaired_success_before_chunk_save_without_resending`でOS replace故障後も無送信回収します。固定指示・code・理由・不足番号の型／並び／範囲／余分fieldやその他入力の差異は誤再利用しません。
+- CLIのadaptive回収は現行base／訂正成功で、保存成功chunkとchunk未確定の成功応答を再送せず、残った所有`[7]`だけを参照`[6]`付きで補正します。`test_resume_pdf_repairs_coverage_only_for_failed_ownership_and_retains_all_usage`は最初のrunで所有[2–6]成功・[7]欠落3回→exit1／answer_invalid／failed[7]／not_processed[]、補正記録4件を期待します。resumeは[7]だけ欠落→訂正成功の2generateで回復し、記録6件に失敗4件と成功2件のraw／観測usageが残りstatusとQA付随usageに対応します。再resumeは空PATHでも無送信、原本・draft・attempt・旧chunk等のhashは不変です。fixtureの従来単一回答／最終request.jsonは保持し、responsesの初回／訂正選択とrequest.json.jsonl追記履歴を補完しています。run-processの既存optionsも維持し、correction_omit_pages／correction_coverage_failureだけで合成欠落を操作します。
 - Workerはこの代表consumer単独fresh process・補正module・focused consumer回帰と手順の成立を報告します。Rootは上の正式チェックの選定と別一時workspaceからの公開API直接確認、Reviewerは独立受入れを担当します。今回専用`work/`にcommand／exit、Red→Green、期待／観測・保存hash・未確認・cleanupを残し、cleanup後も証拠を読み直します。既存workspace／attempt／venv／model／lockに触れず、他人のprocessは止めません。
 
 再現用の公開API例はartifact契約を参照してください。offlineの実process検証は補正の構造・範囲・保存に限定され、実LLMの読取り／図分類品質・全文翻訳・実Docling／OCR・viewer・他OS・remote CIの成立は示しません。chunkは別artifactに確定するだけで、`source-snapshot.json`を切り替えません。このchunk API自身はCLI・unit生成・翻訳・resume engine・全chunk所有割当を担当しません。ページ接続は次の独立adapterで行います。

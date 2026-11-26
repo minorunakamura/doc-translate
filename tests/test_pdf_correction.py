@@ -13,7 +13,11 @@ from PIL import Image
 
 from doc_translate.inference import GenerationConfig, GenerationOptions
 from doc_translate.pdf import PDFArtifact, PDFDraft
-from doc_translate.pdf_correction import correct_pdf, load_pdf_correction
+from doc_translate.pdf_correction import (
+    OLD_RULE_GUIDANCE,
+    correct_pdf,
+    load_pdf_correction,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = GenerationConfig(provider="faux", model="vision", thinking="off")
@@ -178,50 +182,6 @@ def test_correct_pdf_saves_only_owned_content_and_sends_only_authorized_input(
         "text"
     ] == json.dumps(answer(digest))
     assert record["status"] == "validated"
-
-
-def test_correct_pdf_reuses_legacy_success_without_resending_or_rewriting(
-    tmp_path, draft
-):
-    workspace, digest, _ = draft
-    accepted = run(tmp_path, draft, answer(digest))
-    path = workspace / f"corrections/pdf/{accepted}.json"
-    chunk = json.loads(path.read_bytes())
-    run_path = workspace / chunk["run"]["artifact"]
-    record = json.loads(run_path.read_bytes())
-    original_attempts = record["attempts"]
-    # Synthesize the exact old base from a genuine helper success, not a fake reply.
-    del record["request"]["context"]["adoption_rule"]
-    del record["request"]["context"]["page_results"]
-    chunk["schema_version"] = 1
-    chunk["run"] = artifact(
-        workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
-    )
-    legacy = artifact(
-        workspace,
-        "corrections/pdf",
-        "json",
-        json.dumps(chunk, ensure_ascii=False, separators=(",", ":")).encode(),
-    )
-    run_path.rename(run_path.with_suffix(".original"))
-    path.rename(path.with_suffix(".original"))
-    previous = {
-        path: path.read_bytes() for path in workspace.rglob("*") if path.is_file()
-    }
-    assert (
-        load_pdf_correction(workspace, legacy["sha256"]).blocks[0].text
-        == "Outside text"
-    )
-    recovered = run(
-        tmp_path, draft, answer(digest), before_send=lambda *_: pytest.fail("resent")
-    )
-    loaded = load_pdf_correction(workspace, recovered)
-    assert loaded.model_dump(mode="json") == chunk
-    assert (
-        json.loads((workspace / loaded.run.artifact).read_bytes())["attempts"]
-        == original_attempts
-    )
-    assert all(path.read_bytes() == data for path, data in previous.items())
 
 
 def test_correct_pdf_requests_full_owned_results_and_image_confirmed_blank_pages(
@@ -526,33 +486,6 @@ def test_form_image_keeps_membership_without_adopting_internal_text_or_cells(
         "uncertain",
         "partial",
     ]
-
-
-def test_load_pdf_correction_accepts_legacy_request_without_membership_guidance(
-    tmp_path, draft
-):
-    workspace, digest, _ = draft
-    accepted = run(tmp_path, draft, answer(digest))
-    path = workspace / f"corrections/pdf/{accepted}.json"
-    original = path.read_bytes()
-    chunk = json.loads(original)
-    record = json.loads((workspace / chunk["run"]["artifact"]).read_bytes())
-    del record["request"]["context"]["adoption_rule"]
-    record["request"]["context"].pop("figure_membership", None)
-    record["request"]["context"].pop("page_results", None)
-    chunk["schema_version"] = 1
-    chunk["run"] = artifact(
-        workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
-    )
-    legacy = artifact(
-        workspace,
-        "corrections/pdf",
-        "json",
-        json.dumps(chunk, ensure_ascii=False, separators=(",", ":")).encode(),
-    )
-    loaded = load_pdf_correction(workspace, legacy["sha256"])
-    assert loaded.model_dump(mode="json") == chunk
-    assert path.read_bytes() == original
 
 
 def test_typed_content_kinds_keep_code_lines_hierarchy_empty_and_spanned_cells(
@@ -1423,52 +1356,13 @@ def test_connection_evidence_obeys_authorization_and_raw_provenance(
     assert not list((draft[0] / "corrections/pdf").glob("*.json"))
 
 
-@pytest.mark.parametrize(
-    "base",
-    [
-        "current",
-        "legacy",
-        "owned-text-v1",
-        "owned-ranges-v2",
-        "owned-layout-v3",
-        "printed-lines-v4",
-        "printed-ranges-v5",
-        "printed-margin-v6",
-        "printed-separators-v7",
-        "printed-display-v8",
-    ],
-)
+@pytest.mark.parametrize("base", ["current"])
 def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
     tmp_path, draft, monkeypatch, base
 ):
     import os
 
-    reply = answer(draft[1])
-    printed = base in (
-        "printed-lines-v4",
-        "printed-ranges-v5",
-        "printed-margin-v6",
-        "printed-separators-v7",
-        "printed-display-v8",
-        "current",
-    )
-    if base in ("printed-display-v8", "current"):
-        draft, reply = competing_listing_reply(draft)
-    elif base in ("printed-margin-v6", "printed-separators-v7"):
-        extra = "" if base == "printed-margin-v6" else "\n"
-        draft, reply = listing_reply(
-            draft,
-            [(75, 's = "red'), (55, 'blue"'), (35, "next")],
-            's = "red\nblue" next',
-            f'   s = "red\n{extra}   blue"\n   next',
-        )
-    elif printed:
-        draft, reply = listing_reply(
-            draft,
-            [(65, "above", 13.4), (45, "below")],
-            "above below",
-            "    above\n   below",
-        )
+    draft, reply = competing_listing_reply(draft)
     workspace, _, _ = draft
     replace = os.replace
 
@@ -1481,19 +1375,6 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
         patch.setattr(os, "replace", fail_replace)
         with pytest.raises(OSError, match="interrupted chunk save"):
             run(tmp_path, draft, reply)
-    if base != "current":
-        path = next((workspace / "attempts/pdf-correction").glob("*.json"))
-        record = json.loads(path.read_bytes())
-        context = record["request"]["context"]
-        if base == "legacy":
-            del context["adoption_rule"]
-            del context["page_results"]
-        else:
-            context["adoption_rule"] = base
-        path.rename(path.with_suffix(".original"))
-        artifact(
-            workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
-        )
     previous = {
         path: path.read_bytes() for path in workspace.rglob("*") if path.is_file()
     }
@@ -1501,47 +1382,8 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
     # No helper may start even though no accepted chunk was saved yet.
     accepted = run(tmp_path, draft, reply, before_send=lambda *_: pytest.fail("resent"))
     chunk = load_pdf_correction(workspace, accepted)
-    assert (
-        chunk.schema_version
-        == {
-            "legacy": 1,
-            "owned-text-v1": 2,
-            "owned-ranges-v2": 3,
-            "owned-layout-v3": 4,
-            "printed-lines-v4": 5,
-            "printed-ranges-v5": 6,
-            "printed-margin-v6": 7,
-            "printed-separators-v7": 8,
-            "printed-display-v8": 9,
-            "current": 18,
-        }[base]
-    )
-
-    if printed:
-        assert (
-            chunk.blocks[0].text
-            == {
-                "printed-lines-v4": "above below",
-                "printed-ranges-v5": "above below",
-                "printed-margin-v6": 's = "red\nblue" next',
-                "printed-separators-v7": 's = "red\nblue" next',
-                "printed-display-v8": "left\nmiddle",
-                "current": "left",
-            }[base]
-        )
-    if base in ("printed-margin-v6", "printed-separators-v7", "printed-display-v8"):
-        # Original schema-7/8/9 writer fingerprints; only the timed run digest varies.
-        data = (workspace / f"corrections/pdf/{accepted}.json").read_bytes()
-        assert (
-            hashlib.sha256(
-                data.replace(chunk.run.sha256.encode(), b"0" * 64)
-            ).hexdigest()
-            == {
-                "printed-margin-v6": "b4c4d49119a0dff6c3df781936c8c3681bd1a91322562bdd8ffbb460600524a5",
-                "printed-display-v8": "15684158811aaae95841a23682ad79418e2f2ba3537d136e05bcbac7f641f757",
-                "printed-separators-v7": "af05368b04d9fe1f71186bb2589ce14a025c6aab7494848c4530893244e497f3",
-            }[base]
-        )
+    assert chunk.schema_version == 18
+    assert chunk.blocks[0].text == "left"
     subprocess.run(
         [
             sys.executable,
@@ -1552,8 +1394,6 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
         ],
         check=True,
     )
-    if not printed:
-        assert chunk.blocks[0].text == "Outside text"
     assert (tmp_path / "request.json").read_bytes() == sent
     assert (
         run(
@@ -1567,7 +1407,7 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
     assert all(path.read_bytes() == data for path, data in previous.items())
 
 
-@pytest.mark.parametrize("base", ["current", "legacy"])
+@pytest.mark.parametrize("base", ["current"])
 @pytest.mark.parametrize(
     "tamper", ["status", "terminal", "images", "incomplete", "domain", "hash"]
 )
@@ -1590,14 +1430,6 @@ def test_correct_pdf_revalidates_orphan_result_and_actual_images(
             run(tmp_path, draft, answer(digest))
     path = next((workspace / "attempts/pdf-correction").glob("*.json"))
     record = json.loads(path.read_bytes())
-    if base == "legacy":
-        del record["request"]["context"]["adoption_rule"]
-        del record["request"]["context"]["page_results"]
-        legacy = artifact(
-            workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
-        )
-        path.rename(path.with_suffix(".original"))
-        path = workspace / legacy["artifact"]
     before = (tmp_path / "request.json").read_bytes()
     if tamper == "hash":
         path.write_bytes(path.read_bytes() + b" ")
@@ -1631,7 +1463,7 @@ def test_correct_pdf_revalidates_orphan_result_and_actual_images(
     assert load_pdf_correction(workspace, accepted).blocks[0].text == "Outside text"
 
 
-@pytest.mark.parametrize("base", ["current", "legacy", "repaired"])
+@pytest.mark.parametrize("base", ["current", "repaired"])
 @pytest.mark.parametrize(
     "change", ["policy", "config", "reference_pages", "projection", "images"]
 )
@@ -1645,25 +1477,6 @@ def test_correct_pdf_does_not_reuse_changed_actual_inputs(
         missing["blocks"] = []
         response = {"responses": [missing, response]}
     previous = run(tmp_path, draft, response)
-    if base == "legacy":
-        path = workspace / f"corrections/pdf/{previous}.json"
-        chunk = json.loads(path.read_bytes())
-        run_path = workspace / chunk["run"]["artifact"]
-        record = json.loads(run_path.read_bytes())
-        del record["request"]["context"]["adoption_rule"]
-        del record["request"]["context"]["page_results"]
-        chunk["schema_version"] = 1
-        chunk["run"] = artifact(
-            workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
-        )
-        previous = artifact(
-            workspace,
-            "corrections/pdf",
-            "json",
-            json.dumps(chunk, ensure_ascii=False, separators=(",", ":")).encode(),
-        )["sha256"]
-        path.rename(path.with_suffix(".original"))
-        run_path.rename(run_path.with_suffix(".original"))
     options = {}
     if change == "projection":
         raw = json.loads((workspace / draft[2].raw.artifact).read_text())
@@ -1703,55 +1516,6 @@ def test_correct_pdf_does_not_reuse_changed_actual_inputs(
     assert current != previous
     assert load_pdf_correction(workspace, previous).blocks[0].text == "Outside text"
     assert load_pdf_correction(workspace, current).blocks[0].text == "Outside text"
-
-
-@pytest.mark.parametrize(
-    "change",
-    [
-        "projection",
-        "schema",
-        "coordinates",
-        "figure_membership",
-        "extra-context",
-        "page_results",
-    ],
-)
-def test_correct_pdf_does_not_normalize_other_legacy_request_differences(
-    tmp_path, draft, change
-):
-    workspace, digest, _ = draft
-    accepted = run(tmp_path, draft, answer(digest))
-    chunk = load_pdf_correction(workspace, accepted)
-    path = workspace / chunk.run.artifact
-    record = json.loads(path.read_bytes())
-    del record["request"]["context"]["adoption_rule"]
-    del record["request"]["context"]["page_results"]
-    context = record["request"]["context"]
-    if change == "projection":
-        record["request"]["text"] += " "
-    elif change == "schema":
-        context["response_schema"] = {}
-    elif change == "coordinates":
-        context["coordinates"] = "different coordinates"
-    elif change == "figure_membership":
-        del context["figure_membership"]
-    elif change == "extra-context":
-        context["extra"] = "not part of either base request"
-    else:
-        context["page_results"] = "different page instructions"
-    path.rename(path.with_suffix(".original"))
-    changed = artifact(
-        workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
-    )
-    changed_path = workspace / changed["artifact"]
-    before = changed_path.read_bytes()
-    sent = []
-    current = run(
-        tmp_path, draft, answer(digest), before_send=lambda *_: sent.append(True)
-    )
-    assert sent == [True]
-    assert load_pdf_correction(workspace, current).blocks[0].text == "Outside text"
-    assert changed_path.read_bytes() == before
 
 
 def test_correct_pdf_repairs_missing_pages_with_complete_chunk_and_retains_usage(
@@ -2260,25 +2024,30 @@ def test_saved_correction_uses_only_its_recorded_adoption_rule(tmp_path, draft):
     record = artifact(
         workspace, "attempts/pdf-correction", "json", old["record"].encode()
     )
-    wanted = hashlib.sha256(old["chunk"].encode()).hexdigest()
-    accepted = run(
-        tmp_path, draft, answer(digest), before_send=lambda *_: pytest.fail("resent")
-    )
-    assert accepted == wanted
-    assert (
-        load_pdf_correction(workspace, accepted).blocks[0].text == "Historical wording."
-    )
-    assert (workspace / f"corrections/pdf/{wanted}.json").read_bytes() == old[
-        "chunk"
-    ].encode()
+    # A success saved before the adoption rule was recorded is never reused or resent.
+    with pytest.raises(ValueError, match=OLD_RULE_GUIDANCE):
+        run(
+            tmp_path,
+            draft,
+            answer(digest),
+            before_send=lambda *_: pytest.fail("resent"),
+        )
+    assert not list((workspace / "corrections/pdf").glob("*.json"))
     chunk = json.loads(old["chunk"])
+    chunk["run"] = record
+    historical = artifact(
+        workspace, "corrections/pdf", "json", json.dumps(chunk).encode()
+    )
+    with pytest.raises(ValueError, match=OLD_RULE_GUIDANCE):
+        load_pdf_correction(workspace, historical["sha256"])
     unknown = json.loads(old["record"])
     unknown["request"]["context"]["adoption_rule"] = "unknown"
+    chunk["schema_version"] = 18
     chunk["run"] = artifact(
         workspace, "attempts/pdf-correction", "json", json.dumps(unknown).encode()
     )
     bad = artifact(workspace, "corrections/pdf", "json", json.dumps(chunk).encode())
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=OLD_RULE_GUIDANCE):
         load_pdf_correction(workspace, bad["sha256"])
     assert (workspace / record["artifact"]).read_bytes() == old["record"].encode()
 
@@ -2751,54 +2520,6 @@ def test_picture_and_margin_claims_cannot_hide_located_outside_body(
 
 
 @pytest.mark.parametrize(
-    "rule,version",
-    [("owned-text-v1", 2), ("owned-ranges-v2", 3), ("owned-layout-v3", 4)],
-)
-def test_rehash_cannot_switch_between_old_and_new_adoption_modes(
-    tmp_path, draft, rule, version
-):
-    draft, reply = listing_reply(
-        draft,
-        [(65, "return value")],
-        "return\nvalue" if version == 4 else "return value",
-        "return\nvalue",
-    )
-    workspace = draft[0]
-    saved = run(tmp_path, draft, reply)
-    chunk = load_pdf_correction(workspace, saved)
-    record = json.loads((workspace / chunk.run.artifact).read_bytes())
-    context = record["request"]["context"]
-    context["adoption_rule"] = rule
-    data = chunk.model_dump(mode="json")
-    data["run"] = artifact(
-        workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
-    )
-
-    def as_chunk():
-        return artifact(
-            workspace,
-            "corrections/pdf",
-            "json",
-            json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode(),
-        )["sha256"]
-
-    with pytest.raises(ValueError):
-        load_pdf_correction(workspace, as_chunk())
-    data["schema_version"] = version
-    # These versions kept the proposal even without a printed boundary.
-    data["blocks"][0]["text"] = "return\nvalue"
-    data["uncertainties"] = []
-    historical = as_chunk()
-    assert load_pdf_correction(workspace, historical).schema_version == version
-    context["owned_pages"] = [True]
-    data["run"] = artifact(
-        workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
-    )
-    with pytest.raises(ValueError):
-        load_pdf_correction(workspace, as_chunk())
-
-
-@pytest.mark.parametrize(
     "case", ["single", "two", "offset", "barrier", "mark", "missing-box", "region"]
 )
 def test_image_only_paragraph_requires_one_printed_occurrence_between_anchors(
@@ -3067,7 +2788,7 @@ def test_known_orphan_does_not_mask_unknown_success(tmp_path, draft):
     sent = (tmp_path / "request.json.jsonl").read_bytes()
     assert run(tmp_path, draft, answer(digest)) == saved  # already published
     (ws / f"corrections/pdf/{saved}.json").unlink()
-    with pytest.raises(ValueError, match="Unknown PDF adoption rule"):
+    with pytest.raises(ValueError, match=OLD_RULE_GUIDANCE):
         run(tmp_path, draft, answer(digest))
     assert (
         not list((ws / "corrections/pdf").glob("*.json"))
@@ -3090,7 +2811,7 @@ def test_unknown_successful_orphan_refuses_only_its_request_before_launch(
         workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
     )
     sent = (tmp_path / "request.json.jsonl").read_bytes()
-    with pytest.raises(ValueError, match="Unknown PDF adoption rule"):
+    with pytest.raises(ValueError, match=OLD_RULE_GUIDANCE):
         correct_pdf(
             workspace=workspace,
             draft_sha256=digest,
@@ -3800,117 +3521,6 @@ def test_printed_code_can_supply_boundary_or_indent_missing_from_extraction(
 ):
     text, qa = listing_output(tmp_path, draft, lines, original, wanted)
     assert text == wanted and not qa
-
-
-@pytest.mark.parametrize(
-    "rule,version,signature",
-    [
-        (
-            "drawn-enclosure-v15",
-            16,
-            "e5a70bc53c18cb4d0a9b9cf891d52680ece9c207251bbe6f3bcf5026f216ca5b",
-        ),
-        (
-            "drawn-caption-listing-v14",
-            15,
-            "81372a05009558a8c6eb5cd9f08bbf2d178bdf2906a8d1cb1da1741ad184210a",
-        ),
-        (
-            "owned-text-v1",
-            2,
-            "b976164cfa20c2d993cbf9c84f4920910f098417036ad685884bc4963b544a2e",
-        ),
-        (
-            "owned-ranges-v2",
-            3,
-            "11fb3a10ba50bd17222d3c7168b3ccaa3d5608fca6639baa72ae56a2fdba467e",
-        ),
-        (
-            "owned-layout-v3",
-            4,
-            "efe32e18940cb4aae64646e436a8b8f7fc94f9033d5ec5d0034543ca70e53425",
-        ),
-        (
-            "drawn-punctuation-v13",
-            14,
-            "1d9435ecd1e502ceb40c139f5cedf6174606583fd0f017f56f91604f3c5582ae",
-        ),
-        (
-            "drawn-code-v12",
-            13,
-            "b39f1a39fc60b8eb34e0f46e61fe9ba11a5215cfce2f4f9fff8e73703913767b",
-        ),
-        (
-            "reciprocal-code-v11",
-            12,
-            "5e76b7ffb259c92923369b4c2c15d65e91af3fc7cb8d921b5185f32ff5f7e755",
-        ),
-        (
-            "printed-roles-v10",
-            11,
-            "de604c4931e05bbb33e8a864112723b22ed0e490c1cd736814a5ca5d16b2c20c",
-        ),
-        (
-            "printed-ownership-v9",
-            10,
-            "01613b5dead18d96cdd443cc9ab1a43576558eee15da34121249d27472510ed5",
-        ),
-    ],
-)
-def test_named_orphan_recovers_historical_bytes_without_resending(
-    tmp_path, draft, rule, version, signature
-):
-    draft, reply = listing_reply(
-        draft, [(65, "return value")], "return value", "return\nvalue"
-    )
-    ws, _, model = draft
-    raw = json.loads((ws / model.raw.artifact).read_bytes())
-    raw["texts"].append(
-        {
-            "self_ref": "#/texts/1",
-            "label": "footnote",
-            "text": "Note.",
-            "prov": [{"page_no": 1, "charspan": [0, 5]}],
-        }
-    )
-    raw["body"]["children"].append({"$ref": "#/texts/1"})
-    draft = rewrite_raw(draft, raw)
-    reply["draft_sha256"] = draft[1]
-    new = run(tmp_path, draft, reply)
-    current = load_pdf_correction(ws, new)
-    path = ws / current.run.artifact
-    record = json.loads(path.read_bytes())
-    path.rename(path.with_suffix(".unrelated"))
-    record["request"]["context"]["adoption_rule"] = rule
-    old = artifact(ws, "attempts/pdf-correction", "json", json.dumps(record).encode())
-    sent = (tmp_path / "request.json.jsonl").read_bytes()
-    digest = run(tmp_path, draft, reply)
-    path = ws / f"corrections/pdf/{digest}.json"
-    original = path.read_bytes()
-    stat = path.stat().st_mtime_ns
-    chunk = load_pdf_correction(ws, digest)
-    assert chunk.schema_version == version
-    assert [(b.kind, b.text) for b in chunk.blocks] == [
-        ("code", "return\nvalue" if version < 4 else "return value")
-    ] + ([("footnote", "Note.")] if version >= 3 else [])
-    # Pin all serialized bytes except the real helper record digest (contains timings).
-    normalized = original.replace(old["sha256"].encode(), b"0" * 64)
-    assert hashlib.sha256(normalized).hexdigest() == signature
-    assert (
-        run(tmp_path, draft, reply) == digest
-        and path.read_bytes() == original
-        and path.stat().st_mtime_ns == stat
-    )
-    assert (tmp_path / "request.json.jsonl").read_bytes() == sent
-
-    if version == 14:
-        # Both named saves can be loaded in one workspace without promotion.
-        ref = ws / current.run.artifact
-        ref.with_suffix(".unrelated").rename(ref)
-        assert load_pdf_correction(ws, new) == current and current.schema_version == 18
-        assert (
-            load_pdf_correction(ws, digest) == chunk and path.read_bytes() == original
-        )
 
 
 def test_unbacked_code_with_an_independently_claimed_note_preserves_located_qa(
@@ -6356,26 +5966,13 @@ def test_drawn_sidebar_record_is_bound_to_its_adoption_rule(tmp_path, draft):
     tampered["blocks"][2]["enclosure"] = 1
     with pytest.raises(ValueError):
         load(tampered)
-    # The previous rule re-reads strictly: no identity, extraction order kept.
+    # A record saved under an earlier rule is not re-read by its old reproduction.
     record = json.loads((ws / data["run"]["artifact"]).read_bytes())
-    # A schema 16 record keeps its sidebar identity under its own rule.
     record["request"]["context"]["adoption_rule"] = "drawn-enclosure-v15"
-    sixteen = load({**data, "schema_version": 16}, record)
-    assert [b.enclosure for b in sixteen.blocks[:2]] == [1, 1]
-    record["request"]["context"]["adoption_rule"] = "drawn-caption-listing-v14"
-    with pytest.raises(ValueError):
-        load({**data, "schema_version": 15}, record)
-    old = {**data, "schema_version": 15}
-    old["blocks"] = sorted(
-        [{k: v for k, v in b.items() if k != "enclosure"} for b in data["blocks"]],
-        key=lambda b: int(b["evidence"][0]["ref"].rsplit("/", 1)[1]),
-    )
-    assert [b.text for b in load(old, record).blocks][:4] == [
-        "Terms",
-        "Words start",
-        "Note",
-        "Tip text",
-    ]
+    with pytest.raises(ValueError, match=OLD_RULE_GUIDANCE):
+        load({**data, "schema_version": 16}, record)
+    with pytest.raises(ValueError, match=OLD_RULE_GUIDANCE):
+        load(data, record)
     # The answer contract never accepts a sidebar claim.
     reply["blocks"][2]["enclosure"] = 1
     with pytest.raises((ValueError, RuntimeError)):

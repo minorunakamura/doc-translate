@@ -659,8 +659,103 @@ def test_resume_pdf_fills_failed_ownership_without_acquisition_or_resending_acce
     assert len(requests(tmp_path)) == count
 
 
+OLD_RULE_GUIDANCE = (
+    "このworkspaceのPDF補正は現在と異なるルールで保存されています。"
+    "新しいworkspaceで `run` し直してください。"
+)
+
+
 @pytest.mark.parametrize(
-    "base", ["current", "legacy", "repaired", "unknown", "known-first", "unrelated"]
+    "schema,rule", [(17, "drawn-table-listing-v16"), (1, None)], ids=["v16", "v1"]
+)
+def test_resume_old_rule_pdf_workspace_stops_before_send_and_render_status_work(
+    tmp_path, pdf_input, local_models, capsys, monkeypatch, schema, rule
+):
+    from test_pdf_correction import artifact
+    from test_resume import requests
+
+    workspace = tmp_path / "new"
+    main(
+        run_args(pdf_input, workspace)
+        + [
+            "--pages",
+            "2-7",
+            "--artifacts-path",
+            str(local_models),
+            "--correction-model",
+            "vision",
+        ],
+        process_command=helper(tmp_path),
+    )
+    assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
+    # Model a workspace corrected under an earlier adoption rule.
+    old_runs = {}
+    for path in list((workspace / "attempts/pdf-correction").glob("*.json")):
+        record = json.loads(path.read_bytes())
+        if rule is None:
+            del record["request"]["context"]["adoption_rule"]
+        else:
+            record["request"]["context"]["adoption_rule"] = rule
+        old_runs[path.stem] = artifact(
+            workspace, "attempts/pdf-correction", "json", json.dumps(record).encode()
+        )
+        path.unlink()
+    old_chunks = {}
+    for path in list((workspace / "corrections/pdf").glob("*.json")):
+        chunk = json.loads(path.read_bytes())
+        chunk["schema_version"] = schema
+        chunk["run"] = old_runs[chunk["run"]["sha256"]]
+        old_chunks[path.stem] = artifact(
+            workspace,
+            "corrections/pdf",
+            "json",
+            json.dumps(chunk, ensure_ascii=False, separators=(",", ":")).encode(),
+        )["sha256"]
+        path.unlink()
+    manifest_path = workspace / "run.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest["chunk_sha256s"] = [
+        old_chunks[digest] for digest in manifest["chunk_sha256s"]
+    ]
+    manifest_path.write_text(json.dumps(manifest))
+    shutil.rmtree(local_models)
+
+    def saved():
+        return {
+            path: (path.read_bytes(), path.stat().st_mtime_ns)
+            for path in workspace.rglob("*")
+            if path.is_file()
+        }
+
+    before = saved()
+    sent = requests(tmp_path)
+    with pytest.raises(SystemExit) as stopped:
+        main(
+            ["resume", "--json", str(workspace)],
+            process_command=[str(tmp_path / "must-not-launch")],
+        )
+    output = capsys.readouterr()
+    assert stopped.value.code == 2
+    assert f"doc-translate: error: {OLD_RULE_GUIDANCE}" in output.err
+    assert "Traceback" not in output.err and "validation error" not in output.err
+    assert output.out == ""
+    assert requests(tmp_path) == sent
+    assert saved() == before
+
+    monkeypatch.setenv("PATH", "")
+    main(["render", str(workspace)])
+    assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
+    main(["status", str(workspace)])
+    capsys.readouterr()
+    main(["status", "--verify", "--json", str(workspace)])
+    status = json.loads(capsys.readouterr().out)
+    assert status["processing"]["status"] == "completed"
+    assert status["render_current"] is True
+    assert requests(tmp_path) == sent
+
+
+@pytest.mark.parametrize(
+    "base", ["current", "repaired", "unknown", "known-first", "unrelated", "legacy"]
 )
 def test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages(
     tmp_path, pdf_input, local_models, capsys, monkeypatch, base
@@ -700,7 +795,7 @@ def test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages(
             )
         assert stopped.value.code == 1
     capsys.readouterr()
-    if base in ("unknown", "known-first", "unrelated"):
+    if base in ("unknown", "known-first", "unrelated", "legacy"):
         from test_pdf_correction import artifact, later_unknown_record
 
         directory = workspace / "attempts/pdf-correction"
@@ -712,8 +807,13 @@ def test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages(
                 if base == "known-first":
                     later_unknown_record(workspace, record, path.stem)
                     break
-                record["request"]["context"]["adoption_rule"] = "unknown"
-                if base == "unknown":
+                if base == "legacy":
+                    # A schema 1 era success predates adoption_rule and page_results.
+                    del record["request"]["context"]["adoption_rule"]
+                    del record["request"]["context"]["page_results"]
+                else:
+                    record["request"]["context"]["adoption_rule"] = "unknown"
+                if base in ("unknown", "legacy"):
                     path.rename(path.with_suffix(".original"))
                 else:
                     record["request"]["policy"] += " (other request)"
@@ -726,7 +826,7 @@ def test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages(
                 break
         else:
             pytest.fail("missing successful orphan")
-    if base in ("unknown", "known-first"):
+    if base in ("unknown", "known-first", "legacy"):
         before = {
             p: (p.read_bytes(), p.stat().st_mtime_ns) for p in directory.iterdir()
         }
@@ -736,47 +836,11 @@ def test_resume_pdf_recovers_adaptive_reply_before_regrouping_pending_pages(
                 ["resume", "--json", str(workspace)],
                 process_command=[str(tmp_path / "must-not-launch")],
             )
-        assert stopped.value.code == 2 and "Unknown PDF adoption rule" in str(
-            capsys.readouterr()
-        )
+        assert stopped.value.code == 2 and OLD_RULE_GUIDANCE in str(capsys.readouterr())
         assert sent == requests(tmp_path) and before == {
             p: (p.read_bytes(), p.stat().st_mtime_ns) for p in directory.iterdir()
         }
         return
-    if base == "legacy":
-        from test_pdf_correction import artifact
-
-        # Model an old workspace using actual helper replies, preserving raw/usage.
-        old_runs = {}
-        for path in list((workspace / "attempts/pdf-correction").glob("*.json")):
-            record = json.loads(path.read_bytes())
-            del record["request"]["context"]["adoption_rule"]
-            del record["request"]["context"]["page_results"]
-            old_runs[path.stem] = artifact(
-                workspace,
-                "attempts/pdf-correction",
-                "json",
-                json.dumps(record).encode(),
-            )
-            path.rename(path.with_suffix(".original"))
-        old_chunks = {}
-        for path in list((workspace / "corrections/pdf").glob("*.json")):
-            chunk = json.loads(path.read_bytes())
-            chunk["schema_version"] = 1
-            chunk["run"] = old_runs[chunk["run"]["sha256"]]
-            old_chunks[path.stem] = artifact(
-                workspace,
-                "corrections/pdf",
-                "json",
-                json.dumps(chunk, ensure_ascii=False, separators=(",", ":")).encode(),
-            )["sha256"]
-            path.rename(path.with_suffix(".original"))
-        manifest_path = workspace / "run.json"
-        manifest = json.loads(manifest_path.read_bytes())
-        manifest["chunk_sha256s"] = [
-            old_chunks[digest] for digest in manifest["chunk_sha256s"]
-        ]
-        manifest_path.write_text(json.dumps(manifest))
     old_files = saved_files(workspace)
     sent = requests(tmp_path)
     assert [item["context"]["owned_pages"] for item in sent] == [

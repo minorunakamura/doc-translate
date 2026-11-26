@@ -32,36 +32,14 @@ from doc_translate.snapshot import Contract, Nonempty, Sha256
 from doc_translate.workspace import workspace_lock
 
 ADOPTION_RULE = "adopted-edge-target-v17"
-_RULE_VERSIONS = {
-    "owned-text-v1": 2,
-    "owned-ranges-v2": 3,
-    "owned-layout-v3": 4,
-    "printed-lines-v4": 5,
-    "printed-ranges-v5": 6,
-    "printed-margin-v6": 7,
-    "printed-separators-v7": 8,
-    "printed-display-v8": 9,
-    "printed-ownership-v9": 10,
-    "printed-roles-v10": 11,
-    "reciprocal-code-v11": 12,
-    "drawn-code-v12": 13,
-    "drawn-punctuation-v13": 14,
-    "drawn-caption-listing-v14": 15,
-    "drawn-enclosure-v15": 16,
-    "drawn-table-listing-v16": 17,
-    ADOPTION_RULE: 18,
-}
+OLD_RULE_GUIDANCE = (
+    "このworkspaceのPDF補正は現在と異なるルールで保存されています。"
+    "新しいworkspaceで `run` し直してください。"
+)
 
 
-class _UnknownAdoptionRule(ValueError):
+class _OldAdoptionRule(ValueError):
     pass
-
-
-def _rule_version(context):
-    if "adoption_rule" not in context:
-        return 1
-    rule = context["adoption_rule"]
-    return _RULE_VERSIONS.get(rule) if isinstance(rule, str) else None
 
 
 Visible = Annotated[str, Field(min_length=1, pattern=r"\S")]
@@ -258,9 +236,7 @@ class CorrectionAnswer(Contract):
 
 
 class PDFCorrectionChunk(Contract):
-    schema_version: Literal[
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
-    ] = 1
+    schema_version: Literal[18] = 18
     draft_sha256: Sha256
     owned_pages: list[PositiveInt]
     reference_pages: list[PositiveInt]
@@ -512,32 +488,21 @@ def _make_chunk(
     workspace,
     document,
 ):
-    version = _rule_version(context)
-    if version is None:
-        raise _UnknownAdoptionRule("Unknown PDF adoption rule")
-    if version == 2:
-        from doc_translate.pdf_adoption import preserve_owned_text
+    if context.get("adoption_rule") != ADOPTION_RULE:
+        raise _OldAdoptionRule(OLD_RULE_GUIDANCE)
+    from doc_translate.pdf_adoption import adopt_owned_ranges
 
-        answer = preserve_owned_text(answer, raw)
-    elif version >= 3:
-        from doc_translate.pdf_adoption import adopt_owned_ranges
-
-        answer = adopt_owned_ranges(
-            answer,
-            raw,
-            pages,
-            lambda: _read_artifact(
-                workspace,
-                PDFArtifact(artifact=document.artifact, sha256=document.sha256),
-            ),
-            lambda page: _read_artifact(workspace, page.image),
-            items=items,
-            verify_layout=version >= 4,
-            printed_lines=version >= 5,
-            printed_ranges=version >= 6,
-            relative_margin=version >= 7,
-            layout_version=version,
-        )
+    answer = adopt_owned_ranges(
+        answer,
+        raw,
+        pages,
+        lambda: _read_artifact(
+            workspace,
+            PDFArtifact(artifact=document.artifact, sha256=document.sha256),
+        ),
+        lambda page: _read_artifact(workspace, page.image),
+        items=items,
+    )
     candidates = {block.block_id: block for block in answer.blocks}
     candidates.update(
         (cell.cell_id, cell)
@@ -649,7 +614,7 @@ def _make_chunk(
         else:
             adopted.append(block)
     return PDFCorrectionChunk(
-        schema_version=version,
+        schema_version=18,
         draft_sha256=answer.draft_sha256,
         owned_pages=answer.owned_pages,
         reference_pages=reference_pages,
@@ -852,30 +817,17 @@ def _matches_request(actual, request, *, load=False):
     context = actual.get("context") if isinstance(actual, dict) else None
     if not isinstance(context, dict):
         return False
-    historical = "adoption_rule" not in context
-    if historical:
-        request = request.model_copy(
-            update={
-                "context": {
-                    key: value
-                    for key, value in request.context.items()
-                    if key != "adoption_rule"
-                }
-            }
-        )
-    elif not load or _rule_version(context) is not None:
+    if not load:
         # Match the rest of an orphan request first. Only a matching validated
-        # success reaches _make_chunk, which rejects an unknown rule.
-        request = request.model_copy(
-            update={
-                "context": {
-                    **request.context,
-                    "adoption_rule": context["adoption_rule"],
-                }
-            }
-        )
-    else:
-        return False
+        # success reaches _make_chunk, which refuses a non-current rule.
+        rest = {
+            key: value
+            for key, value in request.context.items()
+            if key != "adoption_rule"
+        }
+        if "adoption_rule" in context:
+            rest["adoption_rule"] = context["adoption_rule"]
+        request = request.model_copy(update={"context": rest})
 
     # JSON booleans and integers are different wire values (True == 1 in Python).
     def matches(expected):
@@ -883,15 +835,8 @@ def _matches_request(actual, request, *, load=False):
             expected, sort_keys=True
         )
 
-    current = request.model_dump(mode="json")
-    legacy = {**current, "context": dict(current["context"])}
-    del legacy["context"]["page_results"]
-    if matches(current) or (historical and matches(legacy)):
+    if matches(request.model_dump(mode="json")):
         return True
-    if historical and load:
-        del legacy["context"]["figure_membership"]
-        if matches(legacy):
-            return True
     feedback = context.get("correction_feedback") if isinstance(context, dict) else None
     if not isinstance(feedback, dict):
         return False
@@ -958,7 +903,10 @@ def _recover_pdf_correction(
         if (
             context["draft_sha256"] != draft_sha256
             or not set(owned) <= set(owned_pages)
-            or (_rule_version(context) is not None and claimed.intersection(owned))
+            or (
+                context.get("adoption_rule") == ADOPTION_RULE
+                and claimed.intersection(owned)
+            )
             or not set(reference) <= set(allowed_pages)
             or not owned
             or len(owned + reference) != len(set(owned + reference))
@@ -1044,7 +992,7 @@ def _correct_pdf(
     )
     images = _images(workspace, pages)
     pending = None
-    unknown = None
+    old_rule = None
     for path in sorted((workspace / "attempts/pdf-correction").glob("*.json")):
         run = PDFArtifact(
             artifact=f"attempts/pdf-correction/{path.name}", sha256=path.stem
@@ -1063,9 +1011,9 @@ def _correct_pdf(
                 raw,
                 _draft.document,
             )
-        except _UnknownAdoptionRule as error:
+        except _OldAdoptionRule as error:
             # An already-published matching chunk is reuse, not orphan recovery.
-            unknown = error
+            old_rule = error
             continue
         if recovered is None:
             continue
@@ -1080,8 +1028,8 @@ def _correct_pdf(
             return digest
         if pending is None:
             pending = data
-    if unknown is not None:
-        raise unknown
+    if old_rule is not None:
+        raise old_rule
     if pending is not None:
         digest = _store(workspace, "corrections/pdf", "json", pending).sha256
         emit(observer, "correction", "reused")
@@ -1149,6 +1097,57 @@ def _correct_pdf(
     ).sha256
 
 
+def _require_current_rule(workspace, data):
+    """Refuse a chunk saved under another adoption rule before schema validation."""
+    try:
+        chunk = json.loads(data)
+    except ValueError:
+        return
+    if not isinstance(chunk, dict):
+        return
+    if chunk.get("schema_version") != 18:
+        raise ValueError(OLD_RULE_GUIDANCE)
+    try:
+        run = PDFArtifact.model_validate(chunk["run"])
+    except KeyError, ValueError:
+        return
+    record = json.loads(_read_artifact(workspace, run))
+    try:
+        rule = record["request"]["context"].get("adoption_rule")
+    except KeyError, TypeError, AttributeError:
+        return
+    if rule != ADOPTION_RULE:
+        raise ValueError(OLD_RULE_GUIDANCE)
+
+
+def require_current_pdf_rule(workspace: Path) -> None:
+    """Stop before any send when a saved chunk or success used another adoption rule."""
+    for path in sorted((workspace / "corrections/pdf").glob("*.json")):
+        data = _read_artifact(
+            workspace,
+            PDFArtifact(artifact=f"corrections/pdf/{path.name}", sha256=path.stem),
+        )
+        _require_current_rule(workspace, data)
+    for path in sorted((workspace / "attempts/pdf-correction").glob("*.json")):
+        data = _read_artifact(
+            workspace,
+            PDFArtifact(
+                artifact=f"attempts/pdf-correction/{path.name}", sha256=path.stem
+            ),
+        )
+        try:
+            record = json.loads(data)
+            legacy = (
+                record["status"] == "validated"
+                and "adoption_rule" not in record["request"]["context"]
+            )
+        except KeyError, TypeError, ValueError:
+            continue
+        # A success saved before adoption_rule existed can never match a current request.
+        if legacy:
+            raise ValueError(OLD_RULE_GUIDANCE)
+
+
 def load_pdf_correction(workspace: Path, sha256: str) -> PDFCorrectionChunk:
     """Load one immutable accepted chunk by digest, verifying its evidence artifacts."""
     return _load_pdf_correction(workspace, sha256, {})
@@ -1163,6 +1162,7 @@ def _validated_correction(workspace, sha256, drafts):
     data = _read_artifact(
         workspace, PDFArtifact(artifact=f"corrections/pdf/{sha256}.json", sha256=sha256)
     )
+    _require_current_rule(workspace, data)
     chunk = PDFCorrectionChunk.model_validate_json(data)
     _draft, pages, items, raw = _authorized_draft(
         workspace, chunk.draft_sha256, chunk.owned_pages, chunk.reference_pages, drafts

@@ -254,6 +254,10 @@ def resume_document(
             reference_pages=tuple(manifest.reference_pages),
         )
         _original(workspace, manifest)
+        if manifest.document.format == "pdf":
+            from doc_translate.pdf_correction import require_current_pdf_rule
+
+            require_current_pdf_rule(workspace)
         # Validate old adopted references before any possible paid request or replacement.
         workspace_status(workspace)
         if (workspace / "source-snapshot.json").exists() and load_source_snapshot(

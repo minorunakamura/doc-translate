@@ -613,7 +613,7 @@ schema 15でも、ページ間の接続は後段の組立の規則のままで�
 
 schema 16（`drawn-enclosure-v15`）では、原本に描かれた囲み（sidebar）を採用時に判定します。所有ページの原本PDF（draftのSHA-256で検証したbyte列）のページ直下の塗りのpathを読み、接する（許容1pt）塗り同士と、左右端が揃った高さ2pt以下の横罫線同士を1つの枠につなぎます。罫線だけの集まり（柱の罫線など）は枠にしません。枠に重なる抽出項目がすべて枠の内側に収まり（許容1pt）、見出し・本文・リストだけ（子もcaptionもない図のアイコンは可）で、そのすべてをこのchunkの見出し・本文・リストのブロックが出典に挙げ、それらのブロックが枠外の項目を出典に挙げない場合だけ、囲みとします。AIの回答・ページ番号・ref・固有の文字列・固定座標は判定に使いません。囲みのブロックには採用chunkだけの任意の `enclosure`（chunk内の番号）が付き、AIの回答（`CorrectionAnswer`）では拒否します。囲みは内部順を保ったまま、同じページで枠より上に描かれた枠外ブロックの後、下に描かれたものの前に移します。上下で一意に決まらない場合は並びを変えません。成立しなくてもchunkは拒否せず、囲みを付けない従来の採用になります。
 
-組立では、schema 16のchunkに限り、相互target等のContradictory continuationの条件のうち「間は脚注だけ」に例外を1つ加えます。前半と後半の間が、脚注と1つ以上の完結した囲み（囲みの全ブロックが間にあり、前半・後半は囲みに属さない）だけなら接続し、間の囲みは接続した段落（と間の脚注）の後に内部順で独立して置きます。表示（units・render）は囲みのない場合と同じで、新しいQAはありません。相手が一意でない、片側だけtarget、囲みでない本文・見出しが間にある、囲みの一部だけが間にある場合は従来どおり接続せず、両断片と位置付きQA・失敗した `pdf_connection` checkが残ります。schema 15以前の記録は旧規則で厳密に再読し、`enclosure` を持つ旧記録や描画が与えない `enclosure` を持つ記録は読めません。
+組立では、相互target等のContradictory continuationの条件のうち「間は脚注だけ」に例外を1つ加えます。前半と後半の間が、脚注と1つ以上の完結した囲み（囲みの全ブロックが間にあり、前半・後半は囲みに属さない）だけなら接続し、間の囲みは接続した段落（と間の脚注）の後に内部順で独立して置きます。表示（units・render）は囲みのない場合と同じで、新しいQAはありません。相手が一意でない、片側だけtarget、囲みでない本文・見出しが間にある、囲みの一部だけが間にある場合は従来どおり接続せず、両断片と位置付きQA・失敗した `pdf_connection` checkが残ります。描画が与えない `enclosure` を持つ記録は読めません。
 
 schema 17（`drawn-table-listing-v16`）では、schema 13の描画行による確認を次のように広げます。いずれも新方式の採用時だけで、ページ番号・ref・固有の文字列・固定座標は判定に使いません。
 
@@ -623,19 +623,19 @@ schema 17（`drawn-table-listing-v16`）では、schema 13の描画行による�
 - **格子外記号の後の空白のQA**：格子外の記号の直後の空白数を描画から決めた場合は、`Space count after an off-grid symbol was set from the drawn grid` を、該当する行の描画位置（`line origin`）付きで1つ残します。
 - **表を出典とするコード**：所有ページの表（`#/tables/N`、単一ページ・単一provenance、文字範囲・cell指定なし）だけを出典とし、その表を他のブロックが出典に挙げないコード案は、原本の描画行で確かめます。罫線の行の候補は、読順で表の直前・直後に途切れず続く、同じページ・単一provenance・body層・未所有のテキスト項目のうち、bboxが表のbboxと交わるものです（交わらない項目で連続を止めます）。表と候補のbboxの外接矩形の描画行が上の規則で案の全行と一致し、外接矩形が他の項目（他のブロックが所有する項目や未所有の本文）と重ならず、各候補の描画行が外接矩形の描画行の一部である場合だけ、描画で決めた表示を採用します。候補の罫線項目はコードの出典として `evidence` に入り、本文ブロックにも `Readable owned range omitted by correction` にもなりません。各行の描画位置も `evidence` に残ります。成立しなければ従来どおり案のまま残し、`No unique owned extraction range for the proposed display lines; ...` のQAを付け、罫線の項目は本文ブロックになります。表をコードと判定する新しい規則は加えず、表の構造・セルの判定は変えません。
 
-組立（`assemble_pdf_source`）の接続規則は変えません。表を出典とするコードの間の罫線ブロックがなくなることで、前ページのコードと既存の規則で接続されます。不正なcharspanは従来どおりclipも補完もせず、`orig` も使いません。schema 16以前の記録は旧規則で厳密に再読します。
+組立（`assemble_pdf_source`）の接続規則は変えません。表を出典とするコードの間の罫線ブロックがなくなることで、前ページのコードと既存の規則で接続されます。不正なcharspanは従来どおりclipも補完もせず、`orig` も使いません。
 
-以前の既知の未解決（接続されずに両断片と位置付きQA・失敗した `pdf_connection` checkが残る場合）のうち、抽出の読順で囲みが段落の前半と次ページの続きの間に入る場合（[#109](https://github.com/minorunakamura/doc-translate/issues/109)）は、上のschema 16で解決しました。ページをまたぐコードで、最終行が不正なcharspanのため省かれ、続きが表を出典にしている場合（[#110](https://github.com/minorunakamura/doc-translate/issues/110)）は、上のschema 17で解決しました（schema 16以前の記録は旧規則のまま、前半の1行への縮約・罫線断片の本文ブロック・Unresolved code continuationが残ります）。前ページのコードのtargetが、次ページのコード案の先頭行（案の出典の前の見出し項目）を指す場合（[#111](https://github.com/minorunakamura/doc-translate/issues/111)、73→74）は、下のschema 18で解決しました（schema 17以前の記録は旧規則のまま、両断片とUnresolved code continuationが残ります）。
+以前の既知の未解決（接続されずに両断片と位置付きQA・失敗した `pdf_connection` checkが残る場合）のうち、抽出の読順で囲みが段落の前半と次ページの続きの間に入る場合（[#109](https://github.com/minorunakamura/doc-translate/issues/109)）は、上のschema 16で解決しました。ページをまたぐコードで、最終行が不正なcharspanのため省かれ、続きが表を出典にしている場合（[#110](https://github.com/minorunakamura/doc-translate/issues/110)）は、上のschema 17で解決しました。前ページのコードのtargetが、次ページのコード案の先頭行（案の出典の前の見出し項目）を指す場合（[#111](https://github.com/minorunakamura/doc-translate/issues/111)、73→74）は、下のschema 18で解決しました。
 
-schema 18（`adopted-edge-target-v17`）では、採用規則は変えず、組立（`assemble_pdf_source`）のコード接続の相互適合だけを広げます。両断片がschema 18の記録である組に限り、一方のlink（outgoingまたはincoming）のtargetが相手の案のevidenceに一致せず、採用後のevidenceにだけ一致する場合、次をすべて満たすときだけその方向を適合とみなします。
+schema 18（`adopted-edge-target-v17`）では、採用規則は変えず、組立（`assemble_pdf_source`）のコード接続の相互適合だけを広げます。一方のlink（outgoingまたはincoming）のtargetが相手の案のevidenceに一致せず、採用後のevidenceにだけ一致する場合、次をすべて満たすときだけその方向を適合とみなします。
 
 1. targetが指す範囲（draft-local ref／異draftの実itemの同一性、selectorは従来の照合と同じ）は、組立対象のうち相手の断片1つだけの採用後evidenceにあります。
 2. その採用範囲の文字（空白を除く。範囲が複数なら並べたもの）が相手の案の本文の接続端の行（相手が右なら先頭行、左なら末尾行）に含まれ、相手の案のevidenceの文字はすべてそれ以外の行（右なら後、左なら前）にあります。その採用範囲は、相手の採用範囲のうち抽出の読順（同じ項目内は文字位置）で最初（相手が右）／最後（相手が左）にあります。読順に位置のない範囲は認めません。その範囲の文字以外を根拠にしません。
 3. 逆方向のlinkは従来どおり、案と採用の両方のevidenceで相手に一致します。両方向とも採用後にだけ一致する場合は認めません。
 
-この組も、両端で相手の断片が1つだけ、間が空か独立脚注・schema 16の囲みだけ、ページ順・読順・language・`newline` が整う場合にだけ接続します。認めた結果を理由に別の候補を一意にしません。targetが相手の案の本文の端でない行・案の本文にない行・案のevidenceより内側の行を指す場合、相手以外の断片にも採用された範囲を指す場合、逆方向も採用後にだけ一致する場合は、従来どおり接続せず両断片と位置付きQA・失敗した `pdf_connection` checkが残ります。接続後の表示・QAは既存の接続と同じで、新しいQA種別はありません。schema 17以前を含む組は旧規則で組み立てます。
+この組も、両端で相手の断片が1つだけ、間が空か独立脚注・schema 16の囲みだけ、ページ順・読順・language・`newline` が整う場合にだけ接続します。認めた結果を理由に別の候補を一意にしません。targetが相手の案の本文の端でない行・案の本文にない行・案のevidenceより内側の行を指す場合、相手以外の断片にも採用された範囲を指す場合、逆方向も採用後にだけ一致する場合は、従来どおり接続せず両断片と位置付きQA・失敗した `pdf_connection` checkが残ります。接続後の表示・QAは既存の接続と同じで、新しいQA種別はありません。
 
-`load_pdf_correction`・成功再利用・未採用attempt回収も記録された方式で再構成します。方式なし（schema 1）は旧回答の採用、`owned-text-v1`（schema 2）と`owned-ranges-v2`（schema 3）、`owned-layout-v3`（schema 4）、`printed-lines-v4`（schema 5、印刷行）、`printed-ranges-v5`（schema 6、caption等の局所所有）、`printed-margin-v6`（schema 7、共通余白）、`printed-separators-v7`（schema 8、提案の共通余白を除く区切り照合）、`printed-display-v8`（schema 9、最終表示による照合）、`printed-ownership-v9`（schema 10）、`printed-roles-v10`（schema 11）、`reciprocal-code-v11`（schema 12）、`drawn-code-v12`（schema 13）、`drawn-punctuation-v13`（schema 14）、`drawn-caption-listing-v14`（schema 15）、`drawn-enclosure-v15`（schema 16）、`drawn-table-listing-v16`（schema 17）はそれぞれ当時の採否をbyte単位で維持します。新方式へ移行・再送せず、方式値と実入力、再構成した保存内容を検証します。未知の方式のchunk、方式取り違え、再hashだけした不一致chunkは読めません。今回の要求・設定に該当する検証済み成功attemptの方式が未知なら、回収時にエラーとし、新規送信には進みません。
+`load_pdf_correction`・成功再利用・未採用attempt回収は、現行の `adopted-edge-target-v17`（chunk schema 18）で保存された記録だけを読み、方式値と実入力、再構成した保存内容をbyte単位で検証します（[#117](https://github.com/minorunakamura/doc-translate/issues/117)）。chunkの `schema_version` が18以外、または参照するattemptの `request.context.adoption_rule` が現行と異なる（欠落・旧方式名・未知名）記録は、旧方式の再現をせず「このworkspaceのPDF補正は現在と異なるルールで保存されています。新しいworkspaceで `run` し直してください。」で止まります。`resume` はPDF workspaceの全保存chunkをこの条件で送信前に検査し、run.jsonを含む保存物を変えずにexit 2で止まります。今回の要求・設定に該当する検証済み成功attemptの方式が現行と異なる場合も、回収時に同じ案内で止まり新規送信には進みません。自動の再補正・移行はしません。補正chunkを再検証しない `render` と `status`（`--verify` を含む）は、原文候補の採用待ちがない限り旧方式のworkspaceでも動きます。方式取り違えや再hashだけした不一致chunkは読めません。
 
 ### 図の所属と採用結果
 
@@ -667,11 +667,11 @@ run／resumeでは親がOS workflow lockを保持し、公開`correct_pdf`のloc
 
 上限でも不足ならchunk全体を失敗にし、CLIは従来の`answer_invalid`／failed ownership／部分出力になります。欠落と不正table等が同居する場合も、schema／別domain／認証・通信・timeout・取消等にもcoverage訂正を広げません。既存transport retry（既知のlibrary-heuristic transientのみ最大3 attempt・待機3/6秒）とlength／input上限時の二分処理は不変です。coverage訂正の追加backoffはなく、分割しない1回のcorrect_pdfで最大3generate×3attempt＝9 underlying attemptです。分割や後日のresumeを跨ぐ永久予算はありません。
 
-loadはchunk／draft／原資料／raw／PNG／runのhashを照合し、元runのraw回答を再度schema／domain検証し、記録した送信許可範囲・draft投影・図所属からの採用結果と一致することを確認します。旧chunkはdigestで読め、歴史的な`figure_membership`欠如も従来どおりloadできます。このchunk APIは`source-snapshot.json`を作成・変更せず、複数chunkからのsource組立は次節の別APIで行います。
+loadはchunk／draft／原資料／raw／PNG／runのhashを照合し、元runのraw回答を再度schema／domain検証し、記録した送信許可範囲・draft投影・図所属からの採用結果と一致することを確認します。このchunk APIは`source-snapshot.json`を作成・変更せず、複数chunkからのsource組立は次節の別APIで行います。
 
-Issue #46／#47では`CORRECTION_POLICY`・回答／chunk schema・公開API・所有許可を変更しません。`correct_pdf`とresumeの保存応答回収は、現在のbase request、そこから**`context.page_results`だけ**を除いた厳密な旧base、または現行baseに規定の訂正contextだけを加えたrequestと全体一致する成功記録に限ります。訂正feedbackは上記code・固定理由・非空で昇順かつ重複のない所有範囲内の整数ページ番号だけを認識します。固定指示の書換え、余分なfeedback field、旧baseへの訂正追加、その他contextの緩い正規化はしません。policy／config／参照範囲／schema／draft投影／実画像等を照合し、保存status・preflight・正常terminal／helper終了・画像metadata・raw回答のschema／全domain検証を再実行します。rejectedや不正hashの保存物は成功として再利用しません。
+Issue #46／#47では`CORRECTION_POLICY`・回答／chunk schema・公開API・所有許可を変更しません。`correct_pdf`とresumeの保存応答回収は、現在のbase request、または現行baseに規定の訂正contextだけを加えたrequestと全体一致する成功記録に限ります。訂正feedbackは上記code・固定理由・非空で昇順かつ重複のない所有範囲内の整数ページ番号だけを認識します。固定指示の書換え、余分なfeedback field、その他contextの緩い正規化はしません。policy／config／参照範囲／schema／draft投影／実画像等を照合し、保存status・preflight・正常terminal／helper終了・画像metadata・raw回答のschema／全domain検証を再実行します。rejectedや不正hashの保存物は成功として再利用しません。
 
-既存の成功chunkはloadとrun側のdraft／許可範囲／config／policyの照合後に再利用します。旧base／新base／訂正成功の保存応答は、attempt保存後・chunk保存前の中断でも無送信で回収できます。raw回答・観測usage・旧immutable artifactは書き換えず保持します。明示白紙は受理しますが、空回答・ページの黙示省略は拒否し、空抽出を自動白紙化しません。網羅性はページ結果の根拠があることだけで、ページ内の全文や意味品質の保証ではありません。
+既存の成功chunkはloadとrun側のdraft／許可範囲／config／policyの照合後に再利用します。base／訂正成功の保存応答は、attempt保存後・chunk保存前の中断でも無送信で回収できます。raw回答・観測usage・旧immutable artifactは書き換えず保持します。明示白紙は受理しますが、空回答・ページの黙示省略は拒否し、空抽出を自動白紙化しません。網羅性はページ結果の根拠があることだけで、ページ内の全文や意味品質の保証ではありません。
 
 ## PDF原文snapshot組立（Issue #9）
 
