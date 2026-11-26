@@ -618,3 +618,52 @@ Rootは正式Node 151件、core 1,018 passed／PDF依存不在による142 skipp
 ユーザーは「既定を維持して進める」を選択しました。準備／PDF補正の既定1・翻訳既定2を維持し、並列2／4はopt-inとします。実AIは今回は未実施、実providerの既定値推薦は保留です。未実施自体をoffline比較失敗にはしません。実送信には入力hash／scope／量／config／予算・停止条件の個別承認が必要です。全文意味品質・実OCR・rate limit／課金・他OS／remote CIは未確認。
 
 完了条件1–4/6/7の数値・再実行証拠は本節、5/8は既存focused回帰＋Root別workspace直接操作、9は全rawと初回失敗保持、10は関連文書・正式phase・Root／Reviewer gateを合わせて判定します。Workerの性能合格だけで1–10全体完了とはしません。
+
+## 翻訳snapshot履歴の容量（Issue #105）
+
+本節は[Approved Planの5｜容量測定](../plans/review-output-recovery-and-preparation.md)の計測と判断です。productionと保存方式は変更していません。削減方式と合格値は別Issue #125で決めます。本節はその比較基準です。旧workspace、実書籍、旧snapshotには触れていません。
+
+### 再現方法と条件
+
+repository root、既存`.venv`／Node、compiled `ai/dist`と同梱resourceの全file hash一致が前提です。不一致なら停止し、install／sync／buildはしません。
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/pytest -q tests/test_performance_verification.py -k translation_history
+# 新規ignore済みwork直下。他benchmarkと非並行。既定は10と100 group、各3回。
+.venv/bin/python .pi/skills/verify-project/scripts/translation_history.py \
+  --evidence work/issue105-<unique> [--size 2]
+```
+
+`translation_history.py`は`preparation_baseline.create_seed`（自作PDF型N heading＋body group／2N units、実prepare collect N＋organize 1）でサイズごとにseedを1回作ります。翻訳は`tests/test_translation.py:translate`（実compiled Node faux＋no-network、人工credential、既存CONFIG、concurrency=2、max_source_chars=12000）で行います。1 groupが1 chunk、つまり1 jobになります。各回でseedを新しい所有TemporaryDirectoryへコピーし、次の2系列を別workspaceで実行します。
+
+- 完了系列：(1) **新規初回**（全成功） → (2) **無変更resume**
+- 回復系列：失敗付き初回（faux `fail`で中央groupの見出しを含むrequest 1件だけを恒久失敗にする） → (3) **回復resume**（failなし）
+
+各translateで、`snapshots/translation`／`attempts/translation`／`translations/chunks`のディレクトリ差分から追加件数・論理bytes・最大1件bytesを取ります。pointer（`translation-snapshot.json`）の書込みは、宛先で判定する`os.replace`の委譲wrapperで数えます。pointer hashの変化有無も記録します。`ThreadPoolExecutor.submit`数（job数）とfaux request log増分も記録します。時間はin-processのtranslate wallで、副次値です。無変更resumeについて、snapshot・attempt・chunkの追加0、request／job 0、pointer hash不変をassertします。
+
+### 結果
+
+HEAD `070d80f`、macOS arm64、Python 3.14.9、Node v24.22.1、production差分なし（dirtyは本recipeとselfcheckだけ）。証拠は最終scriptで取得した`work/issue105-worker-final-20261127010854/`（manifest／dirty／diff／seed hash／observations／statistics／cleanup。script hashは現fileと一致）、size 2・10の接続確認は`work/issue105-worker-final-connection-20261127011021/`にあります。各値はmedian [min, max]、n=3です。時間以外は3回とも同値でした（attempt bytesのみ数bytesの揺れ）。
+
+| size | 場面 | snapshot追加件数 | snapshot追加論理bytes | 最大版bytes | pointer書込み（hash変化） | job／request | attempt追加 件／bytes | chunk追加 件／bytes | 秒（副次） |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 10 | 新規初回 | 10 | 201,189 | 21,434 | 11（新規） | 10／10 | 10／39,547 [39,546, 39,547] | 10／25,251 | .673 [.672, .679] |
+| 10 | 無変更resume | **0** | **0** | 0（現版21,434） | 1（不変） | 0／0 | 0／0 | 0／0 | .034 [.034, .035] |
+| 10 | 失敗付き初回（参考） | 10 | 200,081 | 21,210 | 11（新規） | 10／10 | 10／39,608 [39,605, 39,612] | 9／22,720 | .671 [.669, .672] |
+| 10 | 回復resume | 1 | 21,501 | 21,501 | 2（変化） | 1／1 | 1／3,959 [3,958, 3,959] | 1／2,531 | .149 [.148, .152] |
+| 100 | 新規初回 | 100 | 19,801,315 | 212,594 | 101（新規） | 100／100 | 100／396,185 [396,180, 396,195] | 100／253,602 | 6.428 [6.412, 6.446] |
+| 100 | 無変更resume | **0** | **0** | 0（現版212,594） | 1（不変） | 0／0 | 0／0 | 0／0 | .311 [.309, .322] |
+| 100 | 失敗付き初回（参考） | 100 | 19,790,112 | 212,367 | 101（新規） | 100／100 | 100／396,248 [396,246, 396,259] | 99／251,063 | 6.421 [6.370, 6.455] |
+| 100 | 回復resume | 1 | 212,661 | 212,661 | 2（変化） | 1／1 | 1／3,963 [3,961, 3,963] | 1／2,539 | .444 [.434, .449] |
+
+### 判断
+
+- **無変更resumeの増分は0**：3回とも、全サイズでsnapshot追加0件・0 bytes、attempt／chunk 0、request 0でした。最後の`_adopt`がpointerを1回再書込みします。しかし内容は同じdigestなのでhashは変わりません。`_store`は既存digestを再読検証するだけで書きません。「snapshot増分0」と「pointer書込み0」は別の事柄です。
+- **主要因はjobごとの全体保存**：`translate_document`はjobが完了するたびに、全chunk・runs・splitsを含むsnapshotを丸ごと`_adopt`します。最後にもう一度`_adopt`します。このため初回のpointer書込みはjob数＋1回（11／101）でしたが、最後の版は直前のjob完了版と同じdigestで再利用されるため、snapshot追加はjob数と同じ10／100件でした。各版は未処理分を含む全chunkを持つため、版サイズ自体が文書サイズにほぼ比例します（100 groupで183,499→212,594 bytes、完了による増加は約16%）。その版がjob数回保存されるため、追加論理bytesは「平均版サイズ×job数」になり、最終版の9.39倍（10）、93.1倍（100）でした。サイズを10倍にすると、最大版は約9.9倍、追加論理bytesは約98倍になっており、job数に対しておおむね二乗で増えます。一方attempt／chunkは線形で、100 groupでも合計約650 KBです。snapshot履歴（19.8 MB）がこの初回実行の容量の約97%を占めます。
+- **回復resumeは1版だけ**：失敗した1 jobの再送1件で、snapshotは1版（ほぼ最終版1個分）、pointer書込みは2回（job完了版と最後の同digest再adopt）でした。成功済みの他chunkはpointerが指す前版とchunk artifactから無送信で再利用されます。
+- **強制終了後の回復に必要な情報**（現コードの事実）：pointerは各job完了時に、その時点の整合snapshotを指します。resumeでは`load_translation`でpointerの版を読み、成功chunk（`translations/chunks`のartifact）を再検証して再利用します。pointer採用前に保存済みのattempt（`attempts/translation`）はcatalog照合で回収します（`tests/test_translation.py::test_translation_recovers_validated_calls_before_adoption_without_resending`）。そのため回復に必要なのは**pointerが指す最新の整合版1件＋attempts／chunks**です。中間の旧snapshotはresumeのloadでは参照されません。ただし手動訂正（`revise`）の版は`base_translation_sha256`で基準版を参照し、load時にそれを再検証します。review記録（`reviews/*.json`）も`translation_snapshot_sha256`で版を参照し、`load_reviews`がrender・review時に`load_translation`でその版を再検証します（`src/doc_translate/review.py:53,469`、`src/doc_translate/render.py:1229`）。renderの要約も採用digestを記録します。旧版の削除可否は、これらの参照を含めて#125で判断します。
+- **実書籍の3.0 GiBは1回当たりの値ではない**：Plan時点の実書籍workspaceの`snapshots/translation`は802ファイル／3,261,065,799 bytes（最大4,580,690 bytes）です。これは**複数回の実行・resumeの累積在庫**であり、1回の実行の増分ではありません。本計測の人工値から実書籍の値を外挿しません。ただし同じ機構（job数×版サイズ）で累積することは整合しています。
+- **改善の要否**：改善する価値があります。初回1回で、最終版の約job数倍の論理bytesが履歴として残ります。無変更resumeは増えませんが、失敗回復や新規jobのたびに1版ずつ加わります。削減方式（保存頻度、差分化、旧版GC等）は、保存互換・中断耐性（上記の回復情報）を保つ別提案として**Issue #125**で扱います。比較基準は本表の同条件値です（100 group初回19,801,315 bytes／100件、無変更0、回復1版212,661 bytes）。本Issueでは履歴の削除や保存方式の変更はしていません。
+
+未確認：物理I/O、filesystemのblock overhead、実provider、実書籍規模での版サイズ分布、EPUB入力、revise／手動訂正を含む履歴。cleanupは所有TemporaryDirectoryだけを回収し、全証拠をreadbackしました。

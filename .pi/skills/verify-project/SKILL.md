@@ -119,3 +119,7 @@ EPUBの`li`で子リストの後に続く親の文の順序、変更前の版で
 ## 旧ルールPDF workspaceの停止（Issue #117）
 
 旧PDF補正ルールで保存したworkspaceの`resume`が送信前にexit 2で案内付きで止まり、`render`／`status`は動き、現行ルールのworkspaceは送信0件で再利用されることを確認するときは[Mapの#117小節](references/feature-map.md#旧ルールworkspaceの停止issue-117)と`scripts/pdf_old_rule_stop.py`を使う。
+
+## 翻訳snapshot履歴の容量（Issue #105）
+
+翻訳snapshot履歴の増え方を測るときは[Mapの#105節](references/feature-map.md#翻訳snapshot履歴の容量issue-105)と`scripts/translation_history.py --evidence work/issue105-<unique>`を使います。新規初回・無変更resume（増分0をassert）・失敗回復resumeを10／100 groupで各3回測ります。結果と判断は性能referenceの#105節にあります。削減・旧履歴削除はしません。
