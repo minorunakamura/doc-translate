@@ -903,6 +903,54 @@ def test_resume_pdf_recovers_chunk_before_progress_replace_after_force_kill(
     assert_preserved(old_files)
 
 
+@pytest.mark.parametrize("termination", ["SIGINT", "SIGTERM"])
+def test_run_pdf_single_signal_during_acquisition_exits_and_resume_continues(
+    tmp_path, pdf_input, local_models, capsys, termination
+):
+    import signal
+
+    from test_resume import (
+        assert_preserved,
+        await_boundary,
+        external_cli,
+        requests,
+        saved_files,
+    )
+
+    workspace = tmp_path / "new"
+    process = external_cli(
+        tmp_path,
+        helper(tmp_path),
+        run_args(pdf_input, workspace)
+        + [
+            "--pages",
+            "2-3",
+            "--artifacts-path",
+            str(local_models),
+            "--correction-model",
+            "vision",
+        ],
+        boundary="drafts/pdf/raw/*.json",
+    )
+    try:
+        # Paused inside acquire_pdf; release is never created.
+        await_boundary(tmp_path, process)
+        old_files = saved_files(workspace)
+        assert old_files
+        process.send_signal(getattr(signal, termination))
+        assert process.wait(timeout=5) == 1, (tmp_path / "process.err").read_text()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    assert_preserved(old_files)
+    assert not list((workspace / "drafts/pdf/raw").glob("*"))
+    assert not requests(tmp_path)
+    main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
+    assert json.loads(capsys.readouterr().out)["processing"]["status"] == "completed"
+    assert_preserved(old_files)
+
+
 def test_resume_pdf_validates_whole_draft_images_once_per_pass_not_per_chunk(
     tmp_path, pdf_input, local_models, capsys, monkeypatch
 ):
