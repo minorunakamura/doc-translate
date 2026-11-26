@@ -320,6 +320,35 @@ def test_translation_baseline_pre_job_boundary_and_public_load_are_separate(
     )
 
 
+def test_translation_history_separates_initial_unchanged_and_recovery_growth(
+    tmp_path, monkeypatch
+):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    recipe = load("translation_history")
+    seed_owner, seed = tmp_path / "seed-owner", tmp_path / "seed"
+    seed_owner.mkdir()
+    recipe.create_seed(seed_owner, seed, 2)
+    hashes = recipe.files(seed)
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    rows = recipe.measure_scenarios(owned, seed, 2)
+    assert recipe.files(seed) == hashes
+    initial, unchanged = rows["initial"], rows["unchanged"]
+    assert initial["jobs"] == initial["requests"] == 2
+    assert initial["attempt_added_files"] == initial["chunk_added_files"] == 2
+    assert initial["pointer_writes"] == 3
+    assert initial["snapshot_added_files"] == initial["jobs"]
+    assert unchanged["snapshot_added_files"] == unchanged["snapshot_added_bytes"] == 0
+    assert unchanged["pointer_writes"] == 1 and not unchanged["pointer_changed"]
+    failed, recovery = rows["failed_initial"], rows["recovery"]
+    assert failed["jobs"] == failed["requests"] == 2
+    assert failed["chunk_added_files"] == 1
+    assert recovery["jobs"] == recovery["requests"] == 1
+    assert recovery["chunk_added_files"] == 1 and recovery["pointer_changed"]
+    assert recovery["snapshot_added_files"] == 1
+    assert recovery["snapshot_added_max_bytes"] == recovery["final_snapshot_bytes"]
+
+
 def test_performance_revision_checks_real_import_path(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(SCRIPTS))
     revision = load("performance_revision")

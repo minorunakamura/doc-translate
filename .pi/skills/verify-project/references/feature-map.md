@@ -1581,3 +1581,7 @@ PY
 ```
 
 期待（Issue #104の完了条件）：`auth_failed`／`storage_failed`はc1・c2とも停止前の送信が`a`だけ。chunkは`[成功, 実error, not_processed]`、runは送信した2件だけで、未送信のcにはattemptがなく`cancelled`もない。c2では認識前に送信済みの`a`を中断せず、`b`の失敗後に解放して成功を採用する。局所`generation_failed`の対照ではcも送られて採用される。保存例外（c1、bのchunk artifact replace）は例外を送出し、注入時と同じpointer、a採用・b/c `not_processed`のまま。障害なし再実行は`a`の成功artifactを無送信で再利用し、追加送信は欠けた分だけ（全体停止は`b,c`、局所は`b`、保存例外は保存済みattemptを回収して`c`）。証拠はrevision／dirty／diff、各caseの`*-requests.jsonl`、`observations.json`（送信先頭・chunk分類・run数・pointer hash・例外・resume追加送信）、`cleanup.txt`。所有TemporaryDirectoryだけを回収し、cleanup後に全fileを再読する。並列の公開race全体・実providerの認証／保存障害・課金は対象外で、focused `pytest tests/test_translation.py -k "stop or save_failure"`と正式チェック・Rootの独立確認を代用しない。再利用はproject trust→新セッションか`/reload`→`/skill:verify-project translation global stop`またはSkill実ファイルread。
+
+## 翻訳snapshot履歴の容量（Issue #105）
+
+入口は公開`save_source_snapshot → prepare_document → translate_document → load_translation`です。前提は既存Python／Node、compiled resourceの全hash一致、人工credential、実faux＋no-networkです。手順・条件・結果・判断は[性能referenceの#105節](../../../../docs/reference/performance.md#翻訳snapshot履歴の容量issue-105)にあります。repository rootで`.venv/bin/pytest -q tests/test_performance_verification.py -k translation_history`を実行した後、`.venv/bin/python .pi/skills/verify-project/scripts/translation_history.py --evidence work/issue105-<unique>`（既定10／100 group、各3回、`--size 2`は接続確認）を他benchmarkと非並行で実行します。所有TemporaryDirectoryだけをcleanupし、証拠全fileをreadbackします。実書籍workspace・旧snapshotの削除や保存方式の変更は対象外で、#125で扱います。
