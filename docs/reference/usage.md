@@ -204,6 +204,8 @@ SIGINT／SIGTERMは新規requestを止め、実行中helperの取消・認証保
 
 保存済みの準備・訳と、現在の版が保存原文から作る翻訳単位の分け方が合わない場合（例：EPUBで子リストの後に親項目の文が続くリストを含み、その分け方を変える前の版で作ったworkspace）、`resume`／`render`／`status --verify`はAIへ送る前にexit 2で止まり、「保存済みの訳と現在の文の分け方が合いません。新しいworkspaceで `run` し直してください。」と表示します。保存物の破損で対応が取れない場合も同じ表示です。自動の再翻訳・移行はしないため、元のINPUTから新しい`--workspace`で`run`し直してください。元のworkspaceは変更されません。
 
+現在の版（`adopted-edge-target-v17`）より前の補正ルールで補正したPDF workspaceを`resume`すると、AIへ送る前にexit 2で止まり、「このworkspaceのPDF補正は現在と異なるルールで保存されています。新しいworkspaceで `run` し直してください。」と表示します。自動の再補正・移行はしないため（黙って課金が起きるのを避けるため）、元のINPUTから新しい`--workspace`で`run`し直してください。元のworkspaceは変更されません。`render`と`status`（`--verify`を含む）は補正chunkを再検証しないため、原文候補の採用待ちがない限りそのworkspaceでも動きます。
+
 #### ページ欠落が残る既存PDFの復旧確認
 
 まず設定を上書きせず`doc-translate status DIR --json`で保存設定・failed/not_processed・candidate/revisionを確認します。実送信前に対象／参照範囲、provider/model/thinking、認証、追加利用量と後段再実行を確認し、別途実行承認を得てから`doc-translate resume DIR`を1回実行し、再度statusを確認してください。新しい`run`やworkspace再生成、lock削除、attemptの手編集は不要です。稼働writerは停止せず待ちます。

@@ -1002,42 +1002,6 @@ def test_target_adopted_from_partner_last_proposed_line_joins(tmp_path, draft):
     )
 
 
-def test_schema_17_record_with_adopted_edge_target_keeps_fragments(tmp_path, draft):
-    import json
-
-    from test_pdf_correction import artifact
-
-    draft, left, right = adopted_edge_pair(
-        draft, "left", "#/texts/1", "middle\nright", "#/texts/0"
-    )
-    ws = draft[0]
-    current = accept(tmp_path, draft, [left, right], [1], [])
-    data = json.loads((ws / f"corrections/pdf/{current}.json").read_bytes())
-    record = json.loads((ws / data["run"]["artifact"]).read_bytes())
-    record["request"]["context"]["adoption_rule"] = "drawn-table-listing-v16"
-    data |= {
-        "schema_version": 17,
-        "run": artifact(
-            ws, "attempts/pdf-correction", "json", json.dumps(record).encode()
-        ),
-    }
-    old = artifact(
-        ws,
-        "corrections/pdf",
-        "json",
-        json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode(),
-    )["sha256"]
-    chunk = load_pdf_correction(ws, old)
-    assert chunk.schema_version == 17
-    assert_separate(
-        assemble(draft, [old]),
-        [
-            b.model_dump(mode="json", include={"block_id", "text", "evidence"})
-            for b in chunk.blocks
-        ],
-    )
-
-
 def printed_rows(draft, rows):
     """One extraction item per (text, label); each line of its text is a printed row."""
     from test_pdf_correction import listing_reply, rewrite_raw

@@ -33,7 +33,7 @@ from doc_translate.pdf_correction import (
 )
 
 
-def _reading_order(raw, *, nested=False):
+def _reading_order(raw):
     pending = [
         (entry, None) for entry in reversed(raw.get("body", {}).get("children", []))
     ]
@@ -49,81 +49,8 @@ def _reading_order(raw, *, nested=False):
         if item["self_ref"] != ref:
             raise ValueError("Invalid extraction child ref")
         yield ref, item, container
-        if nested or collection == "groups":
-            parent = ref if collection in ("pictures", "tables") else container
-            pending.extend(
-                (child, parent) for child in reversed(item.get("children", []))
-            )
-
-
-def preserve_owned_text(answer, raw):
-    blocks = list(answer.blocks)
-    issues = list(answer.uncertainties)
-    by_ref = defaultdict(list)
-    for block in blocks:
-        for key in {(e.page, e.ref) for e in block.evidence}:
-            by_ref[key].append(block)
-    used = {b.block_id for b in blocks}
-    rank = {}
-    for order, (ref, node, _) in enumerate(_reading_order(raw)):
-        if node.get("label") != "text" or node.get("content_layer", "body") != "body":
-            continue
-        text = node["text"]
-        for prov in node["prov"]:
-            page, span = prov["page_no"], prov.get("charspan")
-            if page not in answer.owned_pages or not _valid_span(span, text):
-                continue
-            start, end = span
-            original = text[start:end]
-            if not original.strip():
-                continue
-            ev = CorrectionEvidence(
-                page=page,
-                ref=ref,
-                charspan=(start, end),
-                position=f"characters {start}:{end}",
-                reason="Owned extraction range",
-            )
-            matches = by_ref[page, ref]
-            if matches:
-                for b in matches:
-                    rank.setdefault(b.block_id, (page, order, start))
-                if len(matches) != 1 or matches[0].kind != "body":
-                    continue
-                block = matches[0]
-                if block.text == original:
-                    continue
-                reason = (
-                    f"Extraction {original!r} differs from correction {block.text!r}"
-                )
-                blocks[blocks.index(block)] = block.model_copy(
-                    update={"text": original}
-                )
-            else:
-                key = f"extraction-{order}-{start}"
-                while key in used:
-                    key += "-"
-                used.add(key)
-                block = TextBlock(
-                    kind="body", block_id=key, text=original, evidence=[ev]
-                )
-                blocks.append(block)
-                rank[key] = (page, order, start)
-                reason = "Readable owned range omitted by correction"
-            issues.append(
-                CorrectionUncertainty(
-                    reason=reason,
-                    target_ids=[block.block_id],
-                    evidence=[ev],
-                    origin="processing",
-                )
-            )
-    blocks.sort(
-        key=lambda b: rank.get(
-            b.block_id, (min(e.page for e in b.evidence), float("inf"), 0)
-        )
-    )
-    return answer.model_copy(update={"blocks": blocks, "uncertainties": issues})
+        parent = ref if collection in ("pictures", "tables") else container
+        pending.extend((child, parent) for child in reversed(item.get("children", [])))
 
 
 # Only PDFium operations need serialization. The verified bytes and page scopes
@@ -151,7 +78,7 @@ def _mixed_phrase_matches(original, proposal):
     ]
 
 
-def _word_pair(original, proposed, printed_lines):
+def _word_pair(original, proposed):
     if len(proposed) != len(original) + 1:
         return None
     index = next(
@@ -164,16 +91,8 @@ def _word_pair(original, proposed, printed_lines):
     ):
         return None
     # Isolate a plain prose token, not a component of an identifier or URL.
-    left = re.search(
-        r"(?:^|\s)([A-Za-z]+)$" if printed_lines else r"(?:^|\s)([a-z]+)$",
-        proposed[:index],
-    )
-    right = re.match(
-        r"([A-Za-z]+)(?:[,.!?;:]?(?:\s|$))"
-        if printed_lines
-        else r"([a-z]+)(?:[,.!?;:]?(?:\s|$))",
-        proposed[index + 1 :],
-    )
+    left = re.search(r"(?:^|\s)([A-Za-z]+)$", proposed[:index])
+    right = re.match(r"([A-Za-z]+)(?:[,.!?;:]?(?:\s|$))", proposed[index + 1 :])
     if left and right:
         fused = left[1] + right[1]
         if len(re.findall(rf"(?<!\w){fused}(?!\w)", original)) == 1:
@@ -181,9 +100,7 @@ def _word_pair(original, proposed, printed_lines):
     return None
 
 
-def _local_text(
-    provenances, page, read_original, inspect, *, strict_pdf, verify_page=False
-):
+def _local_text(provenances, page, read_original, inspect, *, verify_page=False):
     import pypdfium2 as pdfium
 
     try:
@@ -226,9 +143,7 @@ def _local_text(
                     result.append(value)
                 return result
         except pdfium.PdfiumError as error:
-            if strict_pdf:
-                raise ValueError("Unable to read original PDF") from error
-            return None
+            raise ValueError("Unable to read original PDF") from error
 
 
 def _paints_text(obj):
@@ -324,66 +239,36 @@ def _printed_space(rows, offset):
     )
 
 
-def _supported_space(
-    original, proposed, prov, page, read_original, verify_context, printed_lines
-):
-    boundary = _word_pair(original, proposed, printed_lines)
+def _supported_space(original, proposed, prov, page, read_original):
+    boundary = _word_pair(original, proposed)
     if boundary is None:
         return False
     pair, offset = boundary
 
     def inspect(tp, text, bounds):
-        if printed_lines:
-            return text, _word_draws(tp, " ".join(pair), bounds)
-        if not verify_context:
-            return text
-        import pypdfium2.raw as native
+        return text, _word_draws(tp, " ".join(pair), bounds)
 
-        left, bottom, right, top = bounds
-        phrase = " ".join(pair)
-        with closing(tp.search(phrase, match_case=True)) as search:
-            while hit := search.get_next():
-                index, length = hit
-                l, b, r, t = tp.get_charbox(index)
-                if not (left < r and l < right and bottom < t and b < top):
-                    continue
-                if length != len(phrase) or tp.get_text_range(index, length) != phrase:
-                    continue
-                baselines = []
-                for i, c in enumerate(phrase, index):
-                    if c != " ":
-                        x, y = ctypes.c_double(), ctypes.c_double()
-                        if not native.FPDFText_GetCharOrigin(tp, i, x, y):
-                            return None
-                        baselines.append(y.value)
-                if max(baselines) - min(baselines) < 0.01:
-                    return text
-        return None
-
-    values = _local_text([prov], page, read_original, inspect, strict_pdf=printed_lines)
+    values = _local_text([prov], page, read_original, inspect)
     if values is None:
         return False
-    (text,) = values
-    if printed_lines:
-        text, rows = text
-        if not _printed_space(rows, len(pair[0])):
-            return False
+    ((text, rows),) = values
+    if not _printed_space(rows, len(pair[0])):
+        return False
     left, right = pair
     # A competing fused or line-broken occurrence is not a unique location.
     matches = re.findall(rf"(?<!\w){left}([ \r\n]*){right}(?!\w)", text)
-    if verify_context:
-        # PDFium marks a discretionary line-end hyphen with U+0002. Normalize
-        # for context alignment only, never to produce adopted characters.
-        def context(s):
-            return " ".join(s.splitlines()).replace("\x02", "").replace("’", "'")
 
-        if context(text) != context(proposed):
-            return False
-    if printed_lines:
-        from doc_translate.units import _LITERAL
+    # PDFium marks a discretionary line-end hyphen with U+0002. Normalize
+    # for context alignment only, never to produce adopted characters.
+    def context(s):
+        return " ".join(s.splitlines()).replace("\x02", "").replace("’", "'")
 
-        if any(m.start() < offset < m.end() for m in _LITERAL.finditer(original)):
-            return False
+    if context(text) != context(proposed):
+        return False
+    from doc_translate.units import _LITERAL
+
+    if any(m.start() < offset < m.end() for m in _LITERAL.finditer(original)):
+        return False
     return matches == [" "]
 
 
@@ -465,40 +350,7 @@ def _joined(parts):
     return result
 
 
-def _line_formatting(original, proposal):
-    # A proposal may lay out existing tokens on lines. Existing newlines,
-    # indentation, quoted literal spaces and every non-separator are immutable.
-    source = re.split(r"(\s+)", original)
-    target = re.split(r"(\s+)", proposal)
-    if len(source) != len(target):
-        return False
-    quote = None
-    for i, (a, b) in enumerate(zip(source, target, strict=True)):
-        if a != b and not (
-            i % 2
-            and not quote
-            and a.startswith(" ")
-            and (re.fullmatch(r"\n+ *", b) or (a == " " and re.fullmatch(r" +", b)))
-            and (a == " " or b.endswith(a[1:]))
-        ):
-            return False
-        if not i % 2:
-            for char in re.findall(r'\\.|["\'`]', a):
-                if char == quote:
-                    quote = None
-                elif quote is None and len(char) == 1:
-                    quote = char
-    return True
-
-
-def _layout_candidate(original, proposal):
-    # Count blank lines separately after the nonempty lines have been located.
-    return _line_formatting(
-        re.sub(r"\n+", "\n", original), re.sub(r"\n+", "\n", proposal)
-    )
-
-
-def _printed_candidate(original, proposal, *, relative_margin=False):
+def _printed_candidate(original, proposal):
     # This comparison only nominates candidates. The local glyph runs must
     # separately prove every proposed nonempty line and its indentation.
     source = list(re.finditer(r"(\s*)(\S|$)", original))
@@ -513,8 +365,7 @@ def _printed_candidate(original, proposal, *, relative_margin=False):
         if char != other:
             return False
         if (
-            relative_margin
-            and token.start() == 0
+            token.start() == 0
             and re.fullmatch(" *", a)
             and re.fullmatch(" *", b)
             and len(b) >= len(a)
@@ -945,7 +796,7 @@ def _body_punctuation(
     located = {}
     if eligible and independent:
         result = _local_text(
-            [part.prov], page, read_original, inspect, strict_pdf=True, verify_page=True
+            [part.prov], page, read_original, inspect, verify_page=True
         )
         if result:
             (located,) = result
@@ -1056,9 +907,7 @@ def _drawn_grid(rows):
     return pitch, result
 
 
-def _drawn_listing(
-    item, nodes, valid, page, read_original, read_image, *, layout_version
-):
+def _drawn_listing(item, nodes, valid, page, read_original, read_image):
     """Corroborate complete, adjacent item boxes, never an offset into invalid text."""
     provs = [n["prov"][0] for n in nodes]
     image = _page_ink(page, read_image)
@@ -1067,7 +916,7 @@ def _drawn_listing(
 
     def inspect(tp, local, bounds):
         glyphs = []
-        advances = [] if layout_version >= 17 else None
+        advances = []
         rows = _line_origins(
             tp,
             local,
@@ -1082,9 +931,9 @@ def _drawn_listing(
         if not _visible_glyphs(tp, bounds, glyphs, page, image):
             return None
         drawn_x = min(b[0] for _, _, b in glyphs), max(b[2] for _, _, b in glyphs)
-        return rows, bounds, drawn_x, advances or [None] * len(rows)
+        return rows, bounds, drawn_x, advances
 
-    groups = _local_text(provs, page, read_original, inspect, strict_pdf=True)
+    groups = _local_text(provs, page, read_original, inspect)
     if not groups:
         return None
     rows = []
@@ -1139,7 +988,6 @@ def _drawn_listing(
         page,
         read_original,
         lambda tp, text, bounds: _line_origins(tp, text, bounds, printed_lines=True),
-        strict_pdf=True,
     )
     if band != [[row[:4] for row in rows]]:
         return None
@@ -1147,35 +995,19 @@ def _drawn_listing(
     wanted = [m[0] for m in proposed]
     if len(wanted) != len(rows):
         return None
-    if layout_version >= 17:
-        # Gap widths come from the drawn grid, not from the extraction or the proposal.
-        grid = _drawn_grid([r[6] for r in rows])
-        if grid is None or any(
-            not re.fullmatch(pattern, line.lstrip(" "))
-            for line, (_, pattern, _) in zip(wanted, grid[1], strict=True)
-        ):
-            return None
-        pitch, drawn_rows = grid
-    elif any(
-        line.lstrip(" ") != r[0].lstrip(" ")
-        for line, r in zip(wanted, rows, strict=True)
+    # Gap widths come from the drawn grid, not from the extraction or the proposal.
+    grid = _drawn_grid([r[6] for r in rows])
+    if grid is None or any(
+        not re.fullmatch(pattern, line.lstrip(" "))
+        for line, (_, pattern, _) in zip(wanted, grid[1], strict=True)
     ):
         return None
-    else:
-        pitch = next((d for r in rows for d in r[3]), None)
-        drawn_rows = [(r[0], None, False) for r in rows]
+    pitch, drawn_rows = grid
     margin = min(r[1] for r in rows)
     columns = [(r[1] - margin) / pitch if pitch else 0 for r in rows]
-    measured = (
-        pitch
-        and (
-            layout_version >= 17
-            or all(isclose(d, pitch, abs_tol=0.02) for r in rows for d in r[3])
-        )
-        and all(
-            isclose(round(c) * pitch, r[1] - margin, abs_tol=0.02)
-            for c, r in zip(columns, rows, strict=True)
-        )
+    measured = pitch and all(
+        isclose(round(c) * pitch, r[1] - margin, abs_tol=0.02)
+        for c, r in zip(columns, rows, strict=True)
     )
     display = []
     differences = []
@@ -1206,7 +1038,6 @@ def _drawn_listing(
         if not _printed_candidate(
             re.sub(r"\r\n?", "\n", anchor.text),
             re.sub(r"\r\n?", "\n", printed),
-            relative_margin=True,
         ):
             return None
     locations = [r[4] for r in rows]
@@ -1260,7 +1091,7 @@ def _caption_listing_parts(
     ):
         return None
     parts = {}
-    for order, (ref, node, container) in enumerate(_reading_order(raw, nested=True)):
+    for order, (ref, node, container) in enumerate(_reading_order(raw)):
         if ref not in refs:
             continue
         if (
@@ -1377,9 +1208,7 @@ def _caption_listing_parts(
         return result
 
     band = {"l": left, "r": right, "t": top, "b": bottom, "coord_origin": "BOTTOMLEFT"}
-    result = _local_text(
-        [{"bbox": band}], page, read_original, inspect, strict_pdf=True
-    )
+    result = _local_text([{"bbox": band}], page, read_original, inspect)
     if not result:
         return None
     (rows,) = result
@@ -1549,7 +1378,7 @@ def _role_evidence(blocks, page, selectors, answer, refs):
 
 def _role_nodes(raw, refs, page):
     nodes = {}
-    for order, (ref, node, container) in enumerate(_reading_order(raw, nested=True)):
+    for order, (ref, node, container) in enumerate(_reading_order(raw)):
         if ref not in refs:
             continue
         if (
@@ -1686,7 +1515,6 @@ def _shared_item_roles(
         page,
         read_original,
         lambda tp, local, bounds: _drawn_rows(tp, local, bounds, page, image),
-        strict_pdf=True,
     )
     if not result:
         return None
@@ -1850,7 +1678,6 @@ def _shared_listing_edge(
         page,
         read_original,
         lambda tp, local, bounds: _drawn_rows(tp, local, bounds, page, image),
-        strict_pdf=True,
     )
     if not result:
         return None
@@ -1996,7 +1823,6 @@ def _fragment_places(parts, item, pages, read_original):
                 lambda tp, local, bounds: _line_origins(
                     tp, local, bounds, printed_lines=True
                 ),
-                strict_pdf=True,
             )
             if drawn and len(drawn[0]) == 1 and drawn[0][0][0] != text:
                 matches = literal(drawn[0][0][0])
@@ -2080,7 +1906,7 @@ def _printed_role_split(part, entries, targets, page, read_original):
                 return None
         return _line_origins(tp, local, bounds, printed_lines=True, row_fonts=fonts)
 
-    drawn = _local_text([part.prov], page, read_original, inspect, strict_pdf=True)
+    drawn = _local_text([part.prov], page, read_original, inspect)
     if not drawn:
         return None
     rows = drawn[0]
@@ -2148,21 +1974,12 @@ def _listing_layout(
     page,
     read_original,
     *,
-    printed_lines,
-    relative_margin,
-    layout_version,
     caption=None,
     shared_rows=None,
 ):
     """Validate proposed lines individually against the complete local text runs."""
     original = _joined(parts)
-
-    def candidate(text):
-        if printed_lines:
-            return _printed_candidate(original, text, relative_margin=relative_margin)
-        return _layout_candidate(original, text)
-
-    if (layout_version < 8 and not candidate(proposal)) or any(
+    if any(
         p.rank[0] != page.page
         or (
             caption is None
@@ -2181,9 +1998,8 @@ def _listing_layout(
             page,
             read_original,
             lambda tp, local, bounds: _line_origins(
-                tp, local, bounds, printed_lines=printed_lines
+                tp, local, bounds, printed_lines=True
             ),
-            strict_pdf=printed_lines,
         )
     if printed is None:
         return None
@@ -2218,7 +2034,7 @@ def _listing_layout(
             gap = m[1]
             if rows and start == len(gap):
                 previous = parts[part_index - 1]
-                separator = _owned_separator(previous, part) if printed_lines else " "
+                separator = _owned_separator(previous, part)
                 if separator is None:
                     return None
                 gap = separator + gap
@@ -2230,7 +2046,7 @@ def _listing_layout(
         return None
     pitch = next((d for _, _, _, steps, _, _ in rows for d in steps), None)
     # No advance estimate is needed when the proposed line starts are literal.
-    measure_indent = not printed_lines or any(
+    measure_indent = any(
         wanted != row[0] for (wanted, _), row in zip(proposed, rows, strict=True)
     )
     if measure_indent and (pitch is None or pitch <= 0):
@@ -2241,13 +2057,7 @@ def _listing_layout(
         len(wanted) - len(row[0])
         for (wanted, _), row in zip(proposed, rows, strict=True)
     )
-    if common < 0 or (common and (not relative_margin or len(rows) < 2)):
-        return None
-    # Check protected separators in the displayed columns: a shared proposal
-    # prefix is not a change inside an already extracted multiline literal.
-    if layout_version == 8 and not candidate(
-        "".join(line[common:] + after for line, after in proposed)
-    ):
+    if common < 0 or (common and len(rows) < 2):
         return None
     margin = None
     previous_y = None
@@ -2288,7 +2098,7 @@ def _listing_layout(
         adopted.append(wanted[common:])
         previous_y = y
     display = "".join(adopted)
-    if proposed[-1][1] or ((common or layout_version >= 9) and not candidate(display)):
+    if proposed[-1][1] or not _printed_candidate(original, display):
         return None
     if common:
         unknown.append(
@@ -2368,7 +2178,6 @@ def _single_printed_occurrence(parts, page, read_original, read_image, figures):
         page,
         read_original,
         lambda tp, text, box: (text, box),
-        strict_pdf=True,
     )
     if rows is None or [text for text, _ in rows] != [p.text for p in parts]:
         return False
@@ -2438,7 +2247,6 @@ def _single_printed_occurrence(parts, page, read_original, read_image, figures):
         page,
         read_original,
         drawings,
-        strict_pdf=True,
     )
     if result is None:
         return False
@@ -2450,15 +2258,7 @@ def _single_printed_occurrence(parts, page, read_original, read_image, figures):
 
 
 def _bind_neighbors(
-    blocks,
-    targets,
-    ranges,
-    ranks,
-    layout=None,
-    image_owner=None,
-    *,
-    display_windows=False,
-    report_conflict=None,
+    blocks, targets, ranges, ranks, layout, image_owner, report_conflict
 ):
     extra_evidence = defaultdict(list)
     # Page-image evidence can describe a complete extraction item without a ref.
@@ -2477,7 +2277,7 @@ def _bind_neighbors(
             key = candidates[0].block_id
             i = indices[0]
             part = ranges[i][0]
-            if image_owner is not None and not image_owner(part, candidates[0]):
+            if not image_owner(part, candidates[0]):
                 continue
             ranges[i] = (part, key)
             ranks[key] = part.rank
@@ -2507,7 +2307,7 @@ def _bind_neighbors(
             continue
         windows = []
         # Only nominate a window; its complete printed layout must prove the extension.
-        content = "".join(block.text.split()) if display_windows else None
+        content = "".join(block.text.split())
         left = first
         while True:
             right = last
@@ -2515,25 +2315,11 @@ def _bind_neighbors(
                 original = _joined([p for p, _ in ranges[left : right + 1]])
                 if len(original) > len(block.text):
                     break
-                candidate = (
-                    _printed_candidate
-                    if image_owner
-                    else _layout_candidate
-                    if layout
-                    else _line_formatting
-                )
-                matches = (
-                    "".join(original.split()) == content
-                    if display_windows
-                    else original == block.text or candidate(original, block.text)
-                )
-                if matches:
+                if "".join(original.split()) == content:
                     parts = [p for p, _ in ranges[left : right + 1]]
-                    if (
-                        layout is None
-                        or (left == first and right == last)
-                        or layout(parts, block.text) is not None
-                    ):
+                    if (left == first and right == last) or layout(
+                        parts, block.text
+                    ) is not None:
                         windows.append((left, right))
                 right += 1
                 if (
@@ -2547,10 +2333,6 @@ def _bind_neighbors(
             left -= 1
             if left < 0 or ranges[left][1] or ranges[left][0].rank[0] != page:
                 break
-        if report_conflict is None:
-            if len(windows) == 1:
-                bind(key, *windows[0])
-            continue
         # Compare all verified windows against the same ownership state before binding.
         for left, right in windows:
             for i in range(left, right + 1):
@@ -2558,8 +2340,6 @@ def _bind_neighbors(
                     claims[i].add(key)
         if len(windows) == 1:
             pending[key] = windows[0]
-    if report_conflict is None:
-        return extra_evidence
     disputed = set()
     for i in sorted(claims):
         keys = claims[i]
@@ -2657,11 +2437,6 @@ def adopt_owned_ranges(
     read_image,
     *,
     items,
-    verify_layout,
-    printed_lines,
-    printed_ranges,
-    relative_margin,
-    layout_version,
 ):
     by_page = {p.page: p for p in pages}
     issues = list(answer.uncertainties)
@@ -2696,7 +2471,7 @@ def adopt_owned_ranges(
     invalid_listing_refs = {
         (e.page, e.ref)
         for b in answer.blocks
-        if layout_version >= 13 and isinstance(b, CodeBlock)
+        if isinstance(b, CodeBlock)
         for e in b.evidence
         if e.ref and isinstance((node := items[e.ref]).get("text"), str)
         if any(
@@ -2709,11 +2484,9 @@ def adopt_owned_ranges(
     barriers = set()
     containers = {}
     nested_members = defaultdict(list)
-    for order, (ref, node, container) in enumerate(
-        _reading_order(raw, nested=verify_layout)
-    ):
+    for order, (ref, node, container) in enumerate(_reading_order(raw)):
         containers[order] = container
-        if verify_layout and (
+        if (
             ref.startswith(("#/pictures/", "#/tables/"))
             or node.get("content_layer", "body") != "body"
         ):
@@ -2751,8 +2524,7 @@ def adopt_owned_ranges(
                 for p in node["prov"]
                 if p is not prov
             ):
-                if layout_version >= 13:
-                    invalid_listing_refs.add((page, ref))
+                invalid_listing_refs.add((page, ref))
                 issue(
                     "Ambiguous extraction provenance; no range assigned",
                     [],
@@ -2800,27 +2572,20 @@ def adopt_owned_ranges(
             start, end = span
             split = {}
             if (
-                printed_ranges
-                and not container
+                not container
                 and node["label"] == "code"
                 and len(entries) == 2
                 and len(node["prov"]) == 1
             ):
                 (cap_key, cap_ev), (code_key, code_ev) = entries
-                if (
-                    layout_version >= 11
-                    and getattr(targets[code_key], "target_id", None) == cap_key
-                ):
+                if getattr(targets[code_key], "target_id", None) == cap_key:
                     (code_key, code_ev), (cap_key, cap_ev) = entries
                 caption, code = targets[cap_key], targets[code_key]
                 if (
                     getattr(caption, "kind", None) == "caption"
                     and isinstance(code, CodeBlock)
-                    and (layout_version < 11 or caption.target_id in (None, code_key))
-                    and (
-                        layout_version < 11
-                        or text.find(caption.text, start + 1, end) == -1
-                    )
+                    and caption.target_id in (None, code_key)
+                    and text.find(caption.text, start + 1, end) == -1
                     and all(
                         len(block.evidence) == 1 and ev.charspan is None
                         for block, ev in ((caption, cap_ev), (code, code_ev))
@@ -2831,16 +2596,12 @@ def adopt_owned_ranges(
                 ):
                     boundary = start + len(caption.text)
                     tail = text[boundary:end]
-                    flat_gap = (
-                        re.match(r" +(?=\S)", tail) if layout_version >= 10 else None
-                    )
+                    flat_gap = re.match(r" +(?=\S)", tail)
                     if flat_gap:
                         tail = tail[flat_gap.end() :]
-                    elif layout_version >= 9:
+                    else:
                         # Only the caption-to-code separator is outside code ownership.
                         tail = re.sub(r"^(?: *\r?\n| )", "", tail, count=1)
-                    else:
-                        tail = tail.lstrip(" ")
                     part = _Portion(order, node, prov, end - len(tail), end)
                     checked = (
                         _listing_layout(
@@ -2848,9 +2609,6 @@ def adopt_owned_ranges(
                             code.text,
                             by_page[page],
                             read_original,
-                            printed_lines=True,
-                            relative_margin=relative_margin,
-                            layout_version=layout_version,
                             caption=caption.text,
                         )
                         if tail
@@ -2877,7 +2635,6 @@ def adopt_owned_ranges(
                             )
             if (
                 not split
-                and layout_version >= 11
                 and not container
                 and node["label"] == "code"
                 and len(entries) == 2
@@ -2906,12 +2663,7 @@ def adopt_owned_ranges(
                                 ]
                             }
                         )
-            if (
-                not split
-                and layout_version >= 15
-                and len(entries) == 2
-                and node.get("label") == "code"
-            ):
+            if not split and len(entries) == 2 and node.get("label") == "code":
                 for cap_key, _ in entries:
                     caption = targets[cap_key]
                     if not isinstance(caption, TextBlock) or caption.kind != "caption":
@@ -2972,10 +2724,9 @@ def adopt_owned_ranges(
                     or e.cell_index is not None
                 ):
                     continue
-                if (
-                    printed_lines
-                    and isinstance(targets[key], CodeBlock)
-                    and node["label"] in ("caption", "footnote")
+                if isinstance(targets[key], CodeBlock) and node["label"] in (
+                    "caption",
+                    "footnote",
                 ):
                     detached[key].append(e)
                     continue
@@ -2984,13 +2735,12 @@ def adopt_owned_ranges(
                     a, b = split[key]
                     # Other evidence can anchor this block earlier in Docling order.
                     rank = (page, order, a)
-                    if layout_version < 11 or ranks[key][:2] >= rank[:2]:
+                    if ranks[key][:2] >= rank[:2]:
                         ranks[key] = rank
                 elif e.charspan is None and len({k for k, _ in entries}) > 1:
                     item = targets[key]
                     if (
-                        printed_ranges
-                        and isinstance(item, ListBlock)
+                        isinstance(item, ListBlock)
                         and item.marker.isalpha()
                         and len(item.evidence) == 2
                         and item.evidence[0].ref == ref
@@ -3021,8 +2771,7 @@ def adopt_owned_ranges(
                 if start <= a < b <= end and (a, b, key) not in claims:
                     claims.append((a, b, key))
             if (
-                layout_version >= 15
-                and not split
+                not split
                 and not container
                 and any(c[0] < p[1] for p, c in itertools.pairwise(sorted(claims)))
             ):
@@ -3124,8 +2873,7 @@ def adopt_owned_ranges(
             raise ValueError("Cannot place evidenced caption and listing")
         ranges[indices[0] : indices[-1] + 1] = ordered
 
-    if printed_ranges:
-        _place_word_label_lists(ranges, blocks, ranks, by_page, containers)
+    _place_word_label_lists(ranges, blocks, ranks, by_page, containers)
 
     unsupported = set()
     for key, notes in detached.items():
@@ -3169,9 +2917,8 @@ def adopt_owned_ranges(
                 )
 
     def layout(parts, proposal, caption=None):
-        if separated(parts) or (
-            printed_lines
-            and any(p.node["label"] in ("footnote", "caption") for p in parts)
+        if separated(parts) or any(
+            p.node["label"] in ("footnote", "caption") for p in parts
         ):
             return None
         return _listing_layout(
@@ -3179,27 +2926,18 @@ def adopt_owned_ranges(
             proposal,
             by_page[parts[0].rank[0]],
             read_original,
-            printed_lines=printed_lines,
-            relative_margin=relative_margin,
-            layout_version=layout_version,
             caption=caption,
             shared_rows=shared_rows,
         )
 
     def separated(parts, *, code=True):
         return (
-            (
-                printed_lines
-                and any(
-                    _owned_separator(a, b, code=code) is None
-                    for a, b in itertools.pairwise(parts)
-                )
+            any(
+                _owned_separator(a, b, code=code) is None
+                for a, b in itertools.pairwise(parts)
             )
-            or verify_layout
-            and (
-                len({containers[p.order] for p in parts}) != 1
-                or any(parts[0].order < o < parts[-1].order for o in barriers)
-            )
+            or len({containers[p.order] for p in parts}) != 1
+            or any(parts[0].order < o < parts[-1].order for o in barriers)
         )
 
     def image_owner(part, block):
@@ -3265,10 +3003,9 @@ def adopt_owned_ranges(
         targets,
         ranges,
         ranks,
-        layout if verify_layout else None,
-        image_owner if printed_lines else None,
-        display_windows=layout_version >= 9,
-        report_conflict=issue if layout_version >= 10 else None,
+        layout,
+        image_owner,
+        issue,
     )
     # Joining non-adjacent body refs would move intervening material. Keep each
     # evidenced fragment at its own rank, without inventing a continuation.
@@ -3309,7 +3046,7 @@ def adopt_owned_ranges(
             parts, code=isinstance(targets[key], CodeBlock)
         ):
             continue
-        filled = omitted_items(key, positions) if layout_version >= 15 else None
+        filled = omitted_items(key, positions)
         if filled and not separated(
             [ranges[i][0] for i in filled], code=isinstance(targets[key], CodeBlock)
         ):
@@ -3331,7 +3068,7 @@ def adopt_owned_ranges(
             )
             continue
         block = targets[key]
-        split_code = printed_lines and isinstance(block, CodeBlock)
+        split_code = isinstance(block, CodeBlock)
         image_evidence = [e for e in block.evidence if e.ref is None]
         if (
             not ((isinstance(block, TextBlock) and block.kind == "body") or split_code)
@@ -3456,7 +3193,6 @@ def adopt_owned_ranges(
             page,
             read_original,
             read_image,
-            layout_version=layout_version,
         )
         if drawn is None:
             return None
@@ -3470,7 +3206,6 @@ def adopt_owned_ranges(
                 lambda tp, text, bounds: _line_origins(
                     tp, text, bounds, printed_lines=False
                 ),
-                strict_pdf=True,
             )
             own = found[0] if found else None
             extracted = "".join(ranges[i][0].text for i in at_order[o])
@@ -3483,32 +3218,31 @@ def adopt_owned_ranges(
         return owned, drawn
 
     drawn_tables = {}
-    if layout_version >= 17:
-        sequence = list(_reading_order(raw, nested=verify_layout))
-        at_order = defaultdict(list)
-        for i, (part, _) in enumerate(ranges):
-            at_order[part.order].append(i)
-        for item in [b for b in blocks if isinstance(b, CodeBlock)]:
-            found = table_listing(item, sequence, at_order)
-            if found is None:
-                continue
-            owned, (display, locations, differences) = found
-            key = item.block_id
-            for i in owned:
-                ranges[i] = (ranges[i][0], key)
-            ranks[key] = min([ranks[key], *(ranges[i][0].rank for i in owned)])
-            drawn_tables[key] = item.model_copy(
-                update={
-                    "text": display,
-                    "evidence": [
-                        *item.evidence,
-                        *(ranges[i][0].evidence() for i in owned),
-                        *locations,
-                    ],
-                }
-            )
-            for reason, evidence in differences:
-                issue(reason, [key], evidence)
+    sequence = list(_reading_order(raw))
+    at_order = defaultdict(list)
+    for i, (part, _) in enumerate(ranges):
+        at_order[part.order].append(i)
+    for item in [b for b in blocks if isinstance(b, CodeBlock)]:
+        found = table_listing(item, sequence, at_order)
+        if found is None:
+            continue
+        owned, (display, locations, differences) = found
+        key = item.block_id
+        for i in owned:
+            ranges[i] = (ranges[i][0], key)
+        ranks[key] = min([ranks[key], *(ranges[i][0].rank for i in owned)])
+        drawn_tables[key] = item.model_copy(
+            update={
+                "text": display,
+                "evidence": [
+                    *item.evidence,
+                    *(ranges[i][0].evidence() for i in owned),
+                    *locations,
+                ],
+            }
+        )
+        for reason, evidence in differences:
+            issue(reason, [key], evidence)
     owners = []
     prev = None
     for part, owner in ranges:
@@ -3516,11 +3250,8 @@ def adopt_owned_ranges(
             if (
                 prev is not None
                 and prev.node is part.node
-                and (
-                    not printed_lines
-                    or _owned_separator(prev, part, code=part.node["label"] == "code")
-                    is not None
-                )
+                and _owned_separator(prev, part, code=part.node["label"] == "code")
+                is not None
                 and prev.end <= part.start
                 and (
                     not (gap := part.node["text"][prev.end : part.start])
@@ -3584,17 +3315,12 @@ def adopt_owned_ranges(
         ):
             return None
         selected = []
-        # From v17 a list group of only proposed rows, and a proposed heading row, keep the run.
-        labels = ("code", "list_item", "section_header")[
-            : 3 if layout_version >= 17 else 2
-        ]
+        # A list group of only proposed rows, and a proposed heading row, keep the run.
+        labels = ("code", "list_item", "section_header")
         grouped = set()
-        for order, (ref, node, container) in enumerate(
-            _reading_order(raw, nested=True)
-        ):
+        for order, (ref, node, container) in enumerate(_reading_order(raw)):
             if (
-                layout_version >= 17
-                and ref.startswith("#/groups/")
+                ref.startswith("#/groups/")
                 and node.get("label") == "list"
                 and node.get("children")
                 and all(c["$ref"] in refs for c in node["children"])
@@ -3666,7 +3392,6 @@ def adopt_owned_ranges(
             page,
             read_original,
             read_image,
-            layout_version=layout_version,
         )
 
     replacements = dict(drawn_tables)
@@ -3682,11 +3407,9 @@ def adopt_owned_ranges(
             continue
         item = targets[key]
         original = _joined(parts) if parts else ""
-        if original == item.text and not (
-            printed_lines and isinstance(item, CodeBlock)
-        ):
+        if original == item.text and not isinstance(item, CodeBlock):
             continue
-        if verify_layout and isinstance(item, CodeBlock):
+        if isinstance(item, CodeBlock):
             if any((e.page, e.ref) in invalid_listing_refs for e in item.evidence):
                 checked_rows = recover_listing(item, parts)
                 if checked_rows is not None:
@@ -3746,18 +3469,12 @@ def adopt_owned_ranges(
             )
             continue
         if (
-            not verify_layout
-            and getattr(item, "kind", None) == "code"
-            and _line_formatting(original, item.text)
-        ):
-            continue
-        if (
             len(parts) == 1
             and isinstance(item, TextBlock)
             and item.kind == "body"
             and (
                 parts[0].node["label"] == "text"
-                or (printed_lines and parts[0].node["label"] == "paragraph")
+                or parts[0].node["label"] == "paragraph"
             )
             and tuple(parts[0].prov["charspan"]) == (parts[0].start, parts[0].end)
             and _supported_space(
@@ -3766,14 +3483,11 @@ def adopt_owned_ranges(
                 parts[0].prov,
                 by_page[parts[0].rank[0]],
                 read_original,
-                verify_layout,
-                printed_lines,
             )
         ):
             continue
         if (
-            layout_version >= 14
-            and len(parts) == 1
+            len(parts) == 1
             and isinstance(item, TextBlock)
             and item.kind == "body"
             and len(item.evidence) == 1
@@ -3819,9 +3533,7 @@ def adopt_owned_ranges(
                 for e in tables
                 for cell in items[e.ref].get("data", {}).get("table_cells", [])
             ]
-            if layout_version >= 15 and any(
-                _occurrences(p.text, cell) for p in parts for cell in cells
-            ):
+            if any(_occurrences(p.text, cell) for p in parts for cell in cells):
                 sole = all(
                     {k for k, _ in selectors[e.page, e.ref]} == {key} for e in tables
                 )
@@ -3830,42 +3542,26 @@ def adopt_owned_ranges(
                         "Cannot isolate extraction range from other block evidence"
                     )
                 continue
-            if verify_layout:
-                # Anchor the complete extracted phrase, allowing a disputed
-                # decimal token, never a prefix of a longer number or word.
-                if printed_lines:
-                    matches = _mixed_phrase_matches(original, item.text)
-                else:
-                    terms = re.split(r"(\d+)", original)
-                    pattern = "".join(
-                        r"\d+" if i % 2 else re.escape(t) for i, t in enumerate(terms)
+            # Anchor the complete extracted phrase, allowing a disputed
+            # decimal token, never a prefix of a longer number or word.
+            matches = _mixed_phrase_matches(original, item.text)
+            if len(matches) == 1:
+                match = matches[0]
+                if match[0] != original:
+                    replacements[key] = item.model_copy(
+                        update={
+                            "text": item.text[: match.start()]
+                            + original
+                            + item.text[match.end() :]
+                        }
                     )
-                    matches = list(
-                        re.finditer(r"(?<!\w)" + pattern + r"(?!\w)", item.text)
+                    issue(
+                        f"Adopted extraction {original!r} rather than correction {match[0]!r}",
+                        [key],
+                        [p.evidence() for p in parts],
                     )
-                if len(matches) == 1:
-                    match = matches[0]
-                    if match[0] != original:
-                        replacements[key] = item.model_copy(
-                            update={
-                                "text": item.text[: match.start()]
-                                + original
-                                + item.text[match.end() :]
-                            }
-                        )
-                        issue(
-                            f"Adopted extraction {original!r} rather than correction {match[0]!r}",
-                            [key],
-                            [p.evidence() for p in parts],
-                        )
-                    continue
-            elif original in item.text:
                 continue
-            located = (
-                _fragment_places(parts, item, by_page, read_original)
-                if layout_version >= 15 and printed_lines
-                else None
-            )
+            located = _fragment_places(parts, item, by_page, read_original)
             if located is not None:
                 text = item.text
                 for part, extracted, match in reversed(located):
@@ -3911,8 +3607,7 @@ def adopt_owned_ranges(
     result = []
     for b in blocks:
         if (
-            printed_lines
-            and isinstance(b, CodeBlock)
+            isinstance(b, CodeBlock)
             and b.block_id in targets
             and b.block_id not in portions
             and b.block_id not in drawn_tables
@@ -3937,7 +3632,7 @@ def adopt_owned_ranges(
                         key == member.target_id
                         or (member.ref and _overlaps(member.ref, part.evidence()))
                     )
-                    and _outside_region(part, by_page, b.region, partial=verify_layout)
+                    and _outside_region(part, by_page, b.region, partial=True)
                     for part, key in owners
                 ):
                     member = member.model_copy(
@@ -3960,13 +3655,9 @@ def adopt_owned_ranges(
                 b.evidence,
             )
             b = b.model_copy(update={"target_id": None})
-        if (
-            printed_lines
-            and isinstance(b, CalloutBlock)
-            and (
-                b.code_id in replacements
-                or not isinstance(targets.get(b.code_id), CodeBlock)
-            )
+        if isinstance(b, CalloutBlock) and (
+            b.code_id in replacements
+            or not isinstance(targets.get(b.code_id), CodeBlock)
         ):
             proposed = proposals[b.code_id].splitlines()
             adopted = (
@@ -3978,7 +3669,7 @@ def adopt_owned_ranges(
                 before = [i for i, line in enumerate(proposed, 1) if line.strip()]
                 after = [i for i, line in enumerate(adopted, 1) if line.strip()]
                 # Never infer a shift by stripping each line of a fallback extraction.
-                shift = verified_margins.get(b.code_id) if layout_version >= 9 else 0
+                shift = verified_margins.get(b.code_id)
                 if all(n in before for n in b.lines) and (
                     b.code_id in drawn_codes
                     or (
@@ -4016,10 +3707,9 @@ def adopt_owned_ranges(
         ranks.setdefault(b.block_id, previous.get(page, (page, -1, 0)))
         previous[page] = ranks[b.block_id]
     result.sort(key=lambda b: ranks[b.block_id])
-    if layout_version >= 16:
-        result = _enclose_sidebars(
-            result, answer.owned_pages, items, by_page, read_original
-        )
+    result = _enclose_sidebars(
+        result, answer.owned_pages, items, by_page, read_original
+    )
     return answer.model_copy(
         update={"blocks": result, "uncertainties": issues, "exclusions": exclusions}
     )

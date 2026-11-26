@@ -90,7 +90,6 @@ def assemble_pdf_source(
     drawn_proposal_order = {}
     selector_evidence = {}
     sidebars = {}
-    schema_versions = {}
     for digest, chunk, answer in chunks:
         # Adoption preserves the validated local ID of a linked code proposal;
         # newly allocated/split fragments never inherit continuations.
@@ -101,8 +100,7 @@ def assemble_pdf_source(
         body_selectors = {
             b.block_id: b.evidence
             for b in answer.blocks
-            if chunk.schema_version >= 14
-            and b.kind == "body"
+            if b.kind == "body"
             and len(b.evidence) == 1
             and b.evidence[0].ref is not None
         }
@@ -117,8 +115,7 @@ def assemble_pdf_source(
         for block in chunk.blocks:
             key = ids[block.block_id]
             originals[key] = block
-            schema_versions[key] = chunk.schema_version
-            if chunk.schema_version >= 16 and getattr(block, "enclosure", None):
+            if getattr(block, "enclosure", None):
                 sidebars[key] = (digest, block.enclosure)
             proposal_evidence = body_selectors.get(block.block_id)
             selector_evidence[key] = (
@@ -130,10 +127,8 @@ def assemble_pdf_source(
             if block.kind == "code" and (block.incoming or block.outgoing):
                 rank, proposal = proposed[block.block_id]
                 linked_proposals[key] = proposal
-                if chunk.schema_version >= 12:
-                    code_proposals[key] = proposal
-                if chunk.schema_version >= 13:
-                    drawn_proposal_order[key] = rank
+                code_proposals[key] = proposal
+                drawn_proposal_order[key] = rank
             block_drafts[key] = draft_sha256
             structure = block.model_dump(
                 mode="json", exclude={"block_id", "text", "evidence"}
@@ -314,7 +309,7 @@ def assemble_pdf_source(
         sequence = {
             ref: i
             for i, (ref, _node, _container) in enumerate(
-                _reading_order(raw_docs[block_drafts[other]], nested=True)
+                _reading_order(raw_docs[block_drafts[other]])
             )
         }
         rest_ranges = [e for e in originals[other].evidence if e not in ranges]
@@ -369,13 +364,12 @@ def assemble_pdf_source(
             ):
                 outgoing = points_to(proposal.outgoing, left, right)
                 incoming = points_to(partner.incoming, right, left)
-                both = schema_versions[left] >= 18 and schema_versions[right] >= 18
                 # One direction only; the reverse link must match both evidences.
-                if both and incoming and not outgoing:
+                if incoming and not outgoing:
                     outgoing = adopted_edge_target(
                         proposal.outgoing, left, right, first_line=True
                     )
-                elif both and outgoing and not incoming:
+                elif outgoing and not incoming:
                     incoming = adopted_edge_target(
                         partner.incoming, right, left, first_line=False
                     )

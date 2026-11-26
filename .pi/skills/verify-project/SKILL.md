@@ -94,29 +94,7 @@ Mapの同節と[送信前準備・単一trial・人工直接確認](../../../doc
 
 ## 初回PDFの所有本文（#97）
 
-[Map「所有本文の採用・保存再読」](references/feature-map.md#所有本文の採用保存再読97)の二つの入口を別の新規private親で使う。指定2件の保存回答の閉じた再生と、人工CLI run／fresh resume（実Node/faux/no-network）は別の検査。コード3対照は論理改行の復元ではなく紙面の表示を検証する。固定期待・元画像・描画位置と英語fenceで各非空行全文と相対字下げを照合する。本文の語間はbounded hitでなく明示SPACEまたは別描画の実字送りと境界余白を調べる。差が追加空行数に限られる場合も、前後の位置QAを確認し、完全一致には数えない。書籍・正解を外部送信しない。旧標本・trial・固定期待は変更せず、Rootの独立画像確認と正式検査を代替しない。
-
-## 紙面のコード欄・表を英語出力で採点する（#98）
-
-[Map「コード断片・表の閉じた再生」](references/feature-map.md#コード断片表の閉じた再生98)を選ぶ。承認された4 chunkの保存回答だけで新規採用し、別processの英語fence・caption／本文のunit・表の各セル・QAを採点する。固定見本は出力後だけ。行頭と追加空行は別判定。書籍資料・失敗ログを表示／送信せず、無送信の人工CLI run／fresh resumeは#97の別親で実施する。この手順はRootの原画像直接照合・正式チェック・Reviewを代用しない。
-
-## コードの共有出典と独立した注記（#108）
-
-[Mapの#108節](references/feature-map.md#コードの共有出典と独立した注記108)を使う。所有181–185・186–190だけを閉じたpipeで新規保存し、別processの実units・英語fence・位置QAを原画像と照合する。#99の接続・著者の字下げの評価ではない。人工CLIは#97節を別の新規親で実行する。
-
-## 所有コード全文の保存とページ間接続（#99）
-
-[Mapの#99節](references/feature-map.md#所有コード全文の保存とページ間接続99)を使う。新規6 chunkを `--connections` の閉じたpipeで保存し、別processの再読・英語出力の両方を行別に採点する。旧方式の成功や接続件数で代用しない。生回答・原画像・英語を表示／送信しない。人工CLIは#97節を別親で実施する。
-
-## 本文記号・ページ間接続と図（#100）
-
-[Mapの#100節](references/feature-map.md#本文記号と接続図の別採点100)を使う。所有開始61・121・211だけを未編集の閉じたpipeで新規保存し、別processで採用chunk・組立・実unit・英語・実cropを取得する。記号の位置、接続／拒否、図の所属と全領域は出力後に別々に採点し、件数で代用しない。採点器だけの検査では既存captureのprivateコピーを使い、新規 `scoring/` 内の結果を再読する。書籍再生の合格とは区別する。人工CLIは#97節の記号対照つき通常run→fresh resumeを別親で実行する。Rootの独立照合と正式チェックは別である。
-
-## 初回PDFの局所所有と全書籍の接続差分（#101）
-
-[Mapの#101節](references/feature-map.md#局所所有と全書籍の接続差分101)だけを選ぶ。`local` は題名と多出典コードの実出力、`all` は同じ製品版の全70件を対象とする別の検査。失敗分や未試行分を除外した比較はしない。実AI／認証・追加retry・外部trial markerへのアクセスなし。原資料・英語・画像・詳細エラーは非表示。範囲別の旧版手順の成功を今回に足さず、正式検査・Rootの独立照合・Reviewと区別する。第4版の全70件の各1回試行・拒否記録と、第2版製品との56件の採用差分（`adoption-diff`）は同節の「第3版・第4版」を使う。
-
-第5版の既知の未解決2組（91→92は[#109](https://github.com/minorunakamura/doc-translate/issues/109)、212→213は[#110](https://github.com/minorunakamura/doc-translate/issues/110)）は、73→74・61→62と同じく成功に数えず別欄に記録する。判定条件は同節の「第5版」を使い、ほかの組へ広げない。
+[Map「所有本文の採用・保存再読」](references/feature-map.md#所有本文の採用保存再読97)の人工CLI run／fresh resume（実Node/faux/no-network）を新規private親で使う。#97〜#111の書籍再生手順は#117の旧ルール再現の削除で成立しなくなり削除した。Rootの独立確認と正式検査を代替しない。
 
 ## 環境変数の取り違え（Issue #113）
 
@@ -133,3 +111,7 @@ PDF読み取り（Docling変換・ページ画像化）の途中でSIGINT／SIGT
 ## 入れ子リストの順序と旧workspaceの停止（Issue #103）
 
 EPUBの`li`で子リストの後に続く親の文の順序、変更前の版で作った該当workspaceの案内付き停止（exit 2・送信0件）、該当リストなしのEPUB／PDFの不変を確認するときは[Mapの#103節](references/feature-map.md#入れ子リストの順序と旧workspaceの停止issue-103)を選ぶ。`scripts/nested_list_order.py`で実CLI＋実Node fauxを動かし、変更前コードは所有tempの`git archive`から読み込む。所有tempだけcleanup後に`work/test-verification-nested-list-<unique>/`の証拠を再読する。再利用は`/skill:verify-project nested list`。
+
+## 旧ルールPDF workspaceの停止（Issue #117）
+
+旧PDF補正ルールで保存したworkspaceの`resume`が送信前にexit 2で案内付きで止まり、`render`／`status`は動き、現行ルールのworkspaceは送信0件で再利用されることを確認するときは[Mapの#117小節](references/feature-map.md#旧ルールworkspaceの停止issue-117)と`scripts/pdf_old_rule_stop.py`を使う。

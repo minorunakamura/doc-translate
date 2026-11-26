@@ -504,6 +504,22 @@ TTYの直接視認は上の共通capture／Chrome手順を再利用し、`dark/r
 保存前成功ゼロ・通知時のchunk／run実体・固定分母と翻訳split分離・transport retryとcoverage repairのrequest終端は`tests/test_run.py -k pdf_progress`、`test_pdf_correction.py::test_correct_pdf_preserves_transport_attempts_without_cumulative_usage`、`test_cli_output.py::test_pdf_progress_split_keeps_owned_denominator_and_translation_state_separate`で別途照合します。取消受付／child終了は既存inference／resumeのEvent・signal・OS replace境界とPDF補正のrecord-save／cancelを再利用し、retry待機／drainを短縮しません。正式チェックとRoot／Reviewer判断はこの入口だけで代替しません。
 
 
+### 旧ルールworkspaceの停止（Issue #117）
+
+上の節と同じ`scripts/pdf_progress_fixture.py`（公開Docling converter／page backendだけを自作9ページfixtureへ置換）→実Node `ai/tests/run-process.mjs <credentials> <settings.json> <requests.jsonl>`→network拒否付き公開faux（`--provider faux --model text --thinking off --correction-model vision`）を使う。runはPATHあり、他の操作は空PATHのchild。変更前コードは所有TemporaryDirectoryへ`git archive f9afb23 src`（`--base`で変更可）を展開し、childの`PYTHONPATH`先頭に置く。helperは`scripts/pdf_old_rule_stop.py`だけ。repository rootで非並行・foregroundに実行する。
+
+```sh
+EVIDENCE=$(mktemp -d "$PWD/work/test-verification-issue117-XXXXXX")
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 .venv/bin/python .pi/skills/verify-project/scripts/pdf_old_rule_stop.py --evidence "$EVIDENCE"
+```
+
+期待（不一致はassertで非0終了）：
+
+- (a) 現行ルール互換：変更前コードで`run own.pdf --pages 2-7 … --json`したworkspaceに、現行の`resume --json`はexit 0・completed・送信0件（requests.jsonl不変）。`renders/`と`render.json`以外の保存byteは不変（`run.json`も不変を観測したので同じ検査に含める）。現行コードで同条件の新規runを別workspaceで行うと、chunkは`draft_sha256`と`run`以外が一致する。chunkのbyteは一致しない：draftが絶対の`--artifacts-path`・model file pathと、hash seedで順の変わる`supported_engines`を記録し、そのdigestがattempt・chunkに入るため。draftはそれらを除いて一致することもassertする。
+- (b) 旧ルール停止：現行コードのworkspaceのコピーを`tests/test_run.py::test_resume_old_rule_pdf_workspace_stops_before_send_and_render_status_work`と同じく(schema 17, `drawn-table-listing-v16`)と(schema 1, rule欠落)に書き換え、attempt・chunk・`run.json`の`chunk_sha256s`を再hashする。各々で`resume --json`はexit 2、stderrに`doc-translate: error: このworkspaceのPDF補正は現在と異なるルールで保存されています。…`、`Traceback`／`validation error`なし、stdout空、送信0件（起動されないhelperを指定）、全fileのbyte・mtime不変。続く`render`はexit 0・completed、`status`はexit 0、`status --verify --json`はexit 0・completed・`render_current`。
+
+証拠：`revision.txt/dirty.txt/scope.diff/imports.json/observations.json/cleanup.txt`と各操作の`.stdout/.stderr`。所有TemporaryDirectory（旧src・fixture・workspace・人工credential）だけを回収し、childは`subprocess.run`で回収、cleanup後に全証拠を再読する。実Docling／OCR・実provider・実書籍は対象外。
+
 ## 明示範囲reviewの共通表示（Issue #52）
 
 入口は公開`review DIR --units unit-2`／PDF `--pages 3-3`。既存の`resume_process.py`は任意CLI引数を受け付け、`pdf_progress_fixture.py`はrun時だけ人工Docling境界を設定しreviewはそのままmainへ渡すため、追加helperは不要です。実Python→実Node helper→network拒否付きfauxと自作入力のみを使います。既存`.venv`（PDF extra付き）とNode／build済みhelperが必要で、無断install／sync／実provider／実認証／model取得はしません。
@@ -1230,22 +1246,14 @@ repository rootから既存Pythonで起動する入口・正確なshell・入力
 
 ## 所有本文の採用・保存再読（#97）
 
-標本準備・保存記録と詳細検査の制約を維持する。以下は**この2 chunkの無送信再生だけ**（実送信・認証・通常runではない）。新規0700親で、既存workspaceの保存回答とprojection・PNG hash・座標・所有範囲を照合する局所pipeを使う。旧attemptやchunkを新workspaceへ入れない。別processで再読・組立・units／英語出力後にだけ固定goldと比較。本文・画像・エラー値を出さず、作ったworkspace/childだけ回収し、証拠を再読する。
+#97〜#111 の書籍再生手順（`pdf_adoption_replay.py` と各 `pdf_*_comparison.py`）は、#117 で旧ルール再現を削除したため成立しなくなり削除した。現行ルール（`adopted-edge-target-v17`／schema 18）の保証は focused テストと下の人工実操作。
+
+人工実操作：工程・所有ページ進捗のCLI fixture（既存PDF extra/実Node/faux/no-networkのみ）を新規0700親で使う。自作PDF＋人工converterの所有本文をあえて答えない。未所有の本文も置き、所有根拠と偶然のページcoverageを区別する。`CHECK_BODY_SYMBOL=1` では、原本に根拠のない記号挿入案を渡し、翻訳requestが抽出文字のまま・QAが両隣を指すことも確認する。実モデル・OCRの品質保証ではない。
 
 ```sh
 set -eu
 umask 077
 export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-E=$(mktemp -d "$PWD/work/adoption-book-XXXXXXXX")
-git rev-parse HEAD > "$E/revision"; git status --short -- . ':!work' > "$E/dirty"
-python .pi/skills/verify-project/scripts/pdf_adoption_replay.py "$E/proof" > "$E/result.json"
-```
-
-期待：50項目の各所有spanが正しい役割で原順に1回。翻訳対象は実unit、codeは英語renderに残る。9対照は個別に構造／出典／順／回数が一致し、76の行末hyphenはDocling＋位置QA、78は同一行の前後文脈と`local_differences[].word_boundary_drawing`の明示SPACEまたは別描画・同じfont/変換・通常字送り後の余白と局所揺れを確認。bounded hitだけでは不可。コード3件は`control_evidence[].lines`で固定行と出力行、字下げ・出典span・原本での行頭・字送り・行内の全文と英語fenceを比較する。著者の論理改行は判定しない。追加空行数は非空行の一致と別判定。非空行の不一致は不可。固定と追加空行数だけが異なる場合は、前後両方の位置QAも照合し、`blank_count_uncertain`を完全一致と別に数える。間隔から空行数を決めない。`proof/{inputs,observations,hashes}.json`で元資料hash/mtimeとcleanup後の結果を確認。PDF画像・各対照をRootが直接確認することは省略しない。外部trial markerにはアクセスしない。
-
-別の人工実操作：上記export・umaskの後、工程・所有ページ進捗のCLI fixture（既存PDF extra/実Node/faux/no-networkのみ）を使う。自作PDF＋人工converterの所有本文をあえて答えない。未所有の本文も置き、所有根拠と偶然のページcoverageを区別する。実モデル・OCRの品質保証ではない。
-
-```sh
 E=$(mktemp -d "$PWD/work/adoption-cli-XXXXXXXX"); export E
 git rev-parse HEAD >"$E/revision"; git status --short >"$E/dirty"
 python - <<'PY' >"$E/cli.log" 2>&1 || { echo $? >"$E/cli.exit"; exit 1; }
@@ -1296,247 +1304,7 @@ PY
 echo 0 >"$E/cli.exit"
 ```
 
-版・dirty・command/exitと未確認事項は各親に残す。上記に加え、異なるhashの原本・同一ref/座標での局所語区切りの直列/並列比較は`tests/test_pdf_correction.py -k concurrent_loads`、旧byteは`-k recorded_adoption_rule`を開発ガイドのsignal wrapperで別途検査する。
-
-## コード断片・表の閉じた再生（#98）
-
-この単独手順の適用版は `48da115`（schema 11）。現作業は下の #99 節を使い、この旧コマンドは追加実行しない。
-
-[第3版Plan](../../../../docs/plans/pdf-initial-source-preservation-98-r3.md)で許可した4 chunk限定。標本準備・保存記録・直前の#97節と同じoffline前提。書籍のrun／resume、旧成功の移行、実AI・追加retry・認証・外部trial markerへのアクセスはしない。repository rootで次を実行する。入力・画像・英語・QA・stderrはprivateでのみ扱い、`observations.json`を端末にdumpしない。
-
-```sh
-set -eu
-umask 077
-export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-E=$(mktemp -d "$PWD/work/listing-book-XXXXXXXX"); export E
-git rev-parse HEAD > "$E/revision"; git status --short > "$E/dirty"
-printf '%s\n' 'python .pi/skills/verify-project/scripts/pdf_adoption_replay.py --listings "$E/proof"' > "$E/command"
-rc=0; python .pi/skills/verify-project/scripts/pdf_adoption_replay.py --listings "$E/proof" > "$E/result" 2> "$E/stderr" || rc=$?
-printf '%s\n' "$rc" > "$E/exit"; test "$rc" = 0
-python - <<'PY'
-import hashlib,json,os
-from collections import Counter
-from pathlib import Path
-e=Path(os.environ['E']); p=e/'proof'; rd=lambda f: json.loads(f.read_bytes()); sha=lambda f:hashlib.sha256(f.read_bytes()).hexdigest()
-assert not list(p.glob('isolated-*'))
-for name,digest in rd(p/'hashes.json').items(): assert sha(p/name)==digest
-for name,(digest,mtime) in rd(p/'inputs.json').items():
-    f=Path(name); assert sha(f)==digest and f.stat().st_mtime_ns==mtime
-obs=rd(p/'observations.json'); assert [c['schema_version'] for c in obs['chunks']]==[11]*4
-s=obs['score']; rows=s['lines']; assert len(s['cells'])==12
-report={k:{'lines':len(v),'output_minus_fixed':dict(Counter(r['fixed_delta'] for r in v)), 'located_margin_rows':sum('margin_qa' in r for r in v)} for k,v in rows.items()}
-report['116']['located_extra_blank_boundaries']=sum(r['located_blank_count_uncertainty'] for r in rows['116'])
-(e/'counts.json').write_text(json.dumps(report)); assert rd(e/'counts.json')==json.loads(json.dumps(report))
-PY
-```
-
-- `--listings`は所有111–115、116–120、121–125、346を別々に、各requestの元の隣接参照・projection・画像hashと順・未編集の最終回答で再生する。英語出力後の比較は `../scripts/pdf_listing_comparison.py`。失敗時は今回の親のexitとprivateエラー位置を確認し、成功に数えない。
-- `score.lines`の115の4行、116の29行を `root-survey/seed-111/page-{115,116}.png` の同じ行に上から対応付ける。`original_xy` は左下原点pt、`pitch` は実字送り。原画像と出力anchorの英語fence内の全文（内部空白・記号を含む）、順、回数、表示列を行別に検査する。115のcaptionはコード外の元位置に1回だけ。`score.paragraphs`の前後本文・captionの実unitを追い、コード自体にunitがないことを確認する。
-- 116では第1非空行が表示2、第3非空行が表示0で直後本文の行頭に揃う。全29行の紙面との一致、`fixed_delta`（出力−固定）が各行−2、著者の絶対字下げ未確認を別記。共通余白は`margin_qa`全行のref/span・行頭とQAの提案／採用差・理由を確認する。追加空行は別に、各`expected_newlines`（案）／`actual_newlines`・`fixed_newlines`と`qa`前後両行のref/span・位置を照合。紙面合格を見本の8空行や41行の完全復元と呼ばない。
-- 119–121は別系列。`lines`の各行を当該pageのfragment→source→出力anchorのfenceで照合し、各行の`fixed_delta`と残差に対する位置QAを報告する。121の既知21行を他の行と分け、120等の追加差も省かない。116で許した差を流用せず、修復・跨ページ接続成功とはしない。
-- `score.cells`は346の行・列ごとのraw ref/span、原本bbox、`seed-346/page-346.png`の左上原点pixel矩形、unit ID、全文hash。原画像の全12矩形の読みをそれぞれ当該raw範囲・tokenを展開した実unit・英語HTML表の同じ行列に突き合わせる（URL／数字／記号、同一行の左右・上下順、欠落・重複も確認）。件数・黒画素・hashだけで画像を読んだとはしない。
-- 別の新規0700親で直前の**#97「別の人工実操作」**をそのまま行う。通常CLIの実Node/faux/no-networkで実翻訳入力、fresh resumeの成功済み再送0・immutable不変を確認する。各親のcommand/exit・revision/dirty・観測・未確認を保持し、所有child／一時Workspaceだけを回収して証拠全fileを再読する。正式検査・Root別親での原画像直接確認・独立Reviewは別。
-
-## コードの共有出典と独立した注記（#108）
-
-この単独手順の適用版は `48da115`（schema 11）。現作業は下の #99 節を使い、この旧コマンドは追加実行しない。
-
-#97／#98と同じprivate条件。repo rootから既存PDF環境で次をforeground実行する。`--roles`の入力は所有開始181・186の2件だけ。元workspaceを復旧・移行せず、未編集回答の全体を1回だけ各正規pipeへ渡す。生の英語・回答・画像・エラー値を表示／送信しない。
-
-```sh
-set -eu
-umask 077
-export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-E=$(mktemp -d "$PWD/work/test-verification-108-book-XXXXXXXX"); export E
-git rev-parse HEAD > "$E/revision"; git status --short > "$E/dirty"
-printf '%s\n' 'python .pi/skills/verify-project/scripts/pdf_adoption_replay.py --roles "$E/proof"' > "$E/command"
-rc=0; python .pi/skills/verify-project/scripts/pdf_adoption_replay.py --roles "$E/proof" > "$E/result" 2> "$E/stderr" || rc=$?
-printf '%s\n' "$rc" > "$E/exit"; test "$rc" = 0
-python - <<'PY'
-import hashlib,json,os
-from pathlib import Path
-p=Path(os.environ['E'])/'proof'; rd=lambda f:json.loads(f.read_bytes()); sha=lambda f:hashlib.sha256(f.read_bytes()).hexdigest()
-assert not list(p.glob('isolated-*'))
-for k,v in rd(p/'hashes.json').items():assert sha(p/k)==v
-for k,(v,m) in rd(p/'inputs.json').items():assert sha(Path(k))==v and Path(k).stat().st_mtime_ns==m
-s=rd(p/'observations.json'); assert [(x['page'],x['display']) for x in s['shared']]==[(181,'raw-with-located-qa'),(182,'raw-with-located-qa'),(183,'literal'),(185,'printed'),(186,'raw-with-located-qa'),(187,'printed')]
-assert len(s['printed_evidence'])==4 and len(s['blank_boundaries'])==4
-PY
-```
-
-`pdf_role_comparison.py`はfresh load→assemble→実units・英語出力後にだけ固定資料を使う。seed-181画像の全画素を検証原本の同じページ・scaleの描画と照合し、共有bboxの描画行全文を、各役割の出典範囲・caption target・順序と実units／英語anchorの出力に対応付ける。181/182/186のコードは各charspanの抽出全文（空白・改行込み）と、それを採るQAの理由・全行の位置・対象anchorを照合。185脚注、187captionと各コード、183本文と周囲、190のfilenameの元警告・位置を確認する。共有箇所の6ページでは、固定資料の元blockをbindingで英語anchorに対応させ、相対順が変わっていないことを確認する。間に新しく回復したblockがあっても除去しない。`printed_evidence`で185/186・187/188の対象断片の全表示行・字下げ・区切りを原本の字送りと比較し、同じ2回答の185/188にある追加空行は`blank_boundaries`で各境界前後の位置と実QAを照合する。2組の固定コードとの照合は断片の順序と可読内容についてであり、接続・字下げの完全復元とはしない。`observations.json`の`shared`と`blocks`は元位置と出力の対応、`inputs.json`は元資料のhashとmtime。
-
-別の新規0700親で#97「別の人工実操作」を実行し、実翻訳入力・位置QA、fresh resume送信0・旧immutable不変を記録する。各親へrevision/dirty・command/exit・期待/観測/未達を記録し、所有一時workspace・childのみ回収後、証拠を再読。Rootの別親での独立照合・正式検査は別である。
-
-## 所有コード全文の保存とページ間接続（#99）
-
-適用版は `074e642`（schema 13）。#100の3 chunk検証には次節を使う。
-
-[第3版Plan](../../../../docs/plans/pdf-initial-source-preservation-99-r3.md)の6 chunkだけを扱う。上記#97/#98/#108の原資料・固定見本・閉じたpipe・原本照合を再利用する。過去版単独の `--listings`／`--roles` の期待を新方式に読み替えない。原資料はread-only。既存PDF環境、repository rootで実行する。出力内容・比較エラーはprivateに保存し、画面には出さない。
-
-```sh
-set -eu
-umask 077
-export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-E=$(mktemp -d "$PWD/work/connections-XXXXXXXX"); export E
-git rev-parse HEAD >"$E/revision"; git status --short >"$E/dirty"
-python .pi/skills/verify-project/scripts/pdf_adoption_replay.py --connections "$E/proof" >"$E/replay.log" 2>"$E/replay.err" || { echo $? >"$E/replay.exit"; exit 1; }; echo 0 >"$E/replay.exit"
-PYTHONPATH="$PWD/.pi/skills/verify-project/scripts" python - <<'PY' >"$E/score.log" 2>"$E/score.err" || { echo $? >"$E/score.exit"; exit 1; }
-import json, os, sys
-from pathlib import Path
-from pdf_adoption_replay import deny_network
-sys.addaudithook(deny_network)
-from pdf_connection_comparison import score
-e = Path(os.environ['E']); p=e/'proof'; assert not list(p.glob('isolated-*'))
-expected = json.dumps(score(p)); f=e/'score.json'; f.write_text(expected); assert json.loads(f.read_bytes()) == json.loads(expected)
-PY
-echo 0 >"$E/score.exit"
-```
-
-所有開始71・111・116・121・181・186を未編集回答から同じschema 13で保存する。`proof/inputs.json`は旧資料のhash/mtime、`observations.json`はfresh load→公開assemble→実units／英語の記録。固定期待はその後の独立採点にだけ使う。`score.json`の`listings.lines`・`roles.printed_evidence`で実際の描画行・採用した行・位置・行内space・区切りを照合。特に118は16＋1非空行と有効な末尾を各1回保存し、無効refの行には擬似spanを付けない。118の絶対字下げQAは出力anchorと17行それぞれのref・span・行原点、空行QAは境界の前後それぞれの行原点で区別して採点する。`connections.series` は5必須系列と追加系列のfragments・locations→英語fence、周囲のunitと出力順の照合。字下げ・追加空行の残差は `indent_delta`／`blank_delta`、未証明の位置はQA。独立脚注・caption target・190の警告は`roles`、73→74の分離・出典・失敗checkは`connections.refused`を見る。6回答にcalloutがなければ、行移動は既存の公開人工回帰で別に確認する。
-
-人工CLI run→fresh resumeは別の新規0700親で#97の実操作を使う。旧方式を移行・再送せず、方式に応じて保持する試験は `tests/test_pdf_correction.py` の保存再読・既知／未知orphan、接続の人工拒否例とcalloutは `tests/test_pdf_source.py`。旧成果を新しい版の合格として数えない。command/exit・未達と残差を保存し、自作一時物だけcleanupして証拠を再読する。Rootの直接操作・原画像確認・正式check・独立reviewは別。
-
-## 本文記号と接続・図の別採点（#100）
-
-[#100 Plan](../../../../docs/plans/pdf-initial-source-preservation-100.md)の3範囲のみ。#99と同じread-only原資料・private条件で、`--bodies` は所有開始61・121・211の検証済み回答をそれぞれ一度だけ独立したpipeで渡す。旧attempt/chunk・採点用資料を新しいworkspaceへ入れない。既存PDF環境、repository rootからforegroundで実行する。書籍の本文・画像・回答・エラーやscore JSONを画面に出さない。
-
-```sh
-set -eu
-umask 077
-export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-E=$(mktemp -d "$PWD/work/body-figures-XXXXXXXX")
-git rev-parse HEAD >"$E/revision"; git status --short >"$E/dirty"
-S=.pi/skills/verify-project/scripts
-printf '%s\n' "python $S/pdf_adoption_replay.py --bodies $E/proof" >"$E/replay.command"
-python "$S/pdf_adoption_replay.py" --bodies "$E/proof" >"$E/replay.log" 2>"$E/replay.err" || { echo $? >"$E/replay.exit"; exit 1; }; echo 0 >"$E/replay.exit"
-printf '%s\n' "python $S/pdf_body_comparison.py $E/proof" >"$E/score.command"
-python "$S/pdf_body_comparison.py" "$E/proof" >"$E/score.log" 2>"$E/score.err" || { echo $? >"$E/score.exit"; exit 1; }; echo 0 >"$E/score.exit"
-test -s "$E/scoring/score.json" && test ! -s "$E/scoring/error.log"
-```
-
-`proof/observations.json` は別processの公開load→assemble→実units→render。採点器は同じ親に未作成の `scoring/` を排他的に作り、詳細と例外はその中だけに保存する。`-O` は不可。採点器のみの再検査では既存 `proof/` を別の新規0700親 `$E` にコピーし、再生せず上記 `score.command` 以降を実行する（製品の再生合格ではない）。`scoring/score.json` の `cases` と原画像を次の順で直接照合する。
-
-- rawと補正案の左右別々のpage/ref/span → schema 14の新規保存・再読 → sourceの最初の位置と2 fragments/locations → 保護tokenの順・復号実unit → `english.md` の実anchor区間。64→65は3置換、123→124は1挿入、213→214は無変更。固定全文が各1回。差ごとの `witness` で原本描画位置を確認する。61→62は独立した脚注・見出し・本文3件を越えず、両端の位置QAと失敗checkが必要。
-- 図は旧提案中の2断片の間、新規保存では右断片の後。原画像と出力の前後本文、注記・captionの対象、非対象blockの相対順を照合する。図のref/member・元ページ・領域、英語の実img先 `proof/assets/`、内部文字が本文として再出力されていないことを確認。特に214は枠・内部の全内容を含む切り抜きを比較する。これらの3図は独立した白地の帯にあり、ページの同じ高さで左右や帯の上下へ描画が漏れていないことも調べる。出力後のPNG全画素照合を人工unitや接続件数で代用しない。
-- 別の新規0700親で `export CHECK_BODY_SYMBOL=1` として#97節の「別の人工実操作」を実行する。既存の省略対照に加えて、原本に根拠のない記号挿入案を渡し、翻訳requestが抽出文字のまま、QAが両隣を指し、fresh resumeで追加送信0・旧immutableのhash/mtime不変であることを確認する。終了後 `unset CHECK_BODY_SYMBOL`。実AI・実認証・追加retry・全冊処理・修復はしない。
-
-各親にcommand/exit・revision/dirty・期待と実測・残差を残す。`isolated-*`／人工一時workspace・childの回収後、`inputs.json` の元資料のhash/mtime、`proof/hashes.json` の保存物・crop、および `scoring/score.json` とCLI結果を再読する。原資料や既存の検証親を削除せず、失敗や未確認を件数による成功に読み替えない。Rootは別の新規親で最終差分を独立に直接確認する。
-
-## 局所所有と全書籍の接続差分（#101）
-
-[第2版Planと継承した統合条件](../../../../docs/plans/pdf-initial-source-preservation-101-r2.md)専用。対象版は `drawn-caption-listing-v14`／schema 15。`local` と `all` は**別の新規0700親**で実行する。旧#98/#108/#99/#100の限定assertを現行版向けに変更しない。repository root、既存PDF環境、書籍は指定workspaceの原本・draft・画像・記録を読取専用。外部trial markerには読取りも含め触れず、実AI・実認証・retry・OCR・installをしない。
-
-```sh
-set -eu; umask 077
-export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-mode=local  # 全70件の場合は all。各回、この行以降を新規親で実行
-E=$(mktemp -d "$PWD/work/preservation-$mode-XXXXXXXX")
-git rev-parse HEAD >"$E/revision"; git status --short >"$E/dirty"; git diff >"$E/tested.diff"
-S=.pi/skills/verify-project/scripts/pdf_preservation_comparison.py
-printf '%s\n' "python $S $mode $E/proof" >"$E/command"
-python "$S" "$mode" "$E/proof" >"$E/stdout" 2>"$E/stderr" && rc=0 || rc=$?
-printf '%s\n' "$rc" >"$E/exit"
-test -s "$E/proof/inputs.json" && test -s "$E/proof/population-status.json"
-test -z "$(find "$E/proof" -maxdepth 1 -name 'isolated-*' -print)"
-test "$rc" = 0
-```
-
-`population-status.json` は固定surveyのinventoryとpopulation＋8つの対応表に対する旧chunk別の所有範囲／成功・失敗・未試行。成功欄の新digestは今回の閉じたpipeから新規採用したものだけ。保存回答は編集せず現行の送信内容と照合し、別processで公開load→assemble→実units・英語・QA・mapを取得する。失敗なら再送せず `phase.json`・private stderr・台帳・元資料指紋を確認。部分集合のrenderや接続比較は行わない。失敗／cleanup未成立は未達。製品修正を要すれば停止して再計画とし、成功と未試行を分けて報告する。
-
-`capture.json` は比較前の出力。`observations.json` の `local` で出典3範囲→caption対象・実unit・英語2行・境界の両側QA、81/83不読の位置と前後の英語を追う。紙面はseed-81の画像と照合。`all` の `connections` は母集団全体の旧sourceと新sourceで、fragmentの（元chunk・local ID）の順序対から列挙した追加・消失・相手変更。件数や固定組だけで採点しない。全変更対について両端の元位置と間のblock・役割、原画像、実unitまたは英語anchor、QAを別々に確認し、各判定をprivate根拠とともに記録する。列挙だけでは合格ではない。
-
-全件出力後にのみ、surveyの8対応表と兄弟 `root-final/hashes.json` 経由で固定23期待・欠落50項目・9対照・コード見本を照合する。上の#97／#98／#108／#99／#100節の観測項目を今回の `capture.json`（全chunk、全fragments、実出力・crop）へ適用し、固定schemaの旧コマンドは実行しない。115/116は4＋29非空行の全文・行内空白・各行−2桁、実outputの共通余白QA・各追加空行両側QAを位置別に比較。5コード系列・3本文接続と4記号・独立図、拒否2境界と21行の残差、190/211/321および346の全12セルまで、Plan表の各条件について未比較・不一致を残す。原画像と本出力が説明できない場合は合格にしない。書籍run／訳文作成はしない。人工CLIと互換再読は別親で#97/#100節・開発ガイドのsignal wrapperを使う。
-
-成功／失敗を問わず今回のTemporaryDirectoryと同期childだけを回収。`inputs.json` のhash/mtimeと、成功時 `hashes.json` の全private出力をcleanup後に再読する。各親にcommand／exit、対象版・観測／未達を保持し、詳細stderr・図・本文を端末やGitに出さない。Rootは別の新規親で原画像・実出力を独立照合する。
-
-### 第3版・第4版：全70件の各1回試行と56件の採用差分
-
-[第4版Plan](../../../../docs/plans/pdf-initial-source-preservation-101-r4.md)（第3版・第2版を継承）。上の `all` は全70件を**各1回**試行し、`adopt_owned_ranges` による採用拒否だけをchunk別の結果として `population-status.json` に `saved`／`rejected`／`not attempted` で残す。拒否の詳細は `proof/rejections/<所有開始ページ>.txt`（private）。他の例外は従来どおり即停止。拒否が1件でもあれば `rejected chunks` のassertで比較に進まず非0終了する（旧assertは緩めない）。保存できたchunkは `proof/chunks/<旧digest>.json` に新digestのbyteで残す。合格は exit 0・`saved` 70・`rejected` 0・`not attempted` 0。
-
-56件の採用差分は、第2版の製品（`work/issue101-r3-baseline-src-milqOIuf/src` の複製。private）で同じ `all` を**別の新規0700親**で実行し（14件拒否で非0終了するのは想定どおり）、その後に別の新規親で両方の `proof` を比べる。
-
-```sh
-# 第2版製品での再生（上の shell の python 行だけを次に置き換える）
-PYTHONPATH="$BASELINE_SRC" python "$S" all "$E/proof" >"$E/stdout" 2>"$E/stderr" && rc=0 || rc=$?
-# 採用差分（別の新規0700親 D、stdout/stderr は D 直下のprivateファイル）
-PROOFS="$BASELINE_PARENT/proof:$CURRENT_PARENT/proof" python "$S" adoption-diff "$D/proof" >"$D/stdout" 2>"$D/stderr"
-```
-
-`adoption-diff` は両方で `saved` のchunkだけを、各 `chunks/*.json` が記録した新digestと一致することを確かめてから、blocks・retained_blocks（block_id単位の追加・消失・変更・順序）、exclusions・uncertainties（内容単位の追加・消失）、その他の欄の差を chunk 別に `observations.json` の `chunks` と `changed` に列挙する。`run` はattemptのhashなので比べない。列挙は判定ではない。差があれば各差を原画像で判定する。
-
-### 第5版：既知の未解決2組（91→92、212→213）
-
-[第5版Plan](../../../../docs/plans/pdf-initial-source-preservation-101-r5.md)（第4版以前を継承、製品差分は第4版のまま）。`all` の `connections` で消失した次の2組だけは、73→74・61→62と同じ扱いの既知の未解決とし、成功に数えず、旧版との比較では別欄に記録する。
-
-| 組 | 失敗check | 別Issue |
-|---|---|---|
-| 91→92（本文） | Contradictory continuation。新方式は抽出の読順で囲みを段落の前半とp92の続きの間に置く | [#109](https://github.com/minorunakamura/doc-translate/issues/109) |
-| 212→213（コード） | Unresolved code continuation。不正charspanの最終行 `#/texts/3304` の省略、表 `#/tables/6` を出典とする `c213a` へ接続不能、`c212b` の1行への縮約、罫線断片の重複。HEADからある | [#110](https://github.com/minorunakamura/doc-translate/issues/110) |
-
-統合の期待として、各組で次をすべて確認する。①両端の断片が実unitsまたは英語出力に残る。②位置付きQAと上の失敗checkが残る。③残差を行・出典・位置ごとに別記する（91：囲みが原画像の位置＝見出しの上と異なり段落の間にある。212→213：`c212b` の1行への縮約、`#/texts/3304` の省略、p213の罫線が本文unitと `c213a` の両方にある）。原画像は91–92枚目・212–213枚目と照合する。満たさなければ統合未達。これ以外の追加・消失・相手変更で原画像と合わないものは従来どおり統合未達とし、この例外をほかの組や新たな消失に広げない。
-
-91→92 は #109 で解決（#109 節を参照）。
-
-212→213 は #110 で解決（#110 節を参照）。
-
-## 描かれた囲みとページ間接続（#109）
-
-[#109 Plan](../../../../docs/plans/pdf-sidebar-continuation-109.md)の完了条件のうち、全70件の再生・採用差分・接続差分・囲みの一覧・人工CLIを扱う。条件と禁止事項は#101節と同じ。#109 の再生は `drawn-enclosure-v15`／schema 16 で行った。現行の `pdf_preservation_comparison.py` は `adopted-edge-target-v17`／schema 18 だけを受け付ける（#111節。schema 17 以前の再生には使えない）。
-
-1. **全70件：** #101節の shell を `mode=all` として新規0700親で1回実行する。合格は exit 0・`population-status.json` で `saved` 70・`rejected` 0・`not attempted` 0。拒否があれば比較に進まない。
-2. **採用差分：** #101節「第3版・第4版」の `adoption-diff` を別の新規0700親 `D` で、`PROOFS="$PWD/work/preservation-all-GvSexcSD/proof:<1の親>/proof"`（基準は#101 r6 の最終再生、private）として実行する。続けて `python .pi/skills/verify-project/scripts/pdf_enclosure_comparison.py "$D" >"$D/enclosure.stdout" 2>"$D/enclosure.stderr"`。`$D/enclosure.json` の `enclosure_or_schema_only`（schema 15→16 と `enclosure` の追加だけ）と `other`（ブロック内容・順序の差）に分かれる。`enclosures` は囲みブロックごとの所有開始・囲み番号・ページ・ref・旧→新の位置・移動の有無。期待：`other` は所有開始91の順序だけ（`p91-note-title`・`p91-note` が見出し `p91-descriptors-heading` の前へ移動）。それ以外の `other` と、`enclosures` の全ページは原画像と照合して説明する。p155 の囲み3（`#/texts/2272`、Docling が section_header と付けたコードのファイル名バー）は囲みとして記録されるが、移動・接続・出力の変化はない（既知の誤判定）。
-3. **接続差分：** 1の `observations.json` の `connections` を#101 r6 のものと比べる。期待：追加 `p624`→`p632`（61→62）、消失から `p91-descriptors`→`p92-descriptors-cont`（91→92）が外れる。ほかの追加・消失・相手変更は変わらない。source・実units・英語anchor・QAで ref ごとに確認する。91：1029＋1034 が1 block・1 unit・1 anchor、囲み 1030・1031 が各1回、英語で見出し 1028 より前。61：624＋632 が1回、脚注 625 と囲み 628–631 が各1回、英語で接続段落の後。2組とも `Contradictory continuation` の QA と、失敗した `pdf_connection` check がない（r6 との差はこの2組だけ）。
-4. **人工CLI：** 別の新規0700親で `export CHECK_BODY_SYMBOL=1` として#97節の「別の人工実操作」を実行する。期待：`cli.exit` 0、`results.json` の各 `resume_sends` 0（immutable不変はassert）。
-
-各親に revision・dirty・command・exit を残し、自分で作った一時物だけを回収して証拠を再読する。原画像との照合は Root が別の親で行う。
-
-既知の限界：左右端が揃った横罫線は縦の距離に関係なくつながるので、上下の柱の罫線と全面の塗りがある別の書籍では、ページ全体が1つの枠になりうる（この書籍では生じていない。保証外）。
-
-## ページをまたぐコードと表の接続（#110）
-
-[#110 第2版Plan](../../../../docs/plans/pdf-code-table-continuation-110-r2.md)の完了条件のうち、全70件の再生・採用差分・接続差分・212→213 の観測・人工CLIを扱う。#110 の再生は `drawn-table-listing-v16`／schema 17 で行った（現行の script は #111節の版だけを受け付ける）。条件と禁止事項は#101節と同じ。
-
-1. **全70件：** #101節の shell を `mode=all` として新規0700親で1回実行する。合格は exit 0・`population-status.json` で `saved` 70・`rejected` 0・`not attempted` 0。拒否があれば比較に進まない。
-2. **採用差分：** #101節「第3版・第4版」の `adoption-diff` を別の新規0700親 `D` で、`PROOFS="$PWD/work/preservation-all-9drsIXYe/proof:<1の親>/proof"`（基準は#109 の最終再生、private）として実行する。`$D/proof/observations.json` の `schema_only`（差が `schema_version` だけの chunk）とそれ以外に分け、それ以外の各差を原画像で判定する。
-3. **接続差分：** 1の `observations.json` の `connections` を基準（`9drsIXYe`）のものと比べる。block_id の採番ずれは差に数えず、source・実units・英語anchor・QAで ref ごとに確認する。
-4. **212→213 の観測：** 別の新規0700親で、1の `proof/capture.json`（全fragments・実units・英語・QA）を読取専用で使い、原本PDFの pypdfium2 の描画文字（原点と送り幅、格子 4.672pt）から p212 の21行と p213 の表19行の期待を独立に計算して照合する。結果はprivateなJSONに置き、報告は pass/fail と件数だけ。
-   - (a) p212 の21行（`newman`〜`#/texts/3304`）と表19行が1つのコード block として1回だけあり、実unitsに入らず、英語出力に1回（anchor 1回）。
-   - (b) 全40行が描画格子の期待と一致する（行頭字下げ、行内2空白、`✓` の後2、`→` の後1、表の各行の空白数）。
-   - (c) `#/texts/3307`–`3314` は本文 block／unit にならず、コードの出典（Owned extraction range）として各1回。
-   - (d) この組に Unresolved outgoing／incoming code continuation・Line boundary or indentation not corroborated・Proposed listing rows not verified・No unique owned extraction range の QA と、失敗した `pdf_connection` check がない。
-   - (e) "Space count after an off-grid symbol was set from the drawn grid" の QA が行ごとの line origin 付きで、`#/texts/3304` の不正charspan QA（charspan なし、p212）が1件残る。
-   - (f) block の fragments が `c212b`・`c213a` の2つで、locations に両ページの出典と40行の line origin（描画位置と一致）がある。
-5. **人工CLI：** 別の新規0700親で `export CHECK_BODY_SYMBOL=1` として#97節の「別の人工実操作」を実行する。期待：`cli.exit` 0、`results.json` の各 `resume_sends` 0（immutable不変はassert）。
-
-期待：
-- 採用差分で `schema_only` 以外は2件だけ。所有開始186の `code189`（p189、`#/tables/5`）は非空白12行が同一で、旧の空行2行が描画行の採用で消える（新では行間が通常の1.5倍＝16.296pt の2か所に「Additional blank-line count not established between drawn rows」の QA が付く）。所有開始211は上の 212→213。
-- 接続差分は removed から `c212b`→`c213a` が外れるだけ。ほかの追加・消失・相手変更は変わらない。
-- 4の (a)–(f) がすべて pass。
-
-各親に revision・dirty・tested.diff・command・exit を残し、自分で作った一時物だけを回収して証拠を再読する。原画像との照合（212–213枚目、189枚目の空行）は Root が別の親で行う。
-
-既知の限界：保証するのは 212→213 の1組で、ほかのページへの一般化は保証しない。`code189` の空行は描画行の採用で消え、空行数は行間から決めない（QA だけ残す）。格子外記号の送り幅は、同じ行で次の文字（生成空白を含む）の原点との差から取る（生成空白の位置が送りの終わりと一致する書籍を前提とする）。
-
-## 採用後にだけ一致するコードのtarget（#111）
-
-[#111 第2版Plan](../../../../docs/plans/pdf-code-continuation-adopted-target-111-r2.md)の完了条件のうち、全70件の再生・採用差分・接続差分・73→74 の観測・人工CLIを扱う。対象版は `adopted-edge-target-v17`／schema 18（現行の `pdf_preservation_comparison.py` が受け付ける版）。条件と禁止事項は#101節と同じ。基準は#110 の最終再生 `work/preservation-all-tum3kOHp/proof/`（private）。
-
-1. **全70件：** #101節の shell を `mode=all` として新規0700親で1回実行する（約2時間。ツールの実行時間制限がある場合は `nohup` で起動し、`exit` の出現を待つ）。合格は exit 0・`population-status.json` で `saved` 70・`rejected` 0・`not attempted` 0。拒否があれば比較に進まない。
-2. **採用差分：** #101節「第3版・第4版」の `adoption-diff` を別の新規0700親 `D` で、`PROOFS="$PWD/work/preservation-all-tum3kOHp/proof:<1の親>/proof"` として実行する。期待：`schema_only` と `changed` が同じ70件で、各 chunk の差は `other_fields: ["schema_version"]` だけ（方式名は attempt 側で、`run` は比べない）。
-3. **接続差分：** 1と基準の `observations.json` の `connections` を比べる。期待：`added` に `p73-code`→`p74-code1` の1件だけが増え、ほかの追加・消失・相手変更は block_id まで同じ。
-4. **73→74 の観測：** 別の新規0700親 `O` で、1の `proof/capture.json` を読取専用で使う。
-
-   ```sh
-   (cd .pi/skills/verify-project/scripts && python pdf_adopted_edge_observation.py "$OLDPWD/<1の親>/proof" "$O/proof") >"$O/stdout" 2>"$O/stderr"
-   ```
-
-   結果は `$O/proof/observations.json`（private）、stdout は pass/fail だけ。期待（すべて pass）：fragments が `p73-code`・`p74-code1` の2つで1 block、断片の行（5行＋10行）が紙面順に各1回、locations が73・74枚目、英語出力に block 本文が1回、コードは units に入らない、この組の Unresolved outgoing／incoming code continuation の QA と失敗した `pdf_connection` check がない、「Additional blank-line count not evidenced by the original」の QA が1件残る。基準の proof を渡すと1 block にならず失敗する（対照）。
-5. **人工CLI：** 別の新規0700親で `export CHECK_BODY_SYMBOL=1` として#97節の「別の人工実操作」を実行する（実行時間制限がある場合は `nohup`）。期待：`cli.exit` 0、`results.json` の各 `resume_sends` 0（immutable不変はassert）。
-
-各親に revision・dirty・tested.diff・command・exit を残し、自分で作った一時物だけを回収して証拠を再読する。原画像（73–74枚目）との照合は Root が別の親で行う。
-
-既知の限界：p74 の2つの例の間の空行は、抽出・描画の根拠がないため出力にない（空行数の QA だけ残る。#110 以前と同じ）。保証するのは 73→74 の1組で、75→76 などほかの未接続は対象外。
+期待：`cli.exit` 0、`results.json` の各 `resume_sends` 0（fresh resumeの追加送信0・immutableのhash/mtime不変はassert）。版・dirty・command/exitと未確認事項は親に残す。異なるhashの原本・同一ref/座標での局所語区切りの直列/並列比較は`tests/test_pdf_correction.py -k concurrent_loads`、旧ルールで保存したchunkの拒否は`-k recorded_adoption_rule`を開発ガイドのsignal wrapperで別途検査する。
 
 ## 環境変数の取り違え（Issue #113）
 
