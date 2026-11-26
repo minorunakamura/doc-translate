@@ -16,12 +16,9 @@ from pydantic import BaseModel, ConfigDict
 
 from doc_translate.jsonl import JSONLRecord, encode_record, read_records
 
-SETUP = "Run doc-translate setup-ai --package-manager npm (or pnpm)."
-LOCKS = {"npm": "package-lock.json", "pnpm": "pnpm-lock.yaml"}
-INSTALL = {
-    "npm": ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
-    "pnpm": ["install", "--prod", "--frozen-lockfile", "--ignore-scripts"],
-}
+SETUP = "Run doc-translate setup-ai."
+LOCK = "package-lock.json"
+INSTALL = ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"]
 
 
 class ProviderMetadata(BaseModel):
@@ -80,12 +77,8 @@ def _environment() -> dict[str, str]:
     environment["PATH"] = os.pathsep.join(
         os.path.abspath(path) for path in os.get_exec_path()
     )
-    # Installed shims/managers must not fetch a different package-manager version.
-    environment.update(
-        COREPACK_ENABLE_NETWORK="0",
-        npm_config_manage_package_manager_versions="false",
-        PNPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS="false",
-    )
+    # Corepack shims must not fetch a different npm.
+    environment.update(COREPACK_ENABLE_NETWORK="0")
     return environment
 
 
@@ -111,7 +104,7 @@ def _node() -> str:
     return os.path.abspath(node)
 
 
-def _identity(manager: str) -> dict:
+def _identity() -> dict:
     resources = _resources()
     package = json.loads((resources / "package.json").read_text())
     helper = hashlib.sha256()
@@ -120,10 +113,8 @@ def _identity(manager: str) -> dict:
             helper.update(path.relative_to(resources).as_posix().encode())
             helper.update(path.read_bytes())
     return {
-        "package_manager": manager,
-        "lock_sha256": hashlib.sha256(
-            (resources / LOCKS[manager]).read_bytes()
-        ).hexdigest(),
+        "package_manager": "npm",
+        "lock_sha256": hashlib.sha256((resources / LOCK).read_bytes()).hexdigest(),
         "helper_version": package["version"],
         "helper_sha256": helper.hexdigest(),
         "library_version": package["dependencies"]["@earendil-works/pi-ai"],
@@ -131,14 +122,13 @@ def _identity(manager: str) -> dict:
 
 
 def _validate(runtime: Path, record: dict) -> None:
-    manager = record["package_manager"]
-    expected = _identity(manager)
+    expected = _identity()
     if any(record.get(key) != value for key, value in expected.items()):
         raise ValueError("Runtime identity mismatch")
     resources = _resources()
     for path in [
         resources / "package.json",
-        resources / LOCKS[manager],
+        resources / LOCK,
         *sorted((resources / "dist").rglob("*")),
     ]:
         if (
@@ -211,12 +201,12 @@ def _request(
         ) from None
 
 
-def setup(manager: str) -> dict:
+def setup() -> dict:
     node = _node()
-    executable = shutil.which(manager)
+    executable = shutil.which("npm")
     if executable is None:
         raise RuntimeUnavailable(
-            f"Installed {manager} is required; no manager is fetched. {SETUP}"
+            f"Installed npm is required; npm is never fetched. {SETUP}"
         )
     executable = os.path.abspath(executable)
     version = subprocess.run(
@@ -227,21 +217,21 @@ def setup(manager: str) -> dict:
         env=_environment(),
     )
     if version.returncode != 0:
-        raise RuntimeError(f"Cannot run {manager}. {SETUP}")
-    record = {**_identity(manager), "package_manager_version": version.stdout.strip()}
+        raise RuntimeError(f"Cannot run npm. {SETUP}")
+    record = {**_identity(), "package_manager_version": version.stdout.strip()}
     home = _home()
     home.mkdir(parents=True, exist_ok=True)
     runtime = Path(
         tempfile.mkdtemp(
-            prefix=f"{manager}-{record['lock_sha256'][:12]}-{record['helper_version']}-",
+            prefix=f"npm-{record['lock_sha256'][:12]}-{record['helper_version']}-",
             dir=home,
         )
     )
-    for name in ("package.json", LOCKS[manager]):
+    for name in ("package.json", LOCK):
         shutil.copyfile(_resources() / name, runtime / name)
     shutil.copytree(_resources() / "dist", runtime / "dist")
     install = subprocess.run(
-        [executable, *INSTALL[manager]],
+        [executable, *INSTALL],
         cwd=runtime,
         capture_output=True,
         check=False,
@@ -249,7 +239,7 @@ def setup(manager: str) -> dict:
     )
     if install.returncode != 0:
         raise RuntimeError(
-            f"{manager} install failed (exit {install.returncode}); previous runtime unchanged. {SETUP}"
+            f"npm install failed (exit {install.returncode}); previous runtime unchanged. {SETUP}"
         )
     try:
         _validate(runtime, record)

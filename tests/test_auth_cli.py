@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_logout_removes_only_selected_provider_and_returns_non_secret_json(runtime_cli):
     run, _, _, home = runtime_cli
-    assert run("setup-ai", "--package-manager", "npm").returncode == 0
+    assert run("setup-ai").returncode == 0
     path = home / ".config/doc-translate/credentials.json"
     path.parent.mkdir(parents=True)
     path.write_text(
@@ -152,7 +152,7 @@ def test_login_artificial_builtin_key_is_non_echo_and_stdout_is_only_non_secret_
     runtime_cli,
 ):
     run, binaries, _, home = runtime_cli
-    assert run("setup-ai", "--package-manager", "npm").returncode == 0
+    assert run("setup-ai").returncode == 0
     child, master, slave = terminal_login(environment(binaries, home))
     try:
         terminal = read_terminal(master, b"Enter Anthropic API key")
@@ -192,14 +192,14 @@ def test_unknown_provider_or_unsupported_login_method_is_input_error(
     runtime_cli, arguments
 ):
     run, _, _, _ = runtime_cli
-    assert run("setup-ai", "--package-manager", "npm").returncode == 0
+    assert run("setup-ai").returncode == 0
     result = run(*arguments)
     assert result.returncode == 2, result.stderr
 
 
 def test_piped_secret_input_is_refused_without_echo_fallback(runtime_cli):
     run, binaries, _, home = runtime_cli
-    assert run("setup-ai", "--package-manager", "npm").returncode == 0
+    assert run("setup-ai").returncode == 0
     executable = shutil.which("doc-translate")
     assert executable is not None
     result = subprocess.run(
@@ -229,7 +229,7 @@ def test_piped_secret_input_is_refused_without_echo_fallback(runtime_cli):
 )
 def test_auth_process_failures_are_not_success_or_secret_error_echo(runtime_cli, mode):
     run, binaries, _, _home = runtime_cli
-    assert run("setup-ai", "--package-manager", "npm").returncode == 0
+    assert run("setup-ai").returncode == 0
     fake_node(binaries)
     result = run(
         "login",
@@ -252,7 +252,7 @@ def test_login_notifications_show_readable_urls_codes_messages_and_info_links_on
     controls,
 ):
     run, binaries, _, home = runtime_cli
-    assert run("setup-ai", "--package-manager", "npm").returncode == 0
+    assert run("setup-ai").returncode == 0
     fake_node(binaries)
     events = [
         {
@@ -378,7 +378,7 @@ def test_login_browser_fallback_and_authentication_result_are_independent(
     runtime_cli, scenario
 ):
     run, binaries, _, home = runtime_cli
-    assert run("setup-ai", "--package-manager", "npm").returncode == 0
+    assert run("setup-ai").returncode == 0
     fake_node(binaries)
     if scenario == "missing":
         (binaries / "open").unlink()
@@ -489,7 +489,7 @@ def test_login_rejects_invalid_notification_fields_without_echoing_the_event(
     event,
 ):
     run, binaries, _, home = runtime_cli
-    assert run("setup-ai", "--package-manager", "npm").returncode == 0
+    assert run("setup-ai").returncode == 0
     fake_node(binaries)
     child, master, slave = terminal_login(
         environment(
@@ -525,7 +525,7 @@ def test_login_rejects_invalid_notification_fields_without_echoing_the_event(
 
 def test_callback_cancels_pending_terminal_prompt_without_hanging(runtime_cli):
     run, binaries, _, home = runtime_cli
-    assert run("setup-ai", "--package-manager", "npm").returncode == 0
+    assert run("setup-ai").returncode == 0
     fake_node(binaries)
     child, master, slave = terminal_login(
         environment(binaries, home, AUTH_PROCESS_MODE="callback")
@@ -550,7 +550,7 @@ def test_cancellation_reaps_child_after_storage_grace_and_restores_echo(
     runtime_cli, cancel
 ):
     run, binaries, _, home = runtime_cli
-    assert run("setup-ai", "--package-manager", "npm").returncode == 0
+    assert run("setup-ai").returncode == 0
     fake_node(binaries)
     marker = home / "child-pid"
     child, master, slave = terminal_login(
@@ -580,7 +580,7 @@ def test_cancellation_reaps_child_after_storage_grace_and_restores_echo(
 
 def test_cancelled_login_reports_storage_failure_after_helper_drain(runtime_cli):
     run, binaries, _, home = runtime_cli
-    assert run("setup-ai", "--package-manager", "npm").returncode == 0
+    assert run("setup-ai").returncode == 0
     fake_node(binaries)
     marker = home / "child-pid"
     child, master, slave = terminal_login(
@@ -615,7 +615,7 @@ def test_sigterm_discards_unsubmitted_secret_before_the_next_terminal_reader(
     runtime_cli,
 ):
     run, binaries, _, home = runtime_cli
-    assert run("setup-ai", "--package-manager", "npm").returncode == 0
+    assert run("setup-ai").returncode == 0
     fake_node(binaries)
     child, master, slave = terminal_login(
         environment(
@@ -653,7 +653,7 @@ def test_logout_storage_failure_is_not_success_and_never_echoes_corrupt_secrets(
     runtime_cli,
 ):
     run, _, _, home = runtime_cli
-    assert run("setup-ai", "--package-manager", "npm").returncode == 0
+    assert run("setup-ai").returncode == 0
     path = home / ".config/doc-translate/credentials.json"
     path.parent.mkdir(parents=True)
     path.write_text("ARTIFICIAL_CORRUPT_SECRET")

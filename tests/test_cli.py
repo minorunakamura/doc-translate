@@ -115,5 +115,5 @@ def test_metadata_without_setup_stops_with_setup_guidance(tmp_path):
         },
     )
     assert result.returncode == 2
-    assert "setup-ai --package-manager" in result.stderr
+    assert "Run doc-translate setup-ai." in result.stderr
     assert not (tmp_path / "data").exists()

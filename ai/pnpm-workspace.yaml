@@ -1,5 +1,0 @@
-# Keep pnpm exec and scripts from implicitly reinstalling dependencies.
-verifyDepsBeforeRun: false
-allowBuilds:
-  "@google/genai": false
-  protobufjs: false

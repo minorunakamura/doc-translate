@@ -978,6 +978,6 @@ productionは検証済みinstalled runtimeのみを起動し、safe cwd／NODE_P
 
 ## アプリ所有runtimeの導入記録
 
-`setup-ai --package-manager npm|pnpm`はinstalled managerだけを起動し、選択lockとcompile済みresourceを新しいruntimeへコピーします。`~/.local/share/doc-translate/ai/`（`XDG_DATA_HOME`指定時はその下）の`MANAGER-LOCK_HASH_PREFIX-HELPER_VERSION-.../`ごとに別node_modulesを使います。runtimeごとの`runtime.json`は`package_manager`、`package_manager_version`、`lock_sha256`、`helper_version`、`helper_sha256`、`library_version`を記録します。helper hashはmanifestとdistのpath／byteを含みます。認証情報は含みません。
+`setup-ai`はinstalled npmだけを起動し、`package-lock.json`とcompile済みresourceを新しいruntimeへコピーします。`~/.local/share/doc-translate/ai/`（`XDG_DATA_HOME`指定時はその下）の`npm-LOCK_HASH_PREFIX-HELPER_VERSION-.../`ごとに別node_modulesを使います。runtimeごとの`runtime.json`は`package_manager`（常に`npm`）、`package_manager_version`、`lock_sha256`、`helper_version`、`helper_sha256`、`library_version`を記録します。helper hashはmanifestとdistのpath／byteを含みます。認証情報は含みません。
 
-依存導入・固定version検査・実helper catalog検査が成功してから`current` symlinkをatomic replaceします。通常参照は`current`の記録と同梱resource／選択lock／直接production依存versionを照合してからNodeを起動します。不足・不一致はsetup案内で停止し、自動installや実行時compileはしません。失敗したsetupは既存runtimeを変更せず、旧runtime・失敗directory・workspace・credentialを削除しません。推移依存tree全byteの改変検知までは行わず、helper import／process失敗も成功扱いしません。
+依存導入・固定version検査・実helper catalog検査が成功してから`current` symlinkをatomic replaceします。通常参照は`current`の記録と同梱resource／lock／直接production依存versionを照合してからNodeを起動します。不足・不一致はsetup案内で停止し、自動installや実行時compileはしません。失敗したsetupは既存runtimeを変更せず、旧runtime・失敗directory・workspace・credentialを削除しません。推移依存tree全byteの改変検知までは行わず、helper import／process失敗も成功扱いしません。

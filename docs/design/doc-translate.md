@@ -252,7 +252,7 @@ PDF・EPUB・抽出文・コード例は未信頼dataであり、命令として
 
 原文・画像をproviderへ送る範囲・hash・送信先を明確にする。PDFの`--pages`は所有範囲かつ既定送信範囲とし、外側は明示`--reference-pages`だけを参照専用として許可する。範囲外文書・別providerへの切替・新たな大型model取得を無断で追加しない。事前費用見積りを必須の停止点にはしない。
 
-Node開発はpnpm、初回依存導入はinstalled npm／pnpmの固定lockで明示実行する。compile済みhelper・manifest・両lockをwheelに同梱し、通常起動はNodeだけを使用する。実行時compile・自動install／npx／manager取得をしない。導入directoryはworkspace・credentialと分離し、manager／lock／helper versionごとに別runtimeを用意する。保存結果だけのstatus／render／reviseにNode・認証を要求しない。これらの操作と認証・推論helperは実装済み。専用OAuthでの実認証と自作小入力の実provider推論を確認したが、実token refreshは未観測である。
+Node開発と初回依存導入はnpmに一本化し、初回依存導入はinstalled npmの固定lock（`package-lock.json`）で明示実行する（`npm ci --omit=dev --ignore-scripts`）。compile済みhelper・manifest・lockをwheelに同梱し、通常起動はNodeだけを使用する。実行時compile・自動install／npx／npm取得をしない。導入directoryはworkspace・credentialと分離し、lock／helper versionごとに別runtimeを用意する。保存結果だけのstatus／render／reviseにNode・認証を要求しない。これらの操作と認証・推論helperは実装済み。専用OAuthでの実認証と自作小入力の実provider推論を確認したが、実token refreshは未観測である。
 
 ## 13. QAと完了の意味
 

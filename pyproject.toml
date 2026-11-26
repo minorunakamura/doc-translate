@@ -34,7 +34,6 @@ packages = ["src/doc_translate"]
 [tool.hatch.build.targets.wheel.force-include]
 "ai/dist" = "doc_translate/ai/dist"
 "ai/package.json" = "doc_translate/ai/package.json"
-"ai/pnpm-lock.yaml" = "doc_translate/ai/pnpm-lock.yaml"
 "ai/package-lock.json" = "doc_translate/ai/package-lock.json"
 
 [tool.hatch.build.targets.sdist]
@@ -43,7 +42,6 @@ include = [
     "ai/src",
     "ai/dist",
     "ai/package.json",
-    "ai/pnpm-lock.yaml",
     "ai/package-lock.json",
     "ai/tsconfig.json",
     "ai/tsconfig.build.json",

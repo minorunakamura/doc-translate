@@ -6,7 +6,7 @@
 
 - macOS（動作確認済み：Apple Silicon）。PDFの画像中の文字を読むOCRには、macOSのApple Vision frameworkを使います。
 - [uv](https://docs.astral.sh/uv/)とPython 3.14以上
-- Node.js 24.21.0以上とnpm（以下の手順ではpnpmは不要です）
+- Node.js 24.21.0以上とnpm
 - 利用するAIサービスの認証
 
 Linux／Windowsでの動作は未確認です。
@@ -39,7 +39,7 @@ AIとの通信に使うライブラリを導入し、ログインします。通
 以下はChatGPTサブスクリプションのOAuthを使う例です。
 
 ```sh
-doc-translate setup-ai --package-manager npm
+doc-translate setup-ai
 doc-translate login --provider openai --method oauth
 ```
 
