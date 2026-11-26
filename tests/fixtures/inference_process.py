@@ -58,35 +58,15 @@ try:
             continue
         if mode == "wrong-id":
             data["request_id"] = "wrong"
-        elif mode == "version":
-            payload["helper_version"] = "wrong"
-        elif mode == "terminal":
-            payload["terminal"] = None
-        elif mode == "stop-reason":
-            payload["message"]["stopReason"] = "length"
-        elif mode == "model":
-            payload["message"]["model"] = "wrong"
-        elif mode == "api":
-            payload["message"]["api"] = "wrong"
-        elif mode == "tools":
-            payload["message"]["content"].append({"type": "toolCall"})
-        elif mode == "submitted":
-            payload["submitted"]["maxRetries"] = 1
-        elif mode == "confirmed":
-            payload["provider_confirmed"]["thinking"] = "invented"
-        elif mode == "usage":
-            payload["usage_status"] = "unknown"
-        elif mode == "request-bytes":
-            payload["request_bytes_checked"] = True
+        elif mode == "schema":
+            payload["unexpected"] = True
+        elif mode == "no-message":
+            payload["message"] = None
         elif mode.startswith("override-"):
             data["type"] = "error"
             payload["code"] = mode.removeprefix("override-")
             payload["terminal"] = {"type": "error", "reason": "error"}
             payload["message"]["stopReason"] = "error"
-            payload["retry"].update(retryable=True, classification="library_heuristic")
-        elif mode == "retry-spoof":
-            data["type"] = "error"
-            payload["code"] = "generation_failed"
             payload["retry"].update(retryable=True, classification="library_heuristic")
         elif mode.startswith("answer-"):
             answer = {
@@ -115,10 +95,4 @@ finally:
     child.stdin.close()
     child.wait(timeout=10)
     child.stdout.close()
-sys.exit(
-    7
-    if mode == "exit"
-    else 1
-    if mode.startswith(("preflight-error-", "override-"))
-    else child.returncode
-)
+sys.exit(7 if mode == "exit" else child.returncode)

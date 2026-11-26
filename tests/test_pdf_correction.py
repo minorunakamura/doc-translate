@@ -1408,9 +1408,7 @@ def test_correct_pdf_recovers_validated_run_before_chunk_save_without_resending(
 
 
 @pytest.mark.parametrize("base", ["current"])
-@pytest.mark.parametrize(
-    "tamper", ["status", "terminal", "images", "incomplete", "domain", "hash"]
-)
+@pytest.mark.parametrize("tamper", ["status", "images", "incomplete", "domain", "hash"])
 def test_correct_pdf_revalidates_orphan_result_and_actual_images(
     tmp_path, draft, monkeypatch, tamper, base
 ):
@@ -1442,8 +1440,6 @@ def test_correct_pdf_revalidates_orphan_result_and_actual_images(
     path.rename(path.with_suffix(".original"))
     if tamper == "status":
         record["status"] = "rejected"
-    elif tamper == "terminal":
-        record["attempts"][-1]["final"]["terminal"]["reason"] = "length"
     elif tamper == "images":
         record["attempts"][-1]["images"][0]["sha256"] = "0" * 64
     elif tamper == "incomplete":

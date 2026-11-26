@@ -17,16 +17,12 @@ from doc_translate.cli_output import (
     saved_status_text,
     summary_text,
 )
-from doc_translate.inference import Selection, resolve_config
+from doc_translate.inference import CONFIG_ERROR_CODES, Selection, resolve_config
 from doc_translate.preparation import Glossary, StylePolicy
 from doc_translate.progress import SendNotice
 from doc_translate.progress_display import ProgressDisplay
 from doc_translate.render import read_saved_status, render_document, workspace_status
-from doc_translate.run import (
-    CONFIG_ERROR_CODES,
-    resume_document,
-    run_document,
-)
+from doc_translate.run import resume_document, run_document
 
 OLD_WORKSPACE_GUIDANCE = (
     "このworkspaceは古い形式で保存されています。"

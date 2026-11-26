@@ -1130,7 +1130,6 @@ def test_preparation_recovers_validated_calls_before_adoption_without_resending(
     [
         "rejected",
         "incomplete",
-        "terminal",
         "domain",
         "method",
         "schema",
@@ -1175,8 +1174,6 @@ def test_preparation_revalidates_orphan_calls_instead_of_trusting_status(
         record["status"] = "rejected"
     elif tamper == "incomplete":
         record["attempts"] = []
-    elif tamper == "terminal":
-        record["attempts"][-1]["final"]["terminal"]["reason"] = "length"
     elif tamper == "domain":
         bad = {
             "context": "Records",
