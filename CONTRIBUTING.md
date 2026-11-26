@@ -379,7 +379,7 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 .venv/bin/pytest tests/test_preparation.py tests/test_units.py tests/test_inference.py tests/test_source_snapshot.py
 ```
 
-Issue #58は非TDDで、準備だけにwire v2を追加します。公開unit／hash・group方式・固定入力hash・翻訳request・並列数は変更しません。`test_preparation.py`のv2回帰は合成PDF／実EPUB reader・extractor、前方追加・重複本文／疎・複数引用・実heading／本文変更、原文からのbinding再構築、raw alias→現在位置、整理実wire、未知version／再hash改ざん、v1完全一致の無送信reuseと混在を検査します。`tests/fixtures/preparation-v1.json`は変更前`ec49420`で生成した小さい自作PDF準備の**原byte**をpath→UTF-8文字列で保持するfixtureで、v2の降格変換ではありません。旧artifactを上書きせず、現在一致する保存成功を辞書順で先に使い、不足だけv2を生成します。
+Issue #58は非TDDで、準備だけにwire v2を追加します。公開unit／hash・group方式・固定入力hash・翻訳request・並列数は変更しません。`test_preparation.py`のv2回帰は合成PDF／実EPUB reader・extractor、前方追加・重複本文／疎・複数引用・実heading／本文変更、原文からのbinding再構築、raw alias→現在位置、整理実wire、未知version／再hash改ざん、v1完全一致の無送信reuseと混在を検査します。`tests/fixtures/preparation-v1.json`は変更前`ec49420`で生成した小さい自作PDF準備の**原byte**をpath→UTF-8文字列で保持するfixtureで、v2の降格変換ではありません（#118で削除した5 optionのnull keyだけを除き再hash）。旧artifactを上書きせず、現在一致する保存成功を辞書順で先に使い、不足だけv2を生成します。
 
 再実行できる公開prepare→loadの直接手順・証拠・cleanupは[既存Skill](.pi/skills/verify-project/SKILL.md#準備request内idと追跡bindingissue-58)／[Map](.pi/skills/verify-project/references/feature-map.md#準備request内idと追跡bindingissue-58)へ集約します。例えば`pytest tests/test_preparation.py tests/test_translation.py tests/test_render.py tests/test_performance_verification.py`で共有fixtureの必要consumerも確認し、代表fixture単独は`pytest tests/test_preparation.py::test_preparation_v2_rebinds_shifted_groups_and_keeps_real_context_misses tests/test_preparation.py::test_preparation_loads_byte_original_v1_and_only_generates_missing_v2`をfresh processで実行します。既存performance helperの接続selfcheckは最後のmoduleに含まれます。Node fixture変更の正式全Node／core／PDF phaseは上の選定規約に従いRootが実行し、Workerのfocused成功で代替しません。
 
@@ -426,7 +426,7 @@ PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   .venv/bin/pytest tests/test_translation.py tests/test_revise.py tests/test_resume.py tests/test_review.py tests/test_pdf_candidate_acceptance.py tests/test_performance_verification.py
 ```
 
-v1 fixtureは変更前`eb2f9a9`の公開translate/load＋実Node/fauxで生成した自作原byteで、再生成・migrationしません。mixed v1/v2/manual履歴、未知版／再hash binding・raw／split改ざん、同一v2 requestの並列成功／失敗共有・usage一度・保存例外・取消drainも回帰で確認します。外部faux fixtureはtracking-ID指定の既存回答をsidecarの現在unit対応でwireへ変換するだけで、raw alias不正検査は変換なしに行います。正式core全件／PDF4／Node checksとRoot独立操作／Reviewをこのfocused実行だけで代用しません。
+v1 fixtureは変更前`eb2f9a9`の公開translate/load＋実Node/fauxで生成した自作原byteで（#118で削除した5 optionのnull keyだけを除き再hash）、再生成・migrationしません。mixed v1/v2/manual履歴、未知版／再hash binding・raw／split改ざん、同一v2 requestの並列成功／失敗共有・usage一度・保存例外・取消drainも回帰で確認します。外部faux fixtureはtracking-ID指定の既存回答をsidecarの現在unit対応でwireへ変換するだけで、raw alias不正検査は変換なしに行います。正式core全件／PDF4／Node checksとRoot独立操作／Reviewをこのfocused実行だけで代用しません。
 
 CLI・renderer・汎用復旧管理・依存は追加しません。実credential・実provider通信・実LLM／意味品質・既存書籍は未検証です。Node fixtureも通常のBiome／type-aware oxlint／Vitest対象で、helper source変更がないためこの変更にbuildは不要です。
 
@@ -885,7 +885,7 @@ PY
 
 preparation saved-attempt探索（Issue #56）は[性能referenceの#56節](docs/reference/performance.md#preparation保存attempt探索の比較issue-56)／既存Mapの対応節を選びます。実公開prepare/loadだけで100 groupの整合seedを作り、全byteを保持してafterへ再利用し、unadoptedのinclusive `_call`合計をprimaryに固定します。公開load再検証・全体wall／CPU／RSSと別診断read/hashを分け、before取得後はRoot直接確認・次段階承認までproductionを変更しません。承認後の操作内raw memoは到達record各read/hash1回と新規保存登録だけを行い、辞書順・lazy破損境界・元実入力／raw回答／根拠の照合を残します。通常selfcheckは`tests/test_performance_verification.py`、repair／orphan／raw／domain／旧採用の既存回帰は`tests/test_preparation.py`を再利用し、秒数閾値pytestや翻訳full pipeline前提を追加しません。正式チェックとRoot独立公開操作・Reviewer gateの分担は上記のままです。
 
-translation saved-attempt操作内catalog／計測（Issue #57）は[性能referenceの#57節](docs/reference/performance.md#translation保存attempt探索の計測issue-57)／既存Mapの対応節を選びます。公開save／prepare／translate／loadで100 groupの整合seedを全byte保持し、unadoptedの初回attempt glob→Executor入口までをinclusive pre-job探索proxyに固定します。内部previous load・独立load／storeの再読と診断計数を分け、worker submit／実追加request0・immutable不変を確認します。承認後のcatalogは元record各read/hash/parse1回とrequest text／先頭unit IDの候補索引によるrequest再構築削減を行い、取得後に全configを照合します。等値なsigned zeroをconfig JSON byteキーで分離せず、正負両方向のpointer除去後回収・無送信・旧immutable保持・現在config／新旧loadは`test_translation_recovers_orphan_with_equal_signed_zero_config`で確認します。レビュー修正前の測定値を新sourceへ流用せずRootが再計測します。開始時全破損拒否・採用済みmanual優先・辞書順・全実入力/raw/domain検証を残します。新規attemptはatomic保存後にthread-safe登録し、別操作は再検証します。catalog回帰は`tests/test_translation.py`、小さいselfcheckは`tests/test_performance_verification.py`、afterは同seed・同境界、代表run／resume上限と正式チェック・Root／Reviewer分担は既存手順のままです。
+translation saved-attempt操作内catalog／計測（Issue #57）は[性能referenceの#57節](docs/reference/performance.md#translation保存attempt探索の計測issue-57)／既存Mapの対応節を選びます。公開save／prepare／translate／loadで100 groupの整合seedを全byte保持し、unadoptedの初回attempt glob→Executor入口までをinclusive pre-job探索proxyに固定します。内部previous load・独立load／storeの再読と診断計数を分け、worker submit／実追加request0・immutable不変を確認します。承認後のcatalogは元record各read/hash/parse1回とrequest text／先頭unit IDの候補索引によるrequest再構築削減を行い、取得後に全configを照合します（signed zeroの`temperature`回帰はoptionを削除したIssue #118で廃止）。レビュー修正前の測定値を新sourceへ流用せずRootが再計測します。開始時全破損拒否・採用済みmanual優先・辞書順・全実入力/raw/domain検証を残します。新規attemptはatomic保存後にthread-safe登録し、別操作は再検証します。catalog回帰は`tests/test_translation.py`、小さいselfcheckは`tests/test_performance_verification.py`、afterは同seed・同境界、代表run／resume上限と正式チェック・Root／Reviewer分担は既存手順のままです。
 
 ## PDF／EPUB性能の統合比較・採否（Issue #62）
 

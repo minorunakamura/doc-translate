@@ -376,7 +376,7 @@ class _AttemptCatalog:
             )
 
     def flight(self, request, config):
-        # Equality, not JSON config bytes: signed zero must remain an equal input.
+        # Share only an identical in-flight request and config.
         with self._lock:
             for saved_request, saved_config, future in self._flights.get(
                 request.text, ()

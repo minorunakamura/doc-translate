@@ -34,13 +34,6 @@ class _Model(BaseModel):
 
 
 class GenerationOptions(_Model):
-    temperature: float | None = None
-    maxTokens: Positive | None = None
-    transport: Literal["sse", "websocket", "websocket-cached", "auto"] | None = None
-    cacheRetention: Literal["none", "short", "long"] | None = None
-    thinkingBudgets: (
-        dict[Literal["minimal", "low", "medium", "high"], Positive] | None
-    ) = None
     timeoutMs: Annotated[int, Field(gt=0, le=2147483647)] = 1_200_000
 
 
@@ -221,11 +214,6 @@ class _Submitted(_Model):
     reasoning: Thinking | None
     maxRetries: Annotated[int, Field(ge=0, le=0)]
     timeoutMs: Positive
-    maxTokens: Positive | None
-    temperature: float | None
-    transport: Literal["sse", "websocket", "websocket-cached", "auto"] | None
-    cacheRetention: Literal["none", "short", "long"] | None
-    thinkingBudgets: dict[Literal["minimal", "low", "medium", "high"], Positive] | None
 
 
 class _Confirmed(_Model):
@@ -582,15 +570,10 @@ def _execute_attempt(
                             else:
                                 raise ValueError("invalid preflight")
                             _check_versions(preflight)
-                            if (
-                                (preflight.provider, preflight.model)
-                                != (config.provider, config.model)
-                                or config.thinking not in preflight.thinking_levels
-                                or (
-                                    config.options.maxTokens is not None
-                                    and config.options.maxTokens > preflight.max_tokens
-                                )
-                            ):
+                            if (preflight.provider, preflight.model) != (
+                                config.provider,
+                                config.model,
+                            ) or config.thinking not in preflight.thinking_levels:
                                 raise ValueError("preflight mismatch")
                             attempt.preflight = Preflight.model_validate(
                                 preflight.model_dump(exclude={"code"})
@@ -742,14 +725,10 @@ def _saved_answer[T: BaseModel](
         raise ValueError("Saved helper did not succeed")
     preflight = Preflight.model_validate(attempt["preflight"])
     _check_versions(preflight)
-    if (
-        (preflight.provider, preflight.model) != (config.provider, config.model)
-        or config.thinking not in preflight.thinking_levels
-        or (
-            config.options.maxTokens is not None
-            and config.options.maxTokens > preflight.max_tokens
-        )
-    ):
+    if (preflight.provider, preflight.model) != (
+        config.provider,
+        config.model,
+    ) or config.thinking not in preflight.thinking_levels:
         raise ValueError("Saved preflight differs from config")
     if images and not preflight.image_input:
         raise ValueError("Saved preflight does not support images")

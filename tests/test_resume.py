@@ -34,6 +34,10 @@ SPLIT_UNITS_GUIDANCE = (
     "保存済みの訳と現在の文の分け方が合いません。"
     "新しいworkspaceで `run` し直してください。"
 )
+OLD_WORKSPACE_GUIDANCE = (
+    "このworkspaceは古い形式で保存されています。"
+    "新しいworkspaceで `run` し直してください。"
+)
 
 
 def nested_list_epub(path):
@@ -498,6 +502,7 @@ def test_saved_translation_with_old_item_split_stops_with_rerun_guidance(
     tmp_path, capsys, arguments
 ):
     # Saved by the pre-#103 code (8d4988b) from nested_list_epub via public run.
+    # #118 removed the five null generation options and re-hashed the records.
     workspace = tmp_path / "run"
     for name, text in json.loads(
         (FIXTURES / "epub-nested-list-before-103.json").read_bytes()
@@ -518,3 +523,61 @@ def test_saved_translation_with_old_item_split_stops_with_rerun_guidance(
     assert "correspondence mismatch" not in error
     assert requests(tmp_path) == []
     assert {p: p.read_bytes() for p in workspace.rglob("*") if p.is_file()} == before
+
+
+def options_before_118_workspace(tmp_path):
+    # Saved by the pre-#118 code (4aae54e) from nested_list_epub via public run.
+    workspace = tmp_path / "run"
+    for name, text in json.loads(
+        (FIXTURES / "epub-options-before-118.json").read_bytes()
+    ).items():
+        path = workspace / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    document = json.loads((workspace / "run.json").read_bytes())["document"]
+    (workspace / "originals").mkdir()
+    original = nested_list_epub(workspace / document["artifact"])
+    assert hashlib.sha256(original.read_bytes()).hexdigest() == document["sha256"]
+    return workspace
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [["resume", "--json"], ["render"], ["status", "--verify"]],
+)
+def test_saved_workspace_with_removed_generation_options_stops_with_rerun_guidance(
+    tmp_path, capsys, arguments
+):
+    workspace = options_before_118_workspace(tmp_path)
+    before = {
+        p: (p.read_bytes(), p.stat().st_mtime_ns)
+        for p in workspace.rglob("*")
+        if p.is_file()
+    }
+    with pytest.raises(SystemExit) as stopped:
+        main([*arguments, str(workspace)], process_command=helper(tmp_path))
+    assert stopped.value.code == 2
+    error = capsys.readouterr().err
+    assert OLD_WORKSPACE_GUIDANCE in error
+    assert "validation error" not in error and "Traceback" not in error
+    assert requests(tmp_path) == []
+    assert {
+        p: (p.read_bytes(), p.stat().st_mtime_ns)
+        for p in workspace.rglob("*")
+        if p.is_file()
+    } == before
+
+
+def test_saved_unknown_option_is_not_reported_as_old_workspace(tmp_path, capsys):
+    workspace = options_before_118_workspace(tmp_path)
+    manifest = json.loads((workspace / "run.json").read_bytes())
+    # Only run.json is current; an unrelated extra key is not the old format.
+    manifest["translation"]["options"] = {"timeoutMs": 1_200_000, "unknownOption": None}
+    (workspace / "run.json").write_text(json.dumps(manifest))
+    with pytest.raises(SystemExit) as stopped:
+        main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
+    assert stopped.value.code == 2
+    error = capsys.readouterr().err
+    assert OLD_WORKSPACE_GUIDANCE not in error
+    assert "unknownOption" in error
+    assert requests(tmp_path) == []

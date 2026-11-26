@@ -568,40 +568,6 @@ def test_translation_reuses_same_marker_input_after_code_and_preparation_metadat
     )
 
 
-@pytest.mark.parametrize("temperature", [-0.0, 0.0], ids=["negative", "positive"])
-def test_translation_recovers_orphan_with_equal_signed_zero_config(
-    tmp_path, prepared, temperature
-):
-    saved_config = CONFIG.model_copy(
-        update={"options": GenerationOptions(temperature=temperature)}
-    )
-    current_config = CONFIG.model_copy(
-        update={"options": GenerationOptions(temperature=-temperature)}
-    )
-    assert saved_config == current_config
-    first = translate(tmp_path, prepared, config=saved_config)
-    initial = load_translation(prepared, first)
-    assert initial.processing.status == "completed"
-    immutable = {
-        path: path.read_bytes()
-        for path in prepared.rglob("*")
-        if path.is_file() and path.name != "translation-snapshot.json"
-    }
-    log = tmp_path / "translation-requests.jsonl"
-    sent = log.read_bytes()
-    (prepared / "translation-snapshot.json").unlink()
-    digest = translate(tmp_path, prepared, config=current_config)
-    adopted = load_translation(prepared, digest)
-    assert adopted == load_translation(prepared)
-    assert adopted.processing.status == "completed"
-    assert adopted.config.model_dump_json() == current_config.model_dump_json()
-    assert adopted.runs == initial.runs
-    assert adopted.translations == initial.translations
-    assert log.read_bytes() == sent
-    assert all(path.read_bytes() == data for path, data in immutable.items())
-    assert load_translation(prepared, first) == initial
-
-
 @pytest.mark.parametrize(
     "change", ["source", "context", "glossary", "policy", "options", "thinking"]
 )
@@ -637,7 +603,7 @@ def test_translation_resends_when_actual_input_changes(tmp_path, prepared, chang
         )
     elif change == "options":
         kwargs["config"] = CONFIG.model_copy(
-            update={"options": GenerationOptions(maxTokens=512)}
+            update={"options": GenerationOptions(timeoutMs=600_000)}
         )
     else:
         kwargs["config"] = CONFIG.model_copy(update={"thinking": "high"})
@@ -690,7 +656,7 @@ def test_translation_load_rejects_rehashed_unvalidated_attempt(
     elif tamper == "model":
         attempt["final"]["message"]["model"] = "wrong"
     elif tamper == "submitted":
-        attempt["final"]["submitted"]["maxTokens"] = 1
+        attempt["final"]["submitted"]["timeoutMs"] = 1
     if tamper == "run-list":
         data["runs"] = []
     else:
@@ -830,7 +796,7 @@ def test_translation_save_failure_preserves_previous_adoption_and_attempts(
                 workspace,
                 observer=events.append,
                 config=CONFIG.model_copy(
-                    update={"options": GenerationOptions(maxTokens=512)}
+                    update={"options": GenerationOptions(timeoutMs=600_000)}
                 ),
             )
     assert (workspace / "translation-snapshot.json").read_bytes() == reference
@@ -1462,6 +1428,7 @@ def test_translation_byte_original_v1_reuse_mixed_v2_and_manual_history(tmp_path
     from doc_translate.revise import revise_document
 
     workspace = tmp_path / "workspace"
+    # Wire v1 records added in c0a71bb; #118 removed the five null options, re-hashed.
     frozen = json.loads((ROOT / "tests/fixtures/translation-v1.json").read_bytes())
     for name, text in frozen.items():
         path = workspace / name
@@ -1859,7 +1826,9 @@ def test_translation_save_failure_stops_new_sends_and_keeps_inflight_success(
     previous = translate(
         tmp_path,
         workspace,
-        config=CONFIG.model_copy(update={"options": GenerationOptions(maxTokens=512)}),
+        config=CONFIG.model_copy(
+            update={"options": GenerationOptions(timeoutMs=600_000)}
+        ),
     )
     pointer = (workspace / "translation-snapshot.json").read_bytes()
     sent = len(requests(tmp_path))

@@ -42,7 +42,7 @@ preparationのbefore／after比較だけを依頼された場合はMapの「prep
 
 ## translation保存attempt探索（Issue #57）
 
-catalogの候補はrequest text／先頭unit IDで取得し、その後に全configを照合する。等値configの`temperature=-0.0`／`0.0`をJSON byteキーで分離しない。公開API回帰`test_translation_recovers_orphan_with_equal_signed_zero_config`は正負両方向のpointer除去後無送信回収・旧immutable保持・現在configと新旧loadを検査する。レビュー修正前の性能値は修正後sourceの値として使わず、Rootが同seed／同入力で再計測する。
+catalogの候補はrequest text／先頭unit IDで取得し、その後に全configを照合する（float optionの`temperature`はIssue #118で削除し、signed zero回帰も廃止）。レビュー修正前の性能値は修正後sourceの値として使わず、Rootが同seed／同入力で再計測する。
 
 翻訳attempt-heavyのbefore／after比較はMapの「translation保存attempt探索」を選び、[性能referenceの#57節](../../../docs/reference/performance.md#translation保存attempt探索の計測issue-57)を使う。既存Pythonで`translation_baseline.py --evidence work/issue57-<unique> --size 2`の接続確認後、既定100 groupを非並行実行する。公開save／prepare／translate／loadと既存実Node／faux／no-network／CONFIGを使い、翻訳100 attemptのseed全byteを保持する。primaryはunadoptedの初回attempt glob→Executor.__enter__までのinclusive pre-job探索proxyで、公開translate全体や内部previous loadとは分ける。通常各3回＋別diagnostic、worker submit／実追加request0、immutable／seed不変、completed・回答対応をassertする。thread-local診断で探索とpublic_load／storeの正当なread/hash/parseを分離する。承認後のafterは同seedコピー・同script・同境界で比較し、catalog候補索引でも全実request/config/raw/domain検証・eager破損拒否を維持する。新規attemptのatomic保存後登録とthread-safeな辞書順snapshot取得は`tests/test_translation.py`で確認する。v2の同一wire＋configの競合miss共有は末尾のIssue #59節と回帰で確認する。安全前提／停止予算／所有物cleanup・全証拠readbackはreferenceに従い、他Mapや正式チェックの成功へ拡張しない。project trust確認後、新セッションまたは`/reload`、`/skill:verify-project translation performance`か実ファイルreadで再利用する。
 
@@ -111,6 +111,10 @@ PDF読み取り（Docling変換・ページ画像化）の途中でSIGINT／SIGT
 ## 入れ子リストの順序と旧workspaceの停止（Issue #103）
 
 EPUBの`li`で子リストの後に続く親の文の順序、変更前の版で作った該当workspaceの案内付き停止（exit 2・送信0件）、該当リストなしのEPUB／PDFの不変を確認するときは[Mapの#103節](references/feature-map.md#入れ子リストの順序と旧workspaceの停止issue-103)を選ぶ。`scripts/nested_list_order.py`で実CLI＋実Node fauxを動かし、変更前コードは所有tempの`git archive`から読み込む。所有tempだけcleanup後に`work/test-verification-nested-list-<unique>/`の証拠を再読する。再利用は`/skill:verify-project nested list`。
+
+## 旧形式workspaceの停止（Issue #118）
+
+削除した生成option5つを保存済みのworkspaceで`resume`／`render`／`status --verify`が送信前にexit 2で案内付きで止まり、新規runのworkspaceでは通ることを確認するときは[Mapの#118小節](references/feature-map.md#旧形式workspaceの停止issue-118)と`scripts/options_old_workspace_stop.py`を使う。所有tempだけcleanup後に`work/test-verification-issue118-<unique>/`の証拠を再読する。
 
 ## 旧ルールPDF workspaceの停止（Issue #117）
 

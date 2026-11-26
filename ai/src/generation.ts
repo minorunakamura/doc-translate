@@ -64,64 +64,13 @@ export function generationConfig(
   if (payload.image_input && !model.input.includes("image"))
     throw new Error("unsupported_image");
   const input = object(payload.options);
-  keys(input, [
-    "temperature",
-    "maxTokens",
-    "transport",
-    "cacheRetention",
-    "thinkingBudgets",
-    "timeoutMs",
-  ]);
+  keys(input, ["timeoutMs"]);
   const options: SimpleStreamOptions = { maxRetries: 0, timeoutMs: 1_200_000 };
   if (thinking !== "off") options.reasoning = thinking;
-  if (input.temperature !== undefined) {
-    if (
-      typeof input.temperature !== "number" ||
-      !Number.isFinite(input.temperature)
-    )
-      throw new Error("invalid_request");
-    options.temperature = input.temperature;
-  }
-  if (input.maxTokens !== undefined) {
-    if (!positive(input.maxTokens) || input.maxTokens > model.maxTokens)
-      throw new Error("invalid_request");
-    options.maxTokens = input.maxTokens;
-  }
   if (input.timeoutMs !== undefined) {
     if (!positive(input.timeoutMs) || input.timeoutMs > 2_147_483_647)
       throw new Error("invalid_request");
     options.timeoutMs = input.timeoutMs;
-  }
-  if (input.transport !== undefined) {
-    if (
-      input.transport !== "sse" &&
-      input.transport !== "websocket" &&
-      input.transport !== "websocket-cached" &&
-      input.transport !== "auto"
-    )
-      throw new Error("invalid_request");
-    options.transport = input.transport;
-  }
-  if (input.cacheRetention !== undefined) {
-    if (
-      input.cacheRetention !== "none" &&
-      input.cacheRetention !== "short" &&
-      input.cacheRetention !== "long"
-    )
-      throw new Error("invalid_request");
-    options.cacheRetention = input.cacheRetention;
-  }
-  if (input.thinkingBudgets !== undefined) {
-    const budgets = object(input.thinkingBudgets);
-    keys(budgets, ["minimal", "low", "medium", "high"]);
-    options.thinkingBudgets = {};
-    for (const level of ["minimal", "low", "medium", "high"] as const) {
-      if (budgets[level] !== undefined) {
-        const budget = budgets[level];
-        if (!positive(budget)) throw new Error("invalid_request");
-        options.thinkingBudgets[level] = budget;
-      }
-    }
   }
   return { model, thinking, imageInput: payload.image_input, options };
 }
@@ -439,13 +388,6 @@ export async function generate(
       reasoning: config.options.reasoning ?? null,
       maxRetries: 0,
       timeoutMs: config.options.timeoutMs ?? null,
-      maxTokens: config.options.maxTokens ?? null,
-      temperature: config.options.temperature ?? null,
-      transport: config.options.transport ?? null,
-      cacheRetention: config.options.cacheRetention ?? null,
-      thinkingBudgets: config.options.thinkingBudgets
-        ? { ...config.options.thinkingBudgets }
-        : null,
     },
     provider_confirmed: { thinking: message?.providerThinkingLevel ?? null },
     retry: {

@@ -121,13 +121,7 @@ def test_images_keep_bytes_real_dimensions_coordinates_order_and_options(tmp_pat
             provider="faux",
             model="vision",
             thinking="high",
-            options=GenerationOptions(
-                maxTokens=123,
-                temperature=0.2,
-                transport="sse",
-                cacheRetention="short",
-                thinkingBudgets={"high": 42},
-            ),
+            options=GenerationOptions(timeoutMs=123_456),
         ),
         GenerationInput(
             stage="correction",
@@ -182,11 +176,7 @@ def test_images_keep_bytes_real_dimensions_coordinates_order_and_options(tmp_pat
     assert result.answer.options == {
         "reasoning": "high",
         "maxRetries": 0,
-        "timeoutMs": 1_200_000,
-        "maxTokens": 123,
-        "temperature": 0.2,
-        "transport": "sse",
-        "thinkingBudgets": {"high": 42},
+        "timeoutMs": 123_456,
     }
     metadata = result.attempts[0].images
     assert [item.sha256 for item in metadata] == [
@@ -803,11 +793,9 @@ def test_capability_is_checked_before_image_send(tmp_path):
     "options",
     [
         {"maxRetries": 3},
-        {"temperature": float("nan")},
         {"timeoutMs": 0},
         {"timeoutMs": 2147483648},
-        {"maxTokens": True},
-        {"thinkingBudgets": {"unknown": 1}},
+        {"timeoutMs": True},
         {"headers": {"authorization": "not allowed"}},
     ],
 )
