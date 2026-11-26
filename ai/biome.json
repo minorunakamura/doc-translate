@@ -9,13 +9,7 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": [
-      "**",
-      "!!node_modules",
-      "!!dist",
-      "!!pnpm-lock.yaml",
-      "!!package-lock.json"
-    ]
+    "includes": ["**", "!!node_modules", "!!dist", "!!package-lock.json"]
   },
   "linter": { "enabled": false },
   "assist": { "enabled": false }

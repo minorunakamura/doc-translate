@@ -127,12 +127,11 @@ def main(
         epilog="Providers/models show tables; run/resume/review/status show summaries. Use --json on these commands for machine-readable output; --events-json independently selects pre-send notices on run/resume/review stderr. Other commands output JSON. Exit codes: 0 success, 1 partial output/execution failure, 2 input/configuration error. Run/resume/review send explicitly scoped data to selected providers. PDF source candidate adoption is explicit via revise --source; pending resume/render exit 1, successful status exits 0. Saved render/status/revise need no Node, authentication or inference.",
     )
     commands = parser.add_subparsers(dest="operation", required=True)
-    setup = commands.add_parser(
+    commands.add_parser(
         "setup-ai",
         help="Explicitly install locked helper dependencies; no login or inference.",
-        description="Install bundled locks in a new application-owned runtime outside document workspaces. Requires installed Node >=24.21.0 and the selected manager. Outputs runtime location and versions as JSON; no login or inference.",
+        description="Install the bundled npm lock in a new application-owned runtime outside document workspaces. Requires installed Node >=24.21.0 and npm. Outputs runtime location and versions as JSON; no login or inference.",
     )
-    setup.add_argument("--package-manager", choices=("npm", "pnpm"), required=True)
     providers = commands.add_parser(
         "providers",
         help="Optional offline built-in provider catalog lookup.",
@@ -403,7 +402,7 @@ def main(
                 else read_saved_status(args.workspace)
             )
         elif args.operation == "setup-ai":
-            result = ai_runtime.setup(args.package_manager)
+            result = ai_runtime.setup()
         elif args.operation in {"login", "logout"}:
             result = authenticate(
                 args.operation, args.provider, getattr(args, "method", None)

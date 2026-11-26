@@ -4,21 +4,20 @@
 
 ## 導入・動作環境の詳細
 
-対象環境はmacOS 26.7.1 arm64、Python 3.14、Node 24です。Nodeは24.21.0以上を要求します。macOSの最低version、Intel、Linux／Windowsでの動作は未保証です。Node依存の初回導入には導入済みのpnpmまたはnpmを使用します。今回のローカル確認環境はPython 3.14.9／Node 24.22.1／pnpm 12.10.1／npm 11.19.1で、以前の確認基準Node 24.21.0／npm 11.19.0とは異なります。Pi CLI／coding agentは不要です。
+対象環境はmacOS 26.7.1 arm64、Python 3.14、Node 24です。Nodeは24.21.0以上を要求します。macOSの最低version、Intel、Linux／Windowsでの動作は未保証です。Node依存の初回導入には導入済みのnpmを使用します。今回のローカル確認環境はPython 3.14.9／Node 24.22.1／npm 11.19.1で、以前の確認基準Node 24.21.0／npm 11.19.0とは異なります。Pi CLI／coding agentは不要です。
 
 配布wheelを入手した場合、uvでインストールできます（`FILE.whl`は入手したwheelのpathに置換します）。まだrelease配布はしていません。
 
 ```sh
 uv tool install /path/to/FILE.whl
 doc-translate --help
-# 初回だけ。installed managerを明示して固定lockの依存を取得
-# npmを使う場合は pnpm を npm に置換
-doc-translate setup-ai --package-manager pnpm
+# 初回だけ。installed npmで固定lockの依存を取得
+doc-translate setup-ai
 ```
 
-`setup-ai`だけが依存packageをregistryから取得します。Nodeやmanager自体の取得、実行時compile、認証、model重み取得、文書送信は行いません。通常の参照・認証操作にはNodeだけが必要で、pnpm／npmやPi CLIは不要です。自動installやnpxへのfallbackはありません。
+`setup-ai`だけが依存packageをregistryから取得します。Nodeやnpm自体の取得、実行時compile、認証、model重み取得、文書送信は行いません。通常の参照・認証操作にはNodeだけが必要で、npmやPi CLIは不要です。自動installやnpxへのfallbackはありません。
 
-runtimeは文書workspaceではなく、`~/.local/share/doc-translate/ai/`（`XDG_DATA_HOME`指定時はその下の`doc-translate/ai/`）に保存します。setupのたびにmanager・固定lock・helperに対応する新しいdirectoryを作り、導入と検査に成功したものだけを次回利用対象にします。別managerで既存node_modulesを上書きせず、旧runtime、文書、credentialは削除しません。失敗した導入directoryも残ります。成功時は利用先とmanager／lock hash／helper・library versionをJSONで表示します。
+runtimeは文書workspaceではなく、`~/.local/share/doc-translate/ai/`（`XDG_DATA_HOME`指定時はその下の`doc-translate/ai/`）に保存します。setupのたびに固定lock・helperに対応する新しいdirectoryを作り、導入と検査に成功したものだけを次回利用対象にします。既存node_modulesを上書きせず、旧runtime、文書、credentialは削除しません。失敗した導入directoryも残ります。成功時は利用先とnpm version／lock hash／helper・library versionをJSONで表示します。
 
 Pythonのcore導入にDoclingやOCR modelは不要です。EPUBのrunはcoreだけで使えます。PDFのrunには別extra `pdf`と、後述のローカルmodel準備が必要です。
 
@@ -71,7 +70,7 @@ doc-translate models --provider openai
 
 認証・token refresh・catalog refresh・LLM通信はしません。全model定義やheaders、credentialは出力せず、Pi CLIの認証設定も読み込み・コピーしません。catalog掲載はaccountの利用権や実providerの品質を保証しません。動的catalogのみのproviderは、built-inのmodel一覧が空になる場合があります。
 
-help／setup／参照／認証の成功はexit code 0、入力・設定不足／依存不一致・未知provider／未対応login methodは2、導入・認証・保存・helper実行の失敗や取消は1です。引数なし・未知の操作も2で停止します。不足／不一致なら表示された`setup-ai --package-manager npm`（または`pnpm`）を明示実行してください。失敗を空の成功結果とは扱いません。
+help／setup／参照／認証の成功はexit code 0、入力・設定不足／依存不一致・未知provider／未対応login methodは2、導入・認証・保存・helper実行の失敗や取消は1です。引数なし・未知の操作も2で停止します。不足／不一致なら表示された`setup-ai`を明示実行してください。失敗を空の成功結果とは扱いません。
 
 ## providerの認証と削除
 

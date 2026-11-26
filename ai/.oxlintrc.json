@@ -7,10 +7,5 @@
     "perf": "warn"
   },
   "rules": { "no-console": "warn", "no-debugger": "error" },
-  "ignorePatterns": [
-    "node_modules/**",
-    "dist/**",
-    "pnpm-lock.yaml",
-    "package-lock.json"
-  ]
+  "ignorePatterns": ["node_modules/**", "dist/**", "package-lock.json"]
 }

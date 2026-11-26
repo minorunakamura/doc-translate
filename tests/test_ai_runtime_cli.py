@@ -21,21 +21,20 @@ def runtime_cli(tmp_path):
     binaries.mkdir()
     (binaries / "node").symlink_to(node)
     log = tmp_path / "manager.jsonl"
-    for manager in ("npm", "pnpm"):
-        script = binaries / manager
-        script.write_text(
-            f"#!{sys.executable}\n"
-            "import json, os, pathlib, sys\n"
-            "if sys.argv[1:] == ['--version']:\n"
-            "    print('11.19.0' if pathlib.Path(sys.argv[0]).name == 'npm' else '12.10.1')\n"
-            "    sys.exit(0)\n"
-            f"with open({str(log)!r}, 'a') as log:\n"
-            "    log.write(json.dumps({'manager': pathlib.Path(sys.argv[0]).name, 'args': sys.argv[1:], 'cwd': os.getcwd(), 'corepack_network': os.environ.get('COREPACK_ENABLE_NETWORK'), 'manage_versions': os.environ.get('npm_config_manage_package_manager_versions')}) + '\\n')\n"
-            "if os.environ.get('FAIL_INSTALL'):\n"
-            "    sys.exit(7)\n"
-            f"pathlib.Path('node_modules').symlink_to({str(ROOT / 'ai/node_modules')!r}, target_is_directory=True)\n"
-        )
-        script.chmod(0o755)
+    script = binaries / "npm"
+    script.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib, sys\n"
+        "if sys.argv[1:] == ['--version']:\n"
+        "    print('11.19.0')\n"
+        "    sys.exit(0)\n"
+        f"with open({str(log)!r}, 'a') as log:\n"
+        "    log.write(json.dumps({'args': sys.argv[1:], 'cwd': os.getcwd(), 'corepack_network': os.environ.get('COREPACK_ENABLE_NETWORK')}) + '\\n')\n"
+        "if os.environ.get('FAIL_INSTALL'):\n"
+        "    sys.exit(7)\n"
+        f"pathlib.Path('node_modules').symlink_to({str(ROOT / 'ai/node_modules')!r}, target_is_directory=True)\n"
+    )
+    script.chmod(0o755)
     env = {
         **os.environ,
         "HOME": str(tmp_path),
@@ -57,7 +56,7 @@ def runtime_cli(tmp_path):
     return run, binaries, log, tmp_path
 
 
-def test_setup_installs_selected_locks_in_separate_runtimes_then_needs_only_node(
+def test_setup_installs_npm_lock_in_owned_runtime_then_needs_only_node(
     runtime_cli,
 ):
     run, binaries, log, tmp_path = runtime_cli
@@ -68,18 +67,17 @@ def test_setup_installs_selected_locks_in_separate_runtimes_then_needs_only_node
     credential = tmp_path / ".config/doc-translate/credentials.json"
     credential.parent.mkdir(parents=True)
     credential.write_text("keep credential")
-    npm = run("setup-ai", "--package-manager", "npm")
+    npm = run("setup-ai")
     assert npm.returncode == 0, npm.stderr
     first = json.loads(npm.stdout)
     assert first["package_manager"] == "npm"
+    assert first["package_manager_version"] == "11.19.0"
     assert first["library_version"] == "1.5.0"
     assert first["helper_version"] == "0.1.0"
     assert len(first["lock_sha256"]) == 64
-    pnpm = run("setup-ai", "--package-manager", "pnpm")
-    assert pnpm.returncode == 0, pnpm.stderr
-    second = json.loads(pnpm.stdout)
-    assert second["runtime"] != first["runtime"]
-    assert Path(first["runtime"]).is_dir()
+    runtime = Path(first["runtime"])
+    assert runtime.is_dir()
+    assert (runtime / "package-lock.json").is_file()
     installs = [json.loads(line) for line in log.read_text().splitlines()]
     assert installs[0]["args"] == [
         "ci",
@@ -88,19 +86,11 @@ def test_setup_installs_selected_locks_in_separate_runtimes_then_needs_only_node
         "--no-audit",
         "--no-fund",
     ]
-    assert installs[1]["corepack_network"] == "0"
-    assert installs[1]["manage_versions"] == "false"
-    assert installs[1]["args"] == [
-        "install",
-        "--prod",
-        "--frozen-lockfile",
-        "--ignore-scripts",
-    ]
+    assert installs[0]["corepack_network"] == "0"
     assert Path(installs[0]["cwd"]).is_relative_to(tmp_path / "data/doc-translate/ai")
     assert document.read_text() == "keep document"
     assert credential.read_text() == "keep credential"
     (binaries / "npm").unlink()
-    (binaries / "pnpm").unlink()
     providers = run("providers", "--json")
     assert providers.returncode == 0, providers.stderr
     assert {p["id"] for p in json.loads(providers.stdout)["providers"]} >= {
@@ -132,14 +122,13 @@ def test_setup_installs_selected_locks_in_separate_runtimes_then_needs_only_node
     assert "IMAGE INPUT" in readable_models.stdout
     assert "THINKING LEVELS" in readable_models.stdout
     assert json.loads(models.stdout)["models"][0]["id"] in readable_models.stdout
-    assert len(log.read_text().splitlines()) == 2
+    assert len(log.read_text().splitlines()) == 1
 
 
 @pytest.mark.parametrize(
     "arguments",
     [
-        ["setup-ai"],
-        ["setup-ai", "--package-manager", "yarn"],
+        ["setup-ai", "--package-manager", "npm"],
         ["models"],
         ["models", "--provider", "openai", "--refresh"],
     ],
@@ -152,25 +141,23 @@ def test_cli_rejects_missing_or_unsupported_arguments(runtime_cli, arguments):
 
 
 @pytest.mark.parametrize("missing", ["node", "npm"])
-def test_setup_requires_installed_node_and_selected_manager(runtime_cli, missing):
+def test_setup_requires_installed_node_and_npm(runtime_cli, missing):
     run, binaries, log, _ = runtime_cli
     (binaries / missing).unlink()
-    result = run("setup-ai", "--package-manager", "npm")
+    result = run("setup-ai")
     assert result.returncode == 2
-    assert "setup-ai --package-manager" in result.stderr
+    assert "Run doc-translate setup-ai." in result.stderr
     assert not log.exists()
 
 
 def test_failed_setup_keeps_previous_runtime_usable(runtime_cli):
     run, _, log, _ = runtime_cli
-    first = run("setup-ai", "--package-manager", "npm")
+    first = run("setup-ai")
     assert first.returncode == 0, first.stderr
-    failed = run(
-        "setup-ai", "--package-manager", "pnpm", extra_env={"FAIL_INSTALL": "1"}
-    )
+    failed = run("setup-ai", extra_env={"FAIL_INSTALL": "1"})
     assert failed.returncode == 1
     assert "exit 7" in failed.stderr
-    assert "setup-ai --package-manager" in failed.stderr
+    assert "Run doc-translate setup-ai." in failed.stderr
     assert run("providers").returncode == 0
     assert len(log.read_text().splitlines()) == 2
 
@@ -178,7 +165,7 @@ def test_failed_setup_keeps_previous_runtime_usable(runtime_cli):
 @pytest.mark.parametrize("mismatch", ["record", "helper", "dependency", "lock"])
 def test_metadata_stops_on_runtime_mismatch_without_install(runtime_cli, mismatch):
     run, _, log, _ = runtime_cli
-    setup = run("setup-ai", "--package-manager", "npm")
+    setup = run("setup-ai")
     assert setup.returncode == 0, setup.stderr
     runtime = Path(json.loads(setup.stdout)["runtime"])
     if mismatch == "record":
@@ -196,13 +183,13 @@ def test_metadata_stops_on_runtime_mismatch_without_install(runtime_cli, mismatc
         (dependency / "package.json").write_text('{"version":"0.0.0"}')
     result = run("providers")
     assert result.returncode == 2
-    assert "setup-ai --package-manager" in result.stderr
+    assert "Run doc-translate setup-ai." in result.stderr
     assert len(log.read_text().splitlines()) == 1
 
 
 def test_unknown_provider_is_an_input_error(runtime_cli):
     run, _, log, _ = runtime_cli
-    assert run("setup-ai", "--package-manager", "npm").returncode == 0
+    assert run("setup-ai").returncode == 0
     result = run("models", "--provider", "not-a-provider")
     assert result.returncode == 2
     assert "Unknown built-in provider" in result.stderr
@@ -214,7 +201,7 @@ def test_unknown_provider_is_an_input_error(runtime_cli):
 )
 def test_invalid_or_failed_helper_is_never_success(runtime_cli, failure):
     run, binaries, _, _ = runtime_cli
-    assert run("setup-ai", "--package-manager", "npm").returncode == 0
+    assert run("setup-ai").returncode == 0
     (binaries / "node").unlink()
     (binaries / "node").write_text(
         f"#!{sys.executable}\n"
@@ -233,7 +220,7 @@ def test_invalid_or_failed_helper_is_never_success(runtime_cli, failure):
     (binaries / "node").chmod(0o755)
     result = run("providers")
     assert result.returncode == 1
-    assert "setup-ai --package-manager" in result.stderr
+    assert "Run doc-translate setup-ai." in result.stderr
     assert "SECRET_HELPER_STDERR" not in result.stderr + result.stdout
 
 
@@ -243,10 +230,10 @@ def test_setup_rejects_unsupported_node_before_install(runtime_cli, node_output)
     (binaries / "node").unlink()
     (binaries / "node").write_text(f"#!{sys.executable}\nprint({node_output!r})\n")
     (binaries / "node").chmod(0o755)
-    result = run("setup-ai", "--package-manager", "npm")
+    result = run("setup-ai")
     assert result.returncode == 2
     assert "Node >=24.21.0" in result.stderr
-    assert "setup-ai --package-manager" in result.stderr
+    assert "Run doc-translate setup-ai." in result.stderr
     assert not log.exists()
 
 
@@ -255,9 +242,9 @@ def test_setup_guides_when_node_cannot_execute(runtime_cli):
     (binaries / "node").unlink()
     (binaries / "node").write_text("not an executable format")
     (binaries / "node").chmod(0o755)
-    result = run("setup-ai", "--package-manager", "npm")
+    result = run("setup-ai")
     assert result.returncode == 2
-    assert "setup-ai --package-manager" in result.stderr
+    assert "Run doc-translate setup-ai." in result.stderr
     assert not log.exists()
 
 
@@ -267,8 +254,6 @@ def test_setup_keeps_runtime_and_installed_executables_resolvable_after_chdir(
     run, binaries, _, tmp_path = runtime_cli
     result = run(
         "setup-ai",
-        "--package-manager",
-        "npm",
         extra_env={
             "PATH": os.path.relpath(binaries),
             "XDG_DATA_HOME": os.path.relpath(tmp_path / "data"),

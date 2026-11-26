@@ -57,7 +57,7 @@ Rootの最新チェックは別core環境の`uv sync --locked --dev`と全pytest
 - `src/doc_translate/`：PythonのCLI、アプリ所有Node runtime導入／検査、TTY認証UI（`auth.py`）、推論adapter（`inference.py`）、EPUB安全reader（`epub.py`）と原文抽出adapter（`epub_source.py`）、PDF取得adapter（`pdf.py`）と補正chunk境界（`pdf_correction.py`）・原文組立adapter（`pdf_source.py`）、共通unit生成・inline保護・workflow分割（`units.py`）、固定context／glossary準備と根拠・実行記録（`preparation.py`）、翻訳chunk・検証・部分採用と再利用（`translation.py`）、原文snapshot、基点付きJSON修正と候補採用（`revise.py`）、明示範囲の独立内容照合とhash付き不変履歴（`review.py`）、workspace OS lock、JSONL codec。
 - `ai/src/`：TypeScriptのJSONL codec、非秘密metadata／認証／generation helper（`dist/main.js`）、`AuthDialog`、`FileCredentialStore`、独立推論のpreflight／stream接続（`generation.ts`）。`ai/tests/`の`.mjs`は公開APIとcompile済みhelperを使うテスト専用processです。
 - `tests/fixtures/`：自作JSONと外部認証fake／PTY process、推論protocolの故障注入proxy。EPUBの人工ZIPは`tests/test_epub.py`で生成し、`tests/test_epub_source.py`でreader→原文snapshot抽出→公開save/loadのround-tripを検査します。`tests/test_pdf.py`はDoclingの公開変換／page backend境界の人工fixtureから、raw／画像／設定の保存・load検証を行います。`tests/test_pdf_correction.py`は人工draft→実Node helper／faux provider→検証済み所有chunkの公開save/loadを検査します。`tests/test_preparation.py`は保存原文→実helper／faux→固定準備artifactの公開prepare/loadを検査します。`tests/test_translation.py`は保存原文／固定準備→実helper／faux→翻訳の公開translate/loadを検査します。`tests/test_render.py`は正本→Markdown／対応表／QAと実CLI render/statusを検査します。`tests/test_run.py`はPDF／EPUBの公開CLIからworkspace・出力・statusまでを検査します。新規`run`／`resume`／`revise`／`review`は実装済みです。`tests/test_review.py`はCLI→実helper／faux→局所findings保存→保存-only QA/statusのseamを検査します。`tests/test_revise.py`はsource全置換・訳文patchとpolicy改版、`tests/test_pdf_candidate_acceptance.py`は実CLIから候補比較・採用・後続更新を検査します。
-- `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、およびcore-only別venvの実EPUB取得→原文／unit→保存-only CLI出力・status、wheel CLIからのclean npm／pnpm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
+- `scripts/check_distribution.py`：sourceと明示compile済みresource／wheelの一致、およびcore-only別venvの実EPUB取得→原文／unit→保存-only CLI出力・status、wheel CLIからのclean npm setupとNode-only catalog smokeを検査します。runtime導入は公開`setup-ai`自身が行います。
 
 今回のローカル環境：macOS 26.7.1 arm64、Python 3.14.9、Node 24.22.1、pnpm 12.10.1、npm 11.19.1、uv 0.13.5。以前の基準Node 24.21.0／npm 11.19.0とは異なります。CI設定はGitHub-hosted macos-15 ARM64、Python 3.14／Node 24.21.0／npm 11.19.0で、今回のためにtoolやlockを変更しません。別OSやmacOSの最低versionは未保証です。
 
@@ -69,12 +69,12 @@ Rootの最新チェックは別core環境の`uv sync --locked --dev`と全pytest
 
 ```sh
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-pnpm --dir ai install --frozen-lockfile --ignore-scripts
-pnpm --dir ai build
+npm --prefix ai ci --ignore-scripts --no-audit --no-fund
+npm --prefix ai run build
 uv sync --locked --dev
-pnpm --dir ai exec biome format . --error-on-warnings
-pnpm --dir ai exec oxlint --type-aware --type-check --deny-warnings .
-pnpm --dir ai exec vitest run
+npm --prefix ai run format
+npm --prefix ai run lint
+npm --prefix ai run test
 uv run ruff check .
 uv run ruff format --check .
 uv run python -c 'import importlib.util; assert importlib.util.find_spec("docling") is None'
@@ -84,7 +84,7 @@ uv run doc-translate --help
 
 Python packageは`ai/dist`を同梱するため、fresh checkoutでは`uv sync`より先にhelperの明示buildが必要です。既存editable環境で同梱resourceの更新が必要なら、許可確認後にbuildと`uv sync --locked --dev --reinstall-package doc-translate`を行います（PDF環境は`--extra pdf`も保持）。pytestのprocess契約もcompile済み公開`@doc-translate/ai/jsonl`を使います。Python側はbinary file行iterator、Node側は任意binary chunkのcodecです。警告をquiet／包括的disableで隠さず修正します。
 
-`ai/tsconfig.build.json`の`skipLibCheck`はpi-ai 1.4.0配布declarationのJSON import属性欠落と、@google/genaiのoptional MCP SDK型参照不足に限定した互換性対応です。依存declaration自体の型検査は省きますが、自作sourceの型検査とoxlintのtype-aware／type-check／warning 0は維持します。実helperと両managerのclean installでruntime互換性を別途検査します。
+`ai/tsconfig.build.json`の`skipLibCheck`はpi-ai 1.4.0配布declarationのJSON import属性欠落と、@google/genaiのoptional MCP SDK型参照不足に限定した互換性対応です。依存declaration自体の型検査は省きますが、自作sourceの型検査とoxlintのtype-aware／type-check／warning 0は維持します。実helperとnpmのclean installでruntime互換性を別途検査します。
 
 上記はcore-onlyのruntime／テスト検証です。全Python sourceの型検査は、PDF adapterとテストのimportも解決できるPDF extra付き環境で行います。
 
@@ -147,7 +147,7 @@ export EVIDENCE
 git rev-parse HEAD > "$EVIDENCE/revision.txt"
 git diff --stat > "$EVIDENCE/diff-scope.txt"
 git diff -- CONTRIBUTING.md tests/test_revise.py tests/test_review.py tests/test_pdf_candidate_acceptance.py .github/workflows/ci.yml > "$EVIDENCE/verification.diff"
-{ uname -sm; .venv/bin/python --version; node --version; pnpm --version; uv --version; } > "$EVIDENCE/tools.txt"
+{ uname -sm; .venv/bin/python --version; node --version; npm --version; uv --version; } > "$EVIDENCE/tools.txt"
 ```
 
 `conditions.txt`へcore/PDF extra・依存／tool version・同期の有無・Node build状態・PATH/offline条件・signal handler・入力・cold/warm状態を記録します（raw環境変数やcredentialは記録しません）。各操作のcommand、exit、時刻／raw所要時間、期待／観測、未確認事項を証拠と対応付けます。過去Issueの成功は今回のrevisionの成功に上書きしません。JSON／assert成功も実LLM意味品質、実Docling/OCR、viewer、account利用権の保証ではなく、remote未実行は明記します。stderr保存はnetwork拒否付き人工fixtureに限り、実認証・秘密入りstderrは保存しません。
@@ -528,9 +528,9 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 .venv/bin/ruff format --check .
 .venv/bin/ty check
 .venv/bin/pytest
-pnpm --dir ai format
-pnpm --dir ai lint  # oxlint --type-aware --type-check --deny-warnings
-pnpm --dir ai test
+npm --prefix ai run format
+npm --prefix ai run lint  # oxlint --type-aware --type-check --deny-warnings
+npm --prefix ai run test
 ```
 
 PDF／EPUBの出力到達、所有5ページ分割／length縮小、許可範囲だけの隣接context・離れた参照範囲の無送信、全ページ指定、指定glossary terms優先、要確認と部分失敗の区別、補正成功保持／sourceなし／準備・翻訳失敗時の部分出力、既存空directory・file・symlinkの拒否、未知modelの無送信／no fallback、実認証metadataの送信前flushを検査します。partial補正の意図範囲／成功／失敗はrunと後続statusの両方で確認します。既存workspaceのrender/statusと同じく、保存-only操作は空PATHでも動きます。
@@ -644,9 +644,9 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 .venv/bin/ruff check .
 .venv/bin/ruff format --check .
 .venv/bin/ty check
-pnpm --dir ai format
-pnpm --dir ai lint
-pnpm --dir ai test
+npm --prefix ai run format
+npm --prefix ai run lint
+npm --prefix ai run test
 ```
 
 - unit／pages排他・必須、未知／空ID、EPUB pages、保存範囲外・跨り・未訳／staleの無送信を確認します。PDF表のblock位置とcell evidenceが異なる人工形状でも選択外cell本文を送りません。
@@ -742,17 +742,14 @@ PDF候補も同じ公開CLIを通す直接入口は`.venv/bin/pytest -s tests/te
 ## wheelの明示buildと導入検査
 
 ```sh
-pnpm --dir ai build
+npm --prefix ai run build
 uv build
 uv run python scripts/check_distribution.py dist/doc_translate-0.1.0-py3-none-any.whl
 ```
 
-この検査は一時directoryで再compileして`ai/dist`と比較し、wheel内のdist／manifest／両lockをbyte比較します。core-onlyの別venvへwheelをinstallし、Nodeもmanagerもない空PATHで自作EPUB ZIPのreader→source保存／load→unit生成→実CLI render/statusを検査します。wheel metadataのRich直接依存（`>=15,<16`）と実import、run／resume／review helpの`--json`／`--events-json`も確認します。訳文なしのrenderはexit1・部分出力・`※`、通常statusはexit0・保存記録のみ／成果物未検証／総数不明、`--verify`はexit0・詳細検査の人向け表示、`--json`と`--verify --json`はexit0・同じ詳細JSON／出力鮮度をassertし、実LLMや内容品質の成功とは扱いません。その後、workspace外の別々のclean data directoryで実CLI `setup-ai --package-manager MANAGER`を実行します（依存packageのregistry取得あり）。内部で使用する固定コマンドは次のとおりです。
+この検査は一時directoryで再compileして`ai/dist`と比較し、wheel内のdist／manifest／lockをbyte比較します。core-onlyの別venvへwheelをinstallし、Nodeもnpmもない空PATHで自作EPUB ZIPのreader→source保存／load→unit生成→実CLI render/statusを検査します。wheel metadataのRich直接依存（`>=15,<16`）と実import、run／resume／review helpの`--json`／`--events-json`も確認します。訳文なしのrenderはexit1・部分出力・`※`、通常statusはexit0・保存記録のみ／成果物未検証／総数不明、`--verify`はexit0・詳細検査の人向け表示、`--json`と`--verify --json`はexit0・同じ詳細JSON／出力鮮度をassertし、実LLMや内容品質の成功とは扱いません。その後、workspace外の別々のclean data directoryで実CLI `setup-ai`を実行します（依存packageのregistry取得あり）。内部で使用する固定コマンドはinstalled npmの`ci --omit=dev --ignore-scripts --no-audit --no-fund`です。
 
-- npm：`ci --omit=dev --ignore-scripts --no-audit --no-fund`
-- pnpm：`install --prod --frozen-lockfile --ignore-scripts`
-
-続くoffline smokeはNodeだけをPATHに置き、source treeのnode_modules／Pi CLI／managerなしで実CLI `providers`／`models --provider anthropic|google`、公開codecのUTF-8分割byte round-trip・末尾不正の拒否とpi-ai／proper-lockfileのimportを確認します。認証・refresh・推論はしません。Vitestの実helper processはnetwork transportを拒否した状態でもcatalogを参照します。pytestは公開CLI→runtimeとPython↔実Node helper境界を検査し、package manager／失敗process境界だけをfake化します。依存不足を自動取得するruntime hookはありません。wheelにはhelper sourceやnode_modulesを含めません。sdistは明示build済みdistと再build用source／manifest／lockを含みます。
+続くoffline smokeはNodeだけをPATHに置き、source treeのnode_modules／Pi CLI／npmなしで実CLI `providers`／`models --provider anthropic|google`、公開codecのUTF-8分割byte round-trip・末尾不正の拒否とpi-ai／proper-lockfileのimportを確認します。認証・refresh・推論はしません。Vitestの実helper processはnetwork transportを拒否した状態でもcatalogを参照します。pytestは公開CLI→runtimeとPython↔実Node helper境界を検査し、package manager／失敗process境界だけをfake化します。依存不足を自動取得するruntime hookはありません。wheelにはhelper sourceやnode_modulesを含めません。sdistは明示build済みdistと再build用source／manifest／lockを含みます。
 
 Python側の別環境確認（repository rootで実行、`TMP`は新規一時directory）：
 
@@ -792,7 +789,7 @@ Pythonは回答JSONを別に解析してcallerのPydantic model（domain validat
 
 ## lock・依存更新とlicense
 
-Pythonは`pyproject.toml`変更後に`uv lock`、Nodeは共通`ai/package.json`を変更して`pnpm --dir ai install --lockfile-only --ignore-scripts`と`npm --prefix ai install --package-lock-only --ignore-scripts --no-audit --no-fund`で両lockを更新します。依存更新はregistry取得の許可範囲内で行います。既存node_modulesへ別managerを上書きせず、上のwheel clean install検査を両managerで再実行してください。両managerの推移依存が完全一致するとは仮定しません。
+Pythonは`pyproject.toml`変更後に`uv lock`、Nodeは`ai/package.json`を変更して`npm --prefix ai install --package-lock-only --ignore-scripts --no-audit --no-fund`でlockを更新します。依存更新はregistry取得の許可範囲内で行います。更新後は上のwheel clean install検査を再実行してください。
 
 現在の主依存：Pydantic／Docling／OCRMac／pi-ai／proper-lockfileはMIT、PillowはMIT-CMU。推移依存にはcertifiのMPL-2.0、Torchの複合license、Node側のMIT／Apache-2.0／BSD等があります。lockは解決versionの記録でありlicense承認の代替ではありません。今回のnative tool確認はmacOS arm64に限定しています。更新時は実際の配布物のlicense／NOTICEとnative条件を再確認します。Apple VisionのOS条件やmodel重みをpackageのMITに含めません。Heron重みはApache-2.0、TableFormer重みはCDLA-Permissive-2.0です。Issue #7の実動検証は承認済みの既存local cacheを使い、新規取得・同梱はしていません。project全体のlicense宣言・releaseは今回の対象外です。
 
@@ -812,9 +809,9 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 .venv/bin/ruff check .
 .venv/bin/ruff format --check .
 .venv/bin/ty check
-pnpm --dir ai format
-pnpm --dir ai lint
-pnpm --dir ai test
+npm --prefix ai run format
+npm --prefix ai run lint
+npm --prefix ai run test
 ```
 
 pytestとは別の直接entry再現例です。model／credential／networkは使わず、`process_command`を実Node helper／public fauxへ明示します。`BOUNDARY=source-snapshot.json|preparation-snapshot.json|translation-snapshot.json`、`EDGE=before|after`、`STOP_SIGNAL=SIGINT|SIGKILL`で各境界を選べます。SIGINTでは正常取消drainを待ち、SIGKILLではOS lock自動解放と保存済みartifactの再検証だけを確認します。OAuth refreshの強制kill安全性や実請求・意味品質は証明しません。

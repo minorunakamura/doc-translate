@@ -1,7 +1,7 @@
 """Check explicit helper build freshness and wheel resources, then clean installs.
 
-Run after pnpm --dir ai build && uv build. Registry access is only for the
-explicit npm/pnpm installs; CLI catalog and codec smoke send no requests.
+Run after npm --prefix ai run build && uv build. Registry access is only for the
+explicit npm install; CLI catalog and codec smoke send no requests.
 """
 
 import json
@@ -126,16 +126,17 @@ def main() -> None:
         compiled = temporary / "compiled"
         subprocess.run(
             [
-                "pnpm",
-                "--dir",
-                str(ROOT / "ai"),
+                "npm",
                 "exec",
+                "--no",
+                "--",
                 "tsc",
                 "-p",
                 "tsconfig.build.json",
                 "--outDir",
                 str(compiled),
             ],
+            cwd=ROOT / "ai",
             check=True,
         )
         built = {
@@ -149,7 +150,7 @@ def main() -> None:
         }
         assert built and built == actual, "ai/dist is stale; explicitly rebuild it"
         expected = {f"dist/{path.as_posix()}": data for path, data in built.items()}
-        for name in ("package.json", "pnpm-lock.yaml", "package-lock.json"):
+        for name in ("package.json", "package-lock.json"):
             expected[name] = (ROOT / "ai" / name).read_bytes()
         with ZipFile(wheel) as archive:
             resources = {
@@ -158,7 +159,7 @@ def main() -> None:
                 if name.startswith(RESOURCE) and not name.endswith("/")
             }
         assert resources == expected, "wheel helper resources are missing or stale"
-        print("helper source/build/manifest/locks and wheel resources: OK", flush=True)
+        print("helper source/build/manifest/lock and wheel resources: OK", flush=True)
         # Keep the smoke PATH free of Pi CLI and source-tree node_modules.
         binaries = temporary / "bin"
         binaries.mkdir()
@@ -189,73 +190,68 @@ def main() -> None:
             },
             check=True,
         )
-        for manager in ("npm", "pnpm"):
-            home = temporary / manager
-            home.mkdir()
-            environment = {
-                **os.environ,
-                "HOME": str(home),
-                "PYTHONPATH": "",
-                "XDG_CONFIG_HOME": str(home / "config"),
-                "XDG_DATA_HOME": str(home / "data"),
-            }
-            environment.pop("NODE_PATH", None)
-            environment.pop("NODE_OPTIONS", None)
-            installed = subprocess.run(
-                [str(cli), "setup-ai", "--package-manager", manager],
+        home = temporary / "npm"
+        home.mkdir()
+        environment = {
+            **os.environ,
+            "HOME": str(home),
+            "PYTHONPATH": "",
+            "XDG_CONFIG_HOME": str(home / "config"),
+            "XDG_DATA_HOME": str(home / "data"),
+        }
+        environment.pop("NODE_PATH", None)
+        environment.pop("NODE_OPTIONS", None)
+        installed = subprocess.run(
+            [str(cli), "setup-ai"],
+            cwd=temporary,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        record = json.loads(installed.stdout)
+        assert record["package_manager"] == "npm"
+        assert record["library_version"] == "1.5.0"
+        runtime = Path(record["runtime"])
+        assert runtime.is_relative_to(home / "data/doc-translate/ai")
+        assert (
+            json.loads((runtime / "runtime.json").read_text())["lock_sha256"]
+            == record["lock_sha256"]
+        )
+        environment["PATH"] = str(binaries)
+        subprocess.run([str(cli), "--help"], cwd=temporary, env=environment, check=True)
+        for arguments, key in (
+            (["providers", "--json"], "providers"),
+            (["models", "--provider", "anthropic", "--json"], "models"),
+            (["models", "--provider", "google", "--json"], "models"),
+        ):
+            result = subprocess.run(
+                [str(cli), *arguments],
                 cwd=temporary,
                 env=environment,
                 capture_output=True,
                 text=True,
                 check=True,
             )
-            record = json.loads(installed.stdout)
-            assert record["package_manager"] == manager
-            assert record["library_version"] == "1.5.0"
-            runtime = Path(record["runtime"])
-            assert runtime.is_relative_to(home / "data/doc-translate/ai")
-            assert (
-                json.loads((runtime / "runtime.json").read_text())["lock_sha256"]
-                == record["lock_sha256"]
-            )
-            environment["PATH"] = str(binaries)
-            subprocess.run(
-                [str(cli), "--help"], cwd=temporary, env=environment, check=True
-            )
-            for arguments, key in (
-                (["providers", "--json"], "providers"),
-                (["models", "--provider", "anthropic", "--json"], "models"),
-                (["models", "--provider", "google", "--json"], "models"),
-            ):
-                result = subprocess.run(
-                    [str(cli), *arguments],
-                    cwd=temporary,
-                    env=environment,
-                    capture_output=True,
-                    text=True,
-                    check=True,
+            payload = json.loads(result.stdout)
+            assert payload[key]
+            if key == "providers":
+                assert {provider["id"] for provider in payload[key]} >= {
+                    "openai",
+                    "anthropic",
+                    "google",
+                }
+            else:
+                assert any(
+                    model["image_input"] and model["reasoning"]
+                    for model in payload[key]
                 )
-                payload = json.loads(result.stdout)
-                assert payload[key]
-                if key == "providers":
-                    assert {provider["id"] for provider in payload[key]} >= {
-                        "openai",
-                        "anthropic",
-                        "google",
-                    }
-                else:
-                    assert any(
-                        model["image_input"] and model["reasoning"]
-                        for model in payload[key]
-                    )
-            (runtime / "smoke.mjs").write_text(SMOKE, encoding="utf-8")
-            subprocess.run(
-                [node, "smoke.mjs"], cwd=runtime, env=environment, check=True
-            )
-            print(
-                f"{manager}: wheel CLI setup + Node-only catalog + offline codec/imports OK ({record['runtime']})",
-                flush=True,
-            )
+        (runtime / "smoke.mjs").write_text(SMOKE, encoding="utf-8")
+        subprocess.run([node, "smoke.mjs"], cwd=runtime, env=environment, check=True)
+        print(
+            f"npm: wheel CLI setup + Node-only catalog + offline codec/imports OK ({record['runtime']})",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
