@@ -250,6 +250,7 @@ def test_epub_items_cells_captions_and_attributes_remain_traceable(tmp_path):
     assert [u.kind for u in units] == [
         "list",
         "list",
+        "list",
         "caption",
         "table_cell",
         "table_cell",
@@ -260,20 +261,25 @@ def test_epub_items_cells_captions_and_attributes_remain_traceable(tmp_path):
         "footnote",
         "paragraph",
     ]
-    assert units[0].source_text == "⟦1⟧Outer ⟦2⟧item⟦/2⟧.⟦/1⟧ tail"
+    assert [u.source_text for u in units[:3]] == [
+        "⟦1⟧Outer ⟦2⟧item⟦/2⟧.⟦/1⟧",
+        "Child",
+        " tail",
+    ]
+    assert units[2].node_path == units[0].node_path == "/1/2/1/1"
     assert context(units[1])["list_path"][0]["node_path"] == "/1/2/1/1"
     assert context(units[1])["list"]["depth"] == 2
-    assert context(units[5])["table"]["row"] == 1
-    assert context(units[5])["table"]["column"] == 1
-    assert context(units[5])["table"]["column_span"] == 2
-    assert context(units[3])["table"]["row_span"] == 2
-    assert [h["text"] for h in context(units[5])["table"]["headings"]] == [
+    assert context(units[6])["table"]["row"] == 1
+    assert context(units[6])["table"]["column"] == 1
+    assert context(units[6])["table"]["column_span"] == 2
+    assert context(units[4])["table"]["row_span"] == 2
+    assert [h["text"] for h in context(units[6])["table"]["headings"]] == [
         "Name",
         "First",
     ]
-    assert units[6].attribute == "alt"
-    assert units[6].source_text == "A diagram"
-    assert units[8].source_text == "Figure caption"
+    assert units[7].attribute == "alt"
+    assert units[7].source_text == "A diagram"
+    assert units[9].source_text == "Figure caption"
     assert all("SECRET INTERIOR" not in u.model_dump_json() for u in units)
 
 
@@ -866,6 +872,91 @@ def test_epub_description_lists_keep_nested_item_ancestry(tmp_path):
         {"node_path": "/1/2/2/2", "text": "Outer description", "attributes": {}}
     ]
     assert context(items[3])["list_path"] == context(items[2])["list_path"]
+
+
+def test_epub_list_item_text_after_nested_list_follows_the_nested_items(tmp_path):
+    from test_epub import make_epub
+    from test_epub_source import extract
+
+    xhtml = b"""<html xmlns="http://www.w3.org/1999/xhtml"><head/><body><ol start="3"><li id="p">Before <em>x</em><ul><li>Child</li></ul>After <em title="Tip">y</em><ol><li>Second</li></ol>Last</li><li><ul><li>Lead child</li></ul>Only after</li><li>Only before<ul><li>Tail child</li></ul> </li></ol></body></html>"""
+    units = generate_translation_units(
+        extract(make_epub(tmp_path, extra={"OPS/text/ch.xhtml": xhtml}))
+    )
+    assert [(u.node_path, u.kind, u.attribute, u.source_text) for u in units] == [
+        ("/1/2/1/1", "list", None, "Before ⟦1⟧x⟦/1⟧"),
+        ("/1/2/1/1/2/1", "list", None, "Child"),
+        ("/1/2/1/1", "list", None, "After ⟦1⟧y⟦/1⟧"),
+        ("/1/2/1/1/3", "title", "title", "Tip"),
+        ("/1/2/1/1/4/1", "list", None, "Second"),
+        ("/1/2/1/1", "list", None, "Last"),
+        ("/1/2/1/2/1/1", "list", None, "Lead child"),
+        ("/1/2/1/2", "list", None, "Only after"),
+        ("/1/2/1/3", "list", None, "Only before "),
+        ("/1/2/1/3/1/1", "list", None, "Tail child"),
+    ]
+    assert units[0].tokens[0].kind == "emphasis"
+    assert units[2].tokens[0].kind == "emphasis"
+    assert context(units[2])["list"] == context(units[0])["list"]
+    assert context(units[0])["list"]["depth"] == 1
+    assert context(units[0])["list"]["containers"][0]["attributes"] == {"start": "3"}
+    assert context(units[1])["list"]["depth"] == 2
+    assert context(units[1])["list_path"][0]["node_path"] == "/1/2/1/1"
+
+
+@pytest.mark.parametrize(
+    ("item", "source_text", "source_hash"),
+    [
+        (
+            b"<li>Outer\n<ul>\n<li>Inner</li>\n</ul>\n</li>",
+            "Outer\n\n",
+            "e51f72b242e6274aa7cc76e4f2015b61127e1e01e29c71c763bbb835b9a6aa63",
+        ),
+        (
+            b"<li><p>Outer</p>\n<ul><li>Inner</li></ul>\n</li>",
+            "\u27e61\u27e7Outer\u27e6/1\u27e7\n\n",
+            "e8cd03f79b1a2709a349a92b6f6b18b8a6325e3c4c3cbbc40f150c2bd0656d40",
+        ),
+        (
+            b"<li>Only before<ul><li>Inner</li></ul> </li>",
+            "Only before ",
+            "50f19df4028dc72d75ad6ba4021bba104d56581595941ea01f22d4c5b0e20faf",
+        ),
+    ],
+)
+def test_epub_list_item_with_only_whitespace_after_nested_list_keeps_its_unit(
+    tmp_path, item, source_text, source_hash
+):
+    # Expected values were produced by the pre-#103 code (8d4988b).
+    from test_epub import make_epub
+    from test_epub_source import extract
+
+    xhtml = (
+        b'<html xmlns="http://www.w3.org/1999/xhtml"><head/><body><ol>'
+        + item
+        + b"</ol></body></html>"
+    )
+    units = generate_translation_units(
+        extract(make_epub(tmp_path, extra={"OPS/text/ch.xhtml": xhtml}))
+    )
+    assert [u.source_text for u in units] == [source_text, "Inner"]
+    assert units[0].source_hash == source_hash
+
+
+def test_epub_list_item_with_only_a_pagebreak_after_nested_list_splits_it(tmp_path):
+    from test_epub import make_epub
+    from test_epub_source import extract
+
+    xhtml = b"""<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head/><body><ol><li>Text<ul><li>Inner</li></ul><span epub:type="pagebreak" id="p12" title="12"/></li></ol></body></html>"""
+    units = generate_translation_units(
+        extract(make_epub(tmp_path, extra={"OPS/text/ch.xhtml": xhtml}))
+    )
+    assert [(u.node_path, u.kind, u.attribute, u.source_text) for u in units] == [
+        ("/1/2/1/1", "list", None, "Text"),
+        ("/1/2/1/1/1/1", "list", None, "Inner"),
+        ("/1/2/1/1", "list", None, "\u27e61\u27e7\u27e6/1\u27e7"),
+        ("/1/2/1/1/2", "title", "title", "\u27e6=1\u27e7"),
+    ]
+    assert [t.kind for t in units[2].tokens] == ["span"]
 
 
 @pytest.mark.parametrize("format", ["pdf", "epub"])

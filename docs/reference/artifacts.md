@@ -238,7 +238,7 @@ for unit in inputs:
 
 PDFでは採用`blocks`と確定tableの`cells`だけを扱い、`fragments/retained_blocks/retained_cells`から本文を再採用しません。code／formula／picture本体はunitにせず、図のconfirmedなblock／cell所属も除外します。pictureの`members`は補正時の提案も残すため、採用snapshotのuncertainty対象やuncertain／partialの対象をconfirmed提案だけで再除外しません。不確実cellを持つ採用tableも全体所属の提案だけでは消しません。refによる所属はpage・draft・selectorを照合し、部分spanを広いblock全体の削除根拠にせず、draftを一意にできない参照からも除外しません。caption・脚注・外側／uncertain／partialの内容は残します。未確定tableの候補cellは翻訳せず、元snapshotのQA／原画像を保持します。
 
-EPUBではresource大のsectionの`structure.tree`を正本とし、`block.text`のprojectionからunitを作りません。段落／item／cell全体のmixed contentをまとめ、nested listは別itemとして親contextへ対応付けます。表の0始まり行列はrowspan／colspanとrow group境界を考慮し、`rowspan=0`は現在のgroupの残行として扱い、元属性とnode位置も残します。図内部のprose、pre／code本体、inertな数式／SVG／active subtreeの内部を翻訳しません。caption・notes・画像alt／titleは別の追跡可能なunitです。未知のblock kind、tree参照不整合、解決できないtable span、不正inline表現は例外停止し、黙って平文projectionへfallbackしません。初期snapshot fixtureの部分的な旧inline記述を、完全なunit入力の契約と扱いません。
+EPUBではresource大のsectionの`structure.tree`を正本とし、`block.text`のprojectionからunitを作りません。段落／item／cell全体のmixed contentをまとめ、nested listは別itemとして親contextへ対応付けます。`li`が直下に子リスト（`ul`／`ol`／`dl`）を持つ場合は、子リストの前・間・後の親項目の文を同じ`node_path`の別unitに分け、「前→子リストの各item→後」の原本順に並べます。空白だけの部分はunitにしませんが、inline要素だけの部分（pagebreakなどmarkerだけになるもの）は単独のunitになります。子リストより後ろが空白だけの場合は分けず、従来どおり`li`全体を1unitにします。番号と親anchorは最初の部分に一度だけ付き、後の部分は出力で子リストの後に親項目の続きとして字下げして表示します。`dt`／`dd`・表・PDFのリストは従来どおりです。表の0始まり行列はrowspan／colspanとrow group境界を考慮し、`rowspan=0`は現在のgroupの残行として扱い、元属性とnode位置も残します。図内部のprose、pre／code本体、inertな数式／SVG／active subtreeの内部を翻訳しません。caption・notes・画像alt／titleは別の追跡可能なunitです。未知のblock kind、tree参照不整合、解決できないtable span、不正inline表現は例外停止し、黙って平文projectionへfallbackしません。初期snapshot fixtureの部分的な旧inline記述を、完全なunit入力の契約と扱いません。
 
 ### inline保護と分割
 

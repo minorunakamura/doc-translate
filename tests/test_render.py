@@ -1197,6 +1197,182 @@ def test_epub_list_anchors_do_not_interrupt_nested_items(tmp_path):
     )
 
 
+def test_epub_list_item_text_after_nested_lists_renders_after_the_nested_items(
+    tmp_path,
+):
+    from test_preparation import run as prepare
+    from test_translation import requests, translate
+
+    from doc_translate.render import render_document
+    from doc_translate.translation import load_translation
+
+    workspace = epub_workspace(
+        tmp_path,
+        '<html xmlns="http://www.w3.org/1999/xhtml"><head/><body><ol start="3"><li id="p">Before <em>x</em><ul><li>Child</li></ul>After <em title="Tip">y</em><ol><li>Second</li></ol>Last</li><li><ul><li>Lead child</li></ul>Only after</li><li>Only before<ul><li>Tail child</li></ul> </li></ol></body></html>',
+    )
+    prepare(
+        tmp_path,
+        workspace,
+        [],
+        answers_override={
+            "collect": {"context": "Own guide", "candidates": []},
+            "organize": {"context": "Own guide", "terms": {}},
+        },
+    )
+    translations = {
+        "unit-1": "前 ⟦1⟧エ⟦/1⟧",
+        "unit-2": "子",
+        "unit-3": "後 ⟦1⟧ワ⟦/1⟧",
+        "unit-4": "助言",
+        "unit-5": "二番目",
+        "unit-6": "最後",
+        "unit-7": "先頭の子",
+        "unit-8": "後だけ",
+        "unit-9": "前だけ",
+        "unit-10": "末尾の子",
+    }
+    translate(
+        tmp_path,
+        workspace,
+        {
+            "answer": {
+                "translations": [
+                    {"unit_id": unit_id, "text": text, "uncertainties": []}
+                    for unit_id, text in translations.items()
+                ]
+            }
+        },
+    )
+    sent = [
+        unit["source_text"]
+        for request in requests(tmp_path)
+        for unit in json.loads(request["text"])
+    ]
+    assert sent == [
+        "Before ⟦1⟧x⟦/1⟧",
+        "Child",
+        "After ⟦1⟧y⟦/1⟧",
+        "Tip",
+        "Second",
+        "Last",
+        "Lead child",
+        "Only after",
+        "Only before ",
+        "Tail child",
+    ]
+    translation_before = load_translation(workspace).model_dump_json()
+    result = render_document(workspace)
+    assert result["processing"]["status"] == "completed"
+    expected = {
+        "english": (
+            '3. <a id="node-1-5"></a>Before <em>x</em>\n\n'
+            '    - <a id="node-1-8"></a>Child\n\n'
+            '    After <em title="Tip">y</em>\n\n'
+            '    1. <a id="node-1-11"></a>Second\n\n'
+            "    Last\n\n"
+            '4. <a id="node-1-12"></a>\n\n'
+            '    - <a id="node-1-14"></a>Lead child\n\n'
+            "    Only after\n\n"
+            '5. <a id="node-1-15"></a>Only before \n\n'
+            '    - <a id="node-1-17"></a>Tail child'
+        ),
+        "japanese": (
+            '3. <a id="node-1-5"></a>前 <em>エ</em>\n\n'
+            '    - <a id="node-1-8"></a>子\n\n'
+            '    後 <em title="助言">ワ</em>\n\n'
+            '    1. <a id="node-1-11"></a>二番目\n\n'
+            "    最後\n\n"
+            '4. <a id="node-1-12"></a>\n\n'
+            '    - <a id="node-1-14"></a>先頭の子\n\n'
+            "    後だけ\n\n"
+            '5. <a id="node-1-15"></a>前だけ\n\n'
+            '    - <a id="node-1-17"></a>末尾の子'
+        ),
+    }
+    for language, item in expected.items():
+        document = artifact(workspace, result, language)
+        assert document.count(item) == 1
+        assert document.count('<a id="node-1-5"') == 1
+        assert document.count("3. ") == 1
+    mapping = json.loads(artifact(workspace, result, "source_map"))
+    assert [
+        (u["source_text"], u["output_anchor"])
+        for u in mapping["units"]
+        if not u["attribute"]
+    ] == [
+        ("Before ⟦1⟧x⟦/1⟧", "node-1-5"),
+        ("Child", "node-1-8"),
+        ("After ⟦1⟧y⟦/1⟧", "node-1-5"),
+        ("Second", "node-1-11"),
+        ("Last", "node-1-5"),
+        ("Lead child", "node-1-14"),
+        ("Only after", "node-1-12"),
+        ("Only before ", "node-1-15"),
+        ("Tail child", "node-1-17"),
+    ]
+    assert load_translation(workspace).model_dump_json() == translation_before
+
+
+def test_epub_list_item_with_only_whitespace_after_nested_list_renders_as_before(
+    tmp_path,
+):
+    # Expected documents were rendered by the pre-#103 code (8d4988b).
+    from test_preparation import run as prepare
+    from test_translation import translate
+
+    from doc_translate.render import render_document
+
+    workspace = epub_workspace(
+        tmp_path,
+        '<html xmlns="http://www.w3.org/1999/xhtml"><head/><body><ol><li>Outer\n<ul>\n<li>Inner</li>\n</ul>\n</li><li><p>Para</p>\n<ul><li>Deep</li></ul>\n</li><li>Only before<ul><li>Tail child</li></ul> </li></ol></body></html>',
+    )
+    prepare(
+        tmp_path,
+        workspace,
+        [],
+        answers_override={
+            "collect": {"context": "Own guide", "candidates": []},
+            "organize": {"context": "Own guide", "terms": {}},
+        },
+    )
+    translate(tmp_path, workspace)
+    result = render_document(workspace)
+    assert artifact(workspace, result, "english") == (
+        '<a id="block-1"></a>\n\n'
+        '<a id="node-1-1"></a>\n\n\n\n'
+        '<a id="node-1-3"></a>\n\n'
+        '1. <a id="node-1-5"></a>Outer\n\n\n\n'
+        '    - <a id="node-1-7"></a>Inner\n\n'
+        '2. <a id="node-1-8"></a><span>Para</span>\n\n\n\n'
+        '    - <a id="node-1-11"></a>Deep\n\n'
+        '3. <a id="node-1-12"></a>Only before \n\n'
+        '    - <a id="node-1-14"></a>Tail child\n\n'
+        '<a id="node-1-2"></a>\n'
+        '<a id="node-1-4"></a>\n'
+        '<a id="node-1-6"></a>\n'
+        '<a id="node-1-9"></a>\n'
+        '<a id="node-1-10"></a>\n'
+        '<a id="node-1-13"></a>\n'
+    )
+    assert artifact(workspace, result, "japanese") == (
+        '<a id="block-1"></a>\n\n'
+        '<a id="node-1-1"></a>\n\n\n\n'
+        '<a id="node-1-3"></a>\n\n'
+        '1. <a id="node-1-5"></a>訳:Outer\n\n\n\n'
+        '    - <a id="node-1-7"></a>訳:Inner\n\n'
+        '2. <a id="node-1-8"></a>訳:<span>Para</span>\n\n\n\n'
+        '    - <a id="node-1-11"></a>訳:Deep\n\n'
+        '3. <a id="node-1-12"></a>訳:Only before \n\n'
+        '    - <a id="node-1-14"></a>訳:Tail child\n\n'
+        '<a id="node-1-2"></a>\n'
+        '<a id="node-1-4"></a>\n'
+        '<a id="node-1-6"></a>\n'
+        '<a id="node-1-9"></a>\n'
+        '<a id="node-1-10"></a>\n'
+        '<a id="node-1-13"></a>\n'
+    )
+
+
 def test_pdf_cell_uncertainty_marks_source_and_accepted_translation_only_in_display(
     tmp_path,
 ):

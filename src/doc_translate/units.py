@@ -928,15 +928,47 @@ def _epub_units(block, add, headings):
             if text:
                 add(block, text, attribute, context, node=node, attribute=attribute)
 
-    def descendant_attributes(path, context, deferred):
-        for child in children(nodes[path]):
+    def descendant_attributes(paths, context, deferred):
+        for child in paths:
             if (
                 child not in deferred
                 and nodes[child]["disposition"] == "structured"
                 and tag(nodes[child]) not in {"pre", "code"}
             ):
                 attributes(child, context)
-                descendant_attributes(child, context, deferred)
+                descendant_attributes(children(nodes[child]), context, deferred)
+
+    def section_inline(section, deferred):
+        inline = _Inline()
+        for part in section:
+            if isinstance(part, str):
+                inline.text(part)
+            else:
+                collect(part["node_path"], inline, deferred=deferred)
+        return inline
+
+    def item_sections(path):
+        # Item text around a direct child list becomes separate units, in source order.
+        node = nodes[path]
+        sections = [[]]
+        for part in node["content"]:
+            if (
+                tag(node) == "li"
+                and isinstance(part, dict)
+                and nodes[part["node_path"]]["disposition"] == "structured"
+                and tag(nodes[part["node_path"]]) in {"ul", "ol", "dl"}
+            ):
+                sections.extend([part["node_path"], []])
+            else:
+                sections[-1].append(part)
+        # Without item text after a child list, the item stays one unit as before.
+        if not any(
+            section_inline(section, []).source_text.strip()
+            for section in sections[1:]
+            if not isinstance(section, str)
+        ):
+            return [node["content"]]
+        return sections
 
     def walk(path, ancestors, figure=False):
         node = nodes[path]
@@ -955,9 +987,6 @@ def _epub_units(block, add, headings):
             for child in children(node):
                 walk(child, [*ancestors, path], figure=True)
         elif name in _UNIT_TAGS:
-            inline = _Inline()
-            deferred = []
-            collect(path, inline, root=True, deferred=deferred)
             kind = (
                 "heading"
                 if re.fullmatch(r"h[1-6]", name)
@@ -975,23 +1004,33 @@ def _epub_units(block, add, headings):
                 for p in [*ancestors, path]
             ):
                 kind = "footnote"
-            add(block, "", kind, context, inline=inline, node=node)
-            if kind == "heading":
-                level = int(name[1])
-                headings[:] = [h for h in headings if h["level"] < level]
-                headings.append(
-                    {
-                        "block_id": block.block_id,
-                        "node_path": path,
-                        "level": level,
-                        "text": inline.source_text,
-                    }
-                )
+            for section in item_sections(path):
+                if isinstance(section, str):
+                    walk(section, [*ancestors, path])
+                    continue
+                deferred = []
+                inline = section_inline(section, deferred)
+                add(block, "", kind, context, inline=inline, node=node)
+                if kind == "heading":
+                    level = int(name[1])
+                    headings[:] = [h for h in headings if h["level"] < level]
+                    headings.append(
+                        {
+                            "block_id": block.block_id,
+                            "node_path": path,
+                            "level": level,
+                            "text": inline.source_text,
+                        }
+                    )
 
-            # Attributes are independent text, not duplicated paragraph units.
-            descendant_attributes(path, context, deferred)
-            for child in deferred:
-                walk(child, [*ancestors, path])
+                # Attributes are independent text, not duplicated paragraph units.
+                descendant_attributes(
+                    [p["node_path"] for p in section if isinstance(p, dict)],
+                    context,
+                    deferred,
+                )
+                for child in deferred:
+                    walk(child, [*ancestors, path])
         else:
             inline = _Inline()
 
@@ -1014,7 +1053,7 @@ def _epub_units(block, add, headings):
                     if nodes[child]["disposition"] == "structured" and tag(
                         nodes[child]
                     ) not in {"pre", "code"}:
-                        descendant_attributes(child, context, deferred)
+                        descendant_attributes(children(nodes[child]), context, deferred)
                     for nested in deferred:
                         flush()
                         walk(nested, [*ancestors, path, child])

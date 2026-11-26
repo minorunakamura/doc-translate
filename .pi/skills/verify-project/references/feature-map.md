@@ -332,6 +332,23 @@ Rootは**別invocation**で実行し、以下を直接観測・記録します�
 
 期待／観測／commandとexit、未確認、revision／dirty、必要人工logと保存hashを各runの証拠へ記録し、所有する一時workspace／credential／childだけfinallyでcleanup後、証拠の全参照を再読します。外部parserの実利用、実provider、実LLM品質、実Docling／OCR、他OS、SIGKILLの画面復元は保証しません。正式pytest／品質／配布検査やRootの受入判断を代替しません。
 
+### 入れ子リストの順序と旧workspaceの停止（Issue #103）
+
+上の節と同じ実CLI（`tests/fixtures/resume_process.py --helper <json> --`）→実Node `ai/tests/run-process.mjs`→network拒否付き公開faux（訳は`訳:<source>`）を、空PATHのchildで使う。変更前コードは所有TemporaryDirectoryへ`git archive 8d4988b src`を展開し、childの`PYTHONPATH`先頭に置く（checkoutは切り替えない）。実import pathは`imports.json`に残す。helperは`scripts/nested_list_order.py`だけで、汎用runnerではない。repository rootで非並行に実行する。
+
+```sh
+EVIDENCE=$(mktemp -d "$PWD/work/test-verification-nested-list-XXXXXX")
+.venv/bin/python .pi/skills/verify-project/scripts/nested_list_order.py --evidence "$EVIDENCE"
+```
+
+期待：
+
+- (a) 現行コード：人工EPUB（前後で異なる文・inline・子リスト2つ・前だけ・後だけ・整形済みの非該当`li`）を公開`run`する。exit 0。翻訳requestの入力順、英語・日本語Markdown、source-mapの順がそれぞれ「前→子→後」各1回。番号`3. `と親anchorは1回だけ。整形済みの非該当`li`は従来どおり1unit。
+- (b) 変更前コードで`tests/test_resume.py::nested_list_epub`から公開`run`したworkspaceに対し、現行の`resume --json`／`render`／`status --verify`はexit 2。stderrに案内文「保存済みの訳と現在の文の分け方が合いません。…」が出て、`correspondence mismatch`とtracebackは出ない。送信0件、保存byteは不変。
+- (c) 変更前コードで公開`run`した該当リストなしのEPUB（整形済みの入れ子と既定の`make_epub`）では、同じworkspaceのコピーに旧版、元に現行の`resume --json`を実行する。いずれもexit 0・送信0件・completed。`status --verify --json`は、resumeの再renderでelapsed秒から変わるrender digest／`render_elapsed_seconds`だけを除いて旧版と同一で、英語・日本語・source-map・QAのbyteも同一。renders以外の保存byteは不変。PDFも同様に、変更前コードで`scripts/pdf_progress_fixture.py`（公開Docling converter／page backendだけを自作9ページfixtureへ置換する外部入口、下のIssue #51節）から公開`run --pages 2-7`したworkspaceを、コピーに旧版・元に現行の`resume --json`で比較する（exit 0・送信0件・completed・status同一・renders以外の保存byte不変）。実Docling／OCR・モデルでのPDFは対象外。
+
+証拠：`revision.txt/dirty.txt/scope.diff/imports.json/observations.json/cleanup.txt`、各操作の`.stdout/.stderr`、`order-requests-translation-inputs.json`、`order-english.md`、`order-japanese.md`、`order-source-map-units.json`。所有TemporaryDirectory（旧src・workspace・人工credential）だけを回収し、childは`subprocess.run`で回収する。cleanup後に全証拠を再読する。単位の分け方の境界は`tests/test_units.py`／`tests/test_render.py`／`tests/test_resume.py`の#103回帰で補う。実provider・実書籍・意味品質は対象外で、正式チェックとRootの別invocationでの直接確認は代用しない。
+
 ## PDF run／resumeの工程・所有ページ進捗（Issue #51）
 
 対象はdraft検証／再利用・必要時抽出・所有補正・source組立・後段prepare／translation／render、実requestの所有／参照、保存後集計、部分回復／再利用のみ、coverage訂正／length・input_limit分割、候補採用待ちです。実Docling／OCR・モデル・実providerの成功とは扱いません。上のEPUB／status手順は維持します。

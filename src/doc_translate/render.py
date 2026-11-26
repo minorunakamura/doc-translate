@@ -810,7 +810,68 @@ class _Markdown:
                 flush()
                 return prefix + "\n\n".join(pieces)
             if own:
-                text = "".join(self.unit_text(u, japanese) for u in own)
+                # Unit generation splits item text around direct child lists.
+                sections = [[]]
+                for part in node["content"]:
+                    if (
+                        name == "li"
+                        and isinstance(part, dict)
+                        and nodes[part["node_path"]]["disposition"] == "structured"
+                        and nodes[part["node_path"]]["tag"].split("}")[-1]
+                        in {"ul", "ol", "dl"}
+                    ):
+                        sections.extend([part["node_path"], []])
+                    else:
+                        sections[-1].append(part)
+
+                def has_text(section):
+                    return any(
+                        part.strip()
+                        if isinstance(part, str)
+                        else nodes[part["node_path"]]["tag"]
+                        in {
+                            "{http://www.w3.org/1998/Math/MathML}math",
+                            "{http://www.w3.org/2000/svg}svg",
+                        }
+                        or (
+                            nodes[part["node_path"]]["disposition"] == "structured"
+                            and nodes[part["node_path"]]["tag"].split("}")[-1]
+                            not in {"ul", "ol", "dl", "table", "pre", "figure"}
+                        )
+                        for part in section
+                    )
+
+                # Without item text after a child list, the item stays one unit.
+                if not any(
+                    has_text(section)
+                    for section in sections[1:]
+                    if not isinstance(section, str)
+                ):
+                    sections = [node["content"]]
+                if len(sections) == 1:
+                    texts = ["".join(self.unit_text(u, japanese) for u in own)]
+                else:
+                    groups = []
+                    for unit in own:
+                        parent = unit.parent_unit_id or unit.unit_id
+                        if not groups or groups[-1][0] != parent:
+                            groups.append((parent, []))
+                        groups[-1][1].append(unit)
+                    texts = []
+                    for section in sections:
+                        if isinstance(section, str):
+                            texts.append("")
+                        elif groups and has_text(section):
+                            texts.append(
+                                "".join(
+                                    self.unit_text(u, japanese)
+                                    for u in groups.pop(0)[1]
+                                )
+                            )
+                        else:
+                            texts.append("")
+                text = texts[0]
+                indent = ""
                 if name in {"h1", "h2", "h3", "h4", "h5", "h6"}:
                     text = "#" * int(name[1]) + " " + text
                 elif name in {"li", "dt", "dd"}:
@@ -826,29 +887,21 @@ class _Markdown:
                         ]
                         start = int(containers[-1]["attributes"].get("start", 1))
                         marker = str(start + siblings.index(path)) + "."
-                    text = (
-                        "    " * (context["list"]["depth"] - 1)
-                        + marker
-                        + " "
-                        + prefix.strip()
-                        + text
-                    )
+                    indent = "    " * (context["list"]["depth"] - 1)
+                    text = indent + marker + " " + prefix.strip() + text
                     prefix = ""
-                # Nested lists/tables/pre are deferred by unit generation.
-                deferred = []
 
-                def find(p):
-                    for child in children(p):
+                # Nested lists/tables/pre are deferred by unit generation.
+                def find(paths, deferred):
+                    for child in paths:
                         tag = nodes[child]["tag"].split("}")[-1]
                         if tag in {"ul", "ol", "dl", "table", "pre", "figure"}:
                             deferred.append(walk(child))
                         else:
-                            find(child)
+                            find(children(child), deferred)
 
-                find(path)
-
-                def inert_references(p):
-                    for child in children(p):
+                def inert_references(paths, deferred):
+                    for child in paths:
                         child_node = nodes[child]
                         if child_node["disposition"] == "inert":
                             if child_node["tag"] not in {
@@ -864,14 +917,11 @@ class _Markdown:
                             "pre",
                             "figure",
                         }:
-                            inert_references(child)
+                            inert_references(children(child), deferred)
 
-                inert_references(path)
                 # Anchors for inline descendants are retained without duplicating text.
-                inline_anchors = []
-
-                def anchors(p):
-                    for child in children(p):
+                def anchors(paths, inline_anchors):
+                    for child in paths:
                         if nodes[child]["tag"].split("}")[-1] in {
                             "ul",
                             "ol",
@@ -883,15 +933,27 @@ class _Markdown:
                             continue
                         if nodes[child].get("original_ids"):
                             inline_anchors.append(node_anchor(child))
-                        anchors(child)
+                        anchors(children(child), inline_anchors)
 
-                anchors(path)
-                return (
-                    prefix
-                    + text
-                    + "".join(inline_anchors)
-                    + ("\n\n" + "\n\n".join(deferred) if deferred else "")
-                )
+                pieces = []
+                for index, section in enumerate(sections):
+                    if isinstance(section, str):
+                        pieces.append(walk(section))
+                        continue
+                    paths = [p["node_path"] for p in section if isinstance(p, dict)]
+                    deferred = []
+                    find(paths, deferred)
+                    inert_references(paths, deferred)
+                    inline_anchors = []
+                    anchors(paths, inline_anchors)
+                    line = texts[index] + "".join(inline_anchors)
+                    if index == 0:
+                        pieces.append(text + "".join(inline_anchors))
+                    elif line:
+                        # Text after a child list continues the same list item.
+                        pieces.append(indent + "    " + line)
+                    pieces.extend(deferred)
+                return prefix + "\n\n".join(pieces)
             return prefix + "\n\n".join(
                 walk(p, figure or name == "figure") for p in children(path)
             )
