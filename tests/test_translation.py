@@ -1199,7 +1199,7 @@ def test_translation_catalog_indexes_orphans_in_digest_order_once_per_operation(
     (workspace / "translation-snapshot.json").unlink()
     reads = Counter()
     request_count = 0
-    read, request = translation._read, translation._request
+    read, request = translation.read_json, translation._request
 
     def observe_read(workspace, directory, digest):
         if directory == "attempts/translation":
@@ -1213,7 +1213,7 @@ def test_translation_catalog_indexes_orphans_in_digest_order_once_per_operation(
 
     sent = requests(tmp_path)
     with monkeypatch.context() as patch:
-        patch.setattr(translation, "_read", observe_read)
+        patch.setattr(translation, "read_json", observe_read)
         patch.setattr(translation, "_request", observe_request)
         digest = translate(tmp_path, workspace)
     assert reads == Counter({p.stem: 1 for p in paths})

@@ -1585,3 +1585,24 @@ PY
 ## 翻訳snapshot履歴の容量（Issue #105）
 
 入口は公開`save_source_snapshot → prepare_document → translate_document → load_translation`です。前提は既存Python／Node、compiled resourceの全hash一致、人工credential、実faux＋no-networkです。手順・条件・結果・判断は[性能referenceの#105節](../../../../docs/reference/performance.md#翻訳snapshot履歴の容量issue-105)にあります。repository rootで`.venv/bin/pytest -q tests/test_performance_verification.py -k translation_history`を実行した後、`.venv/bin/python .pi/skills/verify-project/scripts/translation_history.py --evidence work/issue105-<unique>`（既定10／100 group、各3回、`--size 2`は接続確認）を他benchmarkと非並行で実行します。所有TemporaryDirectoryだけをcleanupし、証拠全fileをreadbackします。実書籍workspace・旧snapshotの削除や保存方式の変更は対象外で、#125で扱います。
+
+## 保存byteの前後比較（Issue #121）
+
+保存・読込み関数を`snapshot.py`の`atomic_write`／`json_bytes`／`store_bytes`／`store_json`／`read_json`へ集めた後も、保存物のbyteが変更前と同じであることを確かめる。入口は公開CLIで、[#103節](#入れ子リストの順序と旧workspaceの停止issue-103)と同じ実CLI（EPUBは`tests/fixtures/resume_process.py`、PDFは`scripts/pdf_progress_fixture.py`）→実Node `ai/tests/run-process.mjs`→network拒否付き公開faux。childは空PATHで動く。変更前コードは所有TemporaryDirectoryへ`git archive 4065822 src`を展開し、childの`PYTHONPATH`先頭に置く（checkoutは切り替えない）。実際のimport pathは`imports.json`に残す。
+
+同じ入力で同じbyteになるよう、childは`saved_bytes_compare.py --child`の中で次の値だけを固定する：`doc_translate.inference.uuid4`（counterのUUID）、`time.monotonic`（定数）、Nodeが返すgenerateの`elapsed_ms`（定数）、`PYTHONHASHSEED=0`（Doclingがset値の設定を保存するため）。workflow・保存・validatorは実物を使う。run.jsonなどは入力pathを保存するので、oldとcurrentは同じ絶対pathの`case/`で順に実行し、oldの結果は退避してからcurrentを実行する。EPUBは1回作ったファイルを両方へbyteのままコピーする（zip entryに時刻が入るため）。helperは`scripts/saved_bytes_compare.py`だけで、汎用runnerではない。repository rootで、他の検証と並行させずに実行する。
+
+```sh
+EVIDENCE=$(mktemp -d "$PWD/work/test-verification-issue121-XXXXXX")
+.venv/bin/python .pi/skills/verify-project/scripts/saved_bytes_compare.py --evidence "$EVIDENCE"
+```
+
+期待：
+
+- EPUB（既定`make_epub`）：`run --json` → `review --units unit-1` → `revise --translations`（保存済みunit-1の訳の`Original`を`手動修正`に置き換え、保護markerは残す）→ `render`。どの工程もoldとcurrentでexit 0、送信件数（3／1／0／0）が同じ。各工程の後、workspaceの全file（`.writer.lock`を含む）の相対path→sha256がすべて一致する。
+- PDF：`pdf_progress_fixture.py`経由の公開`run --pages 2-7 --artifacts-path <fixture>/models --correction-model vision`。exit 0・送信5件。全file hashが一致する。
+- 一致しない場合は`<flow>-mismatches.json`に、工程ごとの`path: [old, current]`と、異なる送信件数を残してassertで失敗する。前提不足を一致扱いにしない。
+
+証拠：`work/test-verification-issue121-<unique>/`の`revision.txt/dirty.txt/scope.diff/imports.json/observations.json/cleanup.txt`、全file hashの対応表`file-hashes.json`（flow→工程→old／current→path→sha256）、`epub-mismatches.json`／`pdf-mismatches.json`（成功時は`{}`）、各操作の`.stdout/.stderr`。所有TemporaryDirectory（旧src・case・workspace・人工credential）だけを回収し、childは`subprocess.run`で回収する。cleanup後に全証拠を再読する。
+
+対象外：実provider・実書籍・実Docling／OCR。candidates/source（PDF候補の公開とrevise採用）、`resume`、hash不一致の検出、既存ファイルの再利用経路はこのhelperで通らないので、既存テスト（`tests/test_pdf_candidate_acceptance.py`、`tests/test_resume.py`、`tests/test_source_snapshot.py`、`tests/test_translation.py`、`tests/test_pdf.py`ほか）で補う。正式チェックとRootの別invocationでの直接確認は代用しない。

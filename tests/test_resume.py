@@ -447,7 +447,6 @@ def test_resume_unexpected_validation_failure_records_cause_without_book_text(
     from test_run import saved_failure_record
 
     import doc_translate.run
-    import doc_translate.translation
     from doc_translate.snapshot import load_source_snapshot
 
     class Strict(BaseModel):
@@ -475,7 +474,7 @@ def test_resume_unexpected_validation_failure_records_cause_without_book_text(
     first_location, first_record = saved_failure_record(workspace, first)
     monkeypatch.undo()
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-artificial-credential")
-    monkeypatch.setattr(doc_translate.translation, "translate_document", unexpected)
+    monkeypatch.setattr(doc_translate.run, "translate_document", unexpected)
     with pytest.raises(SystemExit) as stopped:
         main(["resume", "--json", str(workspace)], process_command=helper(tmp_path))
     assert stopped.value.code == 1

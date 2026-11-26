@@ -11,7 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, TypeAdapter
+from pydantic import Field
 
 from doc_translate.inference import (
     BeforeSend,
@@ -28,8 +28,11 @@ from doc_translate.snapshot import (
     Sha256,
     SnapshotReference,
     SourceLocation,
-    _atomic_write,
+    atomic_write,
+    json_bytes,
     load_source_snapshot,
+    read_json,
+    store_json,
 )
 from doc_translate.units import generate_translation_units
 from doc_translate.workspace import workspace_lock
@@ -120,38 +123,8 @@ class PreparationSnapshot(Contract):
     runs: list[Sha256]
 
 
-def _bytes(value):
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=lambda item: item.model_dump(mode="json"),
-    ).encode()
-
-
 def _hash(value):
-    return hashlib.sha256(_bytes(value)).hexdigest()
-
-
-def _store(workspace, directory, value):
-    data = _bytes(value)
-    digest = hashlib.sha256(data).hexdigest()
-    path = workspace / directory / f"{digest}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        _read(workspace, directory, digest)
-    else:
-        _atomic_write(path, data)
-    return digest
-
-
-def _read(workspace, directory, digest):
-    digest = TypeAdapter(Sha256).validate_python(digest)
-    data = (workspace / directory / f"{digest}.json").read_bytes()
-    if hashlib.sha256(data).hexdigest() != digest:
-        raise ValueError("Preparation artifact SHA-256 mismatch")
-    return json.loads(data)
+    return hashlib.sha256(json_bytes(value)).hexdigest()
 
 
 def _repair_request(request, code, feedback=None):
@@ -185,15 +158,15 @@ class _AttemptCatalog:
     def __getitem__(self, digest):
         with self._lock:
             if digest not in self._records:
-                self._records[digest] = _read(
+                self._records[digest] = read_json(
                     self.workspace, "attempts/preparation", digest
                 )
             return self._records[digest]
 
     def store(self, saved):
         with self._lock:
-            digest = _store(self.workspace, "attempts/preparation", saved)
-            self._records[digest] = json.loads(_bytes(saved))
+            digest = store_json(self.workspace, "attempts/preparation", saved)
+            self._records[digest] = json.loads(json_bytes(saved))
             return digest
 
     def flight(self, request, config):
@@ -755,7 +728,7 @@ def prepare_document(
             organization=organization,
             user_terms=supplied.terms,
         )
-        evidence_digest = _store(
+        evidence_digest = store_json(
             workspace,
             "preparation/evidence",
             evidence.model_dump(
@@ -766,8 +739,8 @@ def prepare_document(
         adopted = _adopt(
             evidence, book, version, policy, evidence_digest, [*runs, run2]
         )
-        digest = _store(workspace, "snapshots/preparation", adopted)
-        _atomic_write(
+        digest = store_json(workspace, "snapshots/preparation", adopted)
+        atomic_write(
             workspace / "preparation-snapshot.json",
             SnapshotReference(sha256=digest).model_dump_json().encode(),
         )
@@ -782,10 +755,10 @@ def load_preparation(workspace: Path, sha256: str | None = None) -> PreparationS
             (workspace / "preparation-snapshot.json").read_bytes()
         ).sha256
     adopted = PreparationSnapshot.model_validate(
-        _read(workspace, "snapshots/preparation", sha256)
+        read_json(workspace, "snapshots/preparation", sha256)
     )
     evidence = PreparationEvidence.model_validate(
-        _read(workspace, "preparation/evidence", adopted.evidence_sha256)
+        read_json(workspace, "preparation/evidence", adopted.evidence_sha256)
     )
     snapshot = load_source_snapshot(workspace, adopted.source_snapshot_sha256)
     units = generate_translation_units(
@@ -821,7 +794,7 @@ def load_preparation(workspace: Path, sha256: str | None = None) -> PreparationS
         raise ValueError("Preparation differs from adopted inputs and evidence")
     wire_collections = []
     for index, digest in enumerate(adopted.runs):
-        record = _read(workspace, "attempts/preparation", digest)
+        record = read_json(workspace, "attempts/preparation", digest)
         if record["stage"] != "prepare" or record["status"] != "validated":
             raise ValueError("Preparation run was not validated")
         wire_version = _wire_version(record)

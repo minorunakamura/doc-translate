@@ -123,3 +123,7 @@ EPUBの`li`で子リストの後に続く親の文の順序、変更前の版で
 ## 翻訳snapshot履歴の容量（Issue #105）
 
 翻訳snapshot履歴の増え方を測るときは[Mapの#105節](references/feature-map.md#翻訳snapshot履歴の容量issue-105)と`scripts/translation_history.py --evidence work/issue105-<unique>`を使います。新規初回・無変更resume（増分0をassert）・失敗回復resumeを10／100 groupで各3回測ります。結果と判断は性能referenceの#105節にあります。削減・旧履歴削除はしません。
+
+## 保存byteの前後比較（Issue #121）
+
+保存・読込み関数の整理で保存物のbyteが変わっていないことを確かめるときは[Mapの#121節](references/feature-map.md#保存byteの前後比較issue-121)と`scripts/saved_bytes_compare.py`を使う。EPUBのrun→review→revise→renderとPDFのrunを、実CLI＋実Node fauxで変更前（`git archive 4065822 src`）と現行の両方で動かし、各工程の後にworkspaceの全file hashを照合する。所有tempだけcleanup後に`work/test-verification-issue121-<unique>/`の証拠を再読する。

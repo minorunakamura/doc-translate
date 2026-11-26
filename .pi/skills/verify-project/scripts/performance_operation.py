@@ -230,7 +230,7 @@ def preparation_measurement(workspace, diagnostic=False):
     call, load, read = (
         preparation._call,
         preparation.load_preparation,
-        preparation._read,
+        preparation.read_json,
     )
     read_bytes, sha256 = Path.read_bytes, hashlib.sha256
 
@@ -279,7 +279,7 @@ def preparation_measurement(workspace, diagnostic=False):
             patch.object(preparation, "load_preparation", timed(load, "public_load"))
         )
         if diagnostic:
-            stack.enter_context(patch.object(preparation, "_read", artifact_read))
+            stack.enter_context(patch.object(preparation, "read_json", artifact_read))
             stack.enter_context(patch.object(Path, "read_bytes", actual_read))
             stack.enter_context(patch.object(hashlib, "sha256", actual_hash))
         yield metrics

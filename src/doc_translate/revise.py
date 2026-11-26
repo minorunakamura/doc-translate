@@ -4,26 +4,29 @@ import json
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, TypeAdapter
 
+from doc_translate.epub_source import _Node
 from doc_translate.preparation import Visible, load_preparation
-from doc_translate.render import workspace_status
+from doc_translate.render import _Markdown, workspace_status
+from doc_translate.render_assets import RenderAssets
 from doc_translate.snapshot import (
     Contract,
+    EPUBLocation,
     Processing,
     Sha256,
     SnapshotReference,
     SourceSnapshot,
-    _atomic_write,
+    atomic_write,
     load_source_snapshot,
     save_source_snapshot,
+    store_json,
 )
 from doc_translate.translation import (
     TranslationAnswer,
     TranslationChunk,
     UnitTranslation,
     _request,
-    _store,
     _validate,
     load_translation,
 )
@@ -215,7 +218,7 @@ def revise_document(
             for chunk in chunks:
                 if chunk.answer is not None:
                     _validate(chunk.answer, chunk.units)
-                    chunk.artifact_sha256 = _store(
+                    chunk.artifact_sha256 = store_json(
                         workspace,
                         "translations/chunks",
                         {
@@ -236,8 +239,8 @@ def revise_document(
             if any(chunk.error for chunk in revised.chunks)
             else "completed",
         )
-        digest = _store(workspace, "snapshots/translation", revised)
-        _atomic_write(
+        digest = store_json(workspace, "snapshots/translation", revised)
+        atomic_write(
             workspace / "translation-snapshot.json",
             SnapshotReference(sha256=digest).model_dump_json().encode(),
         )
@@ -253,13 +256,6 @@ class TranslationRevisionReason(Contract):
 
 
 def _validate_epub_source(workspace, source):
-    from pydantic import TypeAdapter
-
-    from doc_translate.epub_source import _Node
-    from doc_translate.render import _Markdown
-    from doc_translate.render_assets import RenderAssets
-    from doc_translate.snapshot import EPUBLocation
-
     assets = RenderAssets(workspace, source)
     book = assets.epub()
     nodes = {}
@@ -340,8 +336,6 @@ def _validate_epub_source(workspace, source):
 def _validate_pdf_source(workspace, source, baseline):
     from types import SimpleNamespace
 
-    from pydantic import TypeAdapter
-
     from doc_translate.pdf import PDFPageImage
     from doc_translate.pdf_correction import (
         CalloutBlock,
@@ -358,7 +352,6 @@ def _validate_pdf_source(workspace, source, baseline):
         _validate_table,
         load_pdf_correction,
     )
-    from doc_translate.render_assets import RenderAssets
 
     models = {
         "heading": HeadingBlock,

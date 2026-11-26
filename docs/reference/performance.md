@@ -238,7 +238,7 @@ repository root・既存PDF extra環境／Node／compiled helper全file hash一�
 
 ### 観測・証拠・cleanup
 
-`performance_operation.preparation_measurement`は通常passでは`_call`と公開`load_preparation`へtimerのみ委譲します。diagnosticは既存cProfile／logical read・atomic replace観測に加え、`_read`のattempt scope内で実`Path.read_bytes`と`hashlib.sha256`へ委譲し、record digest別のread／hashを`metrics.json:attempt_read_hash_counts`へ記録します。`search_call`（operation探索）／`public_load`（独立した全run再検証）／`operation_other`を分け、公開loadの正当な再読を探索の重複と数えません。この境界外の全read手法・全hash・物理I/Oを網羅するcounterではありません。profile／counterの遅い秒数は通常3回へ混ぜません。到達record数、合計read／hash、最大反復数、論理bytesを別集計し、将来も計数境界を無断変更しません。
+`performance_operation.preparation_measurement`は通常passでは`_call`と公開`load_preparation`へtimerのみ委譲します。diagnosticは既存cProfile／logical read・atomic replace観測に加え、`read_json`のattempt scope内で実`Path.read_bytes`と`hashlib.sha256`へ委譲し、record digest別のread／hashを`metrics.json:attempt_read_hash_counts`へ記録します。`search_call`（operation探索）／`public_load`（独立した全run再検証）／`operation_other`を分け、公開loadの正当な再読を探索の重複と数えません。この境界外の全read手法・全hash・物理I/Oを網羅するcounterではありません。profile／counterの遅い秒数は通常3回へ混ぜません。到達record数、合計read／hash、最大反復数、論理bytesを別集計し、将来も計数境界を無断変更しません。
 
 親Pythonの生涯`ru_maxrss`（macOS bytes、MiBへ換算）にはimportも含み、Node seed生成のpeakは通常reuse操作のメモリではありません。reuse子のreaped-child peak=0は新helperを起動しなかったという観測です。同時aggregate RSS／物理I/O／cache residency／実provider性能はunknownです。record保持によるメモリ増と探索短縮を別報告します。
 
@@ -333,7 +333,7 @@ primaryは**unadoptedの`pre_job_search_inclusive_seconds`**。`Path.glob('*.jso
 
 ### diagnostic・保持量・安全性
 
-診断は別passで、実`_read`内の`Path.read_bytes`／`hashlib.sha256`／`json.loads`、実`_request`／`_matches_request`に委譲して件数を保存します。thread-local scopeにより`operation_search`／`public_load`／`store`／`operation_other`を分離し、公開loadやstoreの正当な再読をoperation探索の重複と偽りません。record digest別read／hash／parse、論理read bytes、attempt read外の探索中json.loads（projection等）、request／比較match・nonmatchを`attempt_diagnostic_counts`へ記録します。全schema内部検証数や物理I/O、網羅的miss理由には換算しません。diagnosticの遅い時間は通常統計に混ぜません。
+診断は別passで、実`read_json`内の`Path.read_bytes`／`hashlib.sha256`／`json.loads`、実`_request`／`_matches_request`に委譲して件数を保存します。thread-local scopeにより`operation_search`／`public_load`／`store`／`operation_other`を分離し、公開loadやstoreの正当な再読をoperation探索の重複と偽りません。既存ファイルの再読込みは`store_bytes`の中でhashを確かめるだけになり、diagnosticのstore scopeには数えません。record digest別read／hash／parse、論理read bytes、attempt read外の探索中json.loads（projection等）、request／比較match・nonmatchを`attempt_diagnostic_counts`へ記録します。全schema内部検証数や物理I/O、網羅的miss理由には換算しません。diagnosticの遅い時間は通常統計に混ぜません。
 
 `os.replace`成功に委譲し、翻訳snapshot本体の保存数／元file bytesを数えます（pointer更新は別、同じdigestの既存在庫は新規保存0）。在庫をwrite総量と呼びません。変更前saved_runs／変更後catalogはいずれもこの規模の全100 raw recordsを保持し、adoptedはprevious採用snapshotを1件loadしますが、全履歴snapshotは一括常駐させません。counterはdigest／件数だけを保持し、record自体を追加常駐させません。親`ru_maxrss`はoperation Pythonの生涯peak（macOS bytes、Linux KiB、import含む）。wait済みchild最大peakは同時aggregate RSSではなく、reuse操作の0は新helperを起動していないという観測だけです。seed生成Node peak・同時aggregate RSS・物理I/O・cache residency・実provider性能・純startupはunknownです。
 
@@ -659,7 +659,7 @@ HEAD `070d80f`、macOS arm64、Python 3.14.9、Node v24.22.1、production差分�
 
 ### 判断
 
-- **無変更resumeの増分は0**：3回とも、全サイズでsnapshot追加0件・0 bytes、attempt／chunk 0、request 0でした。最後の`_adopt`がpointerを1回再書込みします。しかし内容は同じdigestなのでhashは変わりません。`_store`は既存digestを再読検証するだけで書きません。「snapshot増分0」と「pointer書込み0」は別の事柄です。
+- **無変更resumeの増分は0**：3回とも、全サイズでsnapshot追加0件・0 bytes、attempt／chunk 0、request 0でした。最後の`_adopt`がpointerを1回再書込みします。しかし内容は同じdigestなのでhashは変わりません。`store_json`は既存digestを再読検証するだけで書きません。「snapshot増分0」と「pointer書込み0」は別の事柄です。
 - **主要因はjobごとの全体保存**：`translate_document`はjobが完了するたびに、全chunk・runs・splitsを含むsnapshotを丸ごと`_adopt`します。最後にもう一度`_adopt`します。このため初回のpointer書込みはjob数＋1回（11／101）でしたが、最後の版は直前のjob完了版と同じdigestで再利用されるため、snapshot追加はjob数と同じ10／100件でした。各版は未処理分を含む全chunkを持つため、版サイズ自体が文書サイズにほぼ比例します（100 groupで183,499→212,594 bytes、完了による増加は約16%）。その版がjob数回保存されるため、追加論理bytesは「平均版サイズ×job数」になり、最終版の9.39倍（10）、93.1倍（100）でした。サイズを10倍にすると、最大版は約9.9倍、追加論理bytesは約98倍になっており、job数に対しておおむね二乗で増えます。一方attempt／chunkは線形で、100 groupでも合計約650 KBです。snapshot履歴（19.8 MB）がこの初回実行の容量の約97%を占めます。
 - **回復resumeは1版だけ**：失敗した1 jobの再送1件で、snapshotは1版（ほぼ最終版1個分）、pointer書込みは2回（job完了版と最後の同digest再adopt）でした。成功済みの他chunkはpointerが指す前版とchunk artifactから無送信で再利用されます。
 - **強制終了後の回復に必要な情報**（現コードの事実）：pointerは各job完了時に、その時点の整合snapshotを指します。resumeでは`load_translation`でpointerの版を読み、成功chunk（`translations/chunks`のartifact）を再検証して再利用します。pointer採用前に保存済みのattempt（`attempts/translation`）はcatalog照合で回収します（`tests/test_translation.py::test_translation_recovers_validated_calls_before_adoption_without_resending`）。そのため回復に必要なのは**pointerが指す最新の整合版1件＋attempts／chunks**です。中間の旧snapshotはresumeのloadでは参照されません。ただし手動訂正（`revise`）の版は`base_translation_sha256`で基準版を参照し、load時にそれを再検証します。review記録（`reviews/*.json`）も`translation_snapshot_sha256`で版を参照し、`load_reviews`がrender・review時に`load_translation`でその版を再検証します（`src/doc_translate/review.py:53,469`、`src/doc_translate/render.py:1229`）。renderの要約も採用digestを記録します。旧版の削除可否は、これらの参照を含めて#125で判断します。

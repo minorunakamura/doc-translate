@@ -24,7 +24,7 @@ from doc_translate.pdf import (
     PositiveInt,
     _hash,
     _read_artifact,
-    _store,
+    _store_artifact,
     load_pdf_draft,
 )
 from doc_translate.progress import Observer, emit, scoped_observer
@@ -731,7 +731,7 @@ def _projection(items, allowed):
 
 
 def _record(workspace, status, request, config, attempts, feedback=None):
-    return _store(
+    return _store_artifact(
         workspace,
         "attempts/pdf-correction",
         "json",
@@ -1031,7 +1031,7 @@ def _correct_pdf(
     if old_rule is not None:
         raise old_rule
     if pending is not None:
-        digest = _store(workspace, "corrections/pdf", "json", pending).sha256
+        digest = _store_artifact(workspace, "corrections/pdf", "json", pending).sha256
         emit(observer, "correction", "reused")
         return digest
     current_request = request
@@ -1092,7 +1092,7 @@ def _correct_pdf(
         workspace,
         _draft.document,
     )
-    return _store(
+    return _store_artifact(
         workspace, "corrections/pdf", "json", chunk.model_dump_json().encode()
     ).sha256
 

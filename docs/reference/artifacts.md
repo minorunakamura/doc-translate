@@ -434,7 +434,7 @@ WORKSPACE/
     summary.json
 ```
 
-renderは既存の非再入workspace lockと`_atomic_write`を使い、全出力を確定してから参照を切り替えます。旧版・未採用の途中出力は削除しません。保存例外は伝播し、旧参照を維持します。resume／復旧engineは追加しません。詳細statusは書込みせず、出力参照のschema・workspace内path・全file hashと現在入力／保存attempt集合を比較します。`render_current`と、必要時の`previous_artifacts`で旧出力を区別します。旧summaryの機械検査が現在と異なる場合も、詳細statusでは現在のQAを返し、保存出力を`previous_artifacts`として扱います。旧byteやpointerは書き換えず、入力対応を示す`adopted_output_current`とは分離します。通常statusの軽量projectionは保存当時のままです。
+renderは既存の非再入workspace lockと`atomic_write`を使い、全出力を確定してから参照を切り替えます。旧版・未採用の途中出力は削除しません。保存例外は伝播し、旧参照を維持します。resume／復旧engineは追加しません。詳細statusは書込みせず、出力参照のschema・workspace内path・全file hashと現在入力／保存attempt集合を比較します。`render_current`と、必要時の`previous_artifacts`で旧出力を区別します。旧summaryの機械検査が現在と異なる場合も、詳細statusでは現在のQAを返し、保存出力を`previous_artifacts`として扱います。旧byteやpointerは書き換えず、入力対応を示す`adopted_output_current`とは分離します。通常statusの軽量projectionは保存当時のままです。
 
 ### 保存記録reader（Issue #49）
 
@@ -657,7 +657,7 @@ WORKSPACE/
 
 chunkは`schema_version/draft_sha256/owned_pages/reference_pages/blocks/retained_blocks/exclusions/uncertainties/page_images/run`を持ちます。`page_images`は明示許可した所有・参照ページだけ、`run`はattempt記録のartifact／hashです。参照ページの本文は採用しません。
 
-既存`workspace_lock`を自分で取得し、既存のhash保存・`_atomic_write`（一時file／flush／fsync／atomic replace）を再利用します。外側から同じ非再入lockを取得しません。各generateが返した全attempt・raw回答・観測usageと実requestを、次のgenerateより前／chunk保存より前にimmutable保存します。過去の呼出しのattemptを累積再保存しないため、失敗分もusageに残り、二重計上しません。不明usageを0にしません。`status=validated`は回答のschema／domain検証までで、後続chunkの保存成功を意味しません。schema／domain不正時は`status=rejected`を残し、その回答からchunkを作りません。保存OSエラーは伝播し、追加送信せず、既に保存できたattemptと旧chunkは削除しません。generate内部attemptの逐次永続化、応答喪失やdisk自体に書けない場合の記録保証はありません。
+既存`workspace_lock`を自分で取得し、既存のhash保存・`atomic_write`（一時file／flush／fsync／atomic replace）を再利用します。外側から同じ非再入lockを取得しません。各generateが返した全attempt・raw回答・観測usageと実requestを、次のgenerateより前／chunk保存より前にimmutable保存します。過去の呼出しのattemptを累積再保存しないため、失敗分もusageに残り、二重計上しません。不明usageを0にしません。`status=validated`は回答のschema／domain検証までで、後続chunkの保存成功を意味しません。schema／domain不正時は`status=rejected`を残し、その回答からchunkを作りません。保存OSエラーは伝播し、追加送信せず、既に保存できたattemptと旧chunkは削除しません。generate内部attemptの逐次永続化、応答喪失やdisk自体に書けない場合の記録保証はありません。
 
 run／resumeでは親がOS workflow lockを保持し、公開`correct_pdf`のlock wrapperではなく同じ処理の内部coreを独立所有jobへ渡します。workerはimmutable attempt／chunkだけ、親はmanifestと保存後集計・source採用だけを更新します。thread-local貸出契約は不変で、公開`correct_pdf`を外部から並列呼出しするAPIへ変更したものではありません。最大5所有ページ・許可済み隣接参照・1800px・policy／schema／全domain検査を維持し、length／input_limit分割後もactiveは設定以下です。成功所有は再投入せず、chunk digest列は最小所有ページ順、corrected／failedページ列は昇順へ戻します。空／部分coverage回答をmergeしません。
 

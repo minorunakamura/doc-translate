@@ -201,7 +201,7 @@ class SnapshotReference(Contract):
     sha256: Sha256
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
+def atomic_write(path: Path, data: bytes) -> None:
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as temporary:
         temporary_path = Path(temporary.name)
         try:
@@ -222,19 +222,52 @@ def _atomic_write(path: Path, data: bytes) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
+def json_bytes(value) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=lambda item: item.model_dump(mode="json"),
+    ).encode()
+
+
+def store_bytes(workspace: Path, directory: str, suffix: str, data: bytes) -> str:
+    """Save content-addressed bytes once; an existing file must still match its digest."""
+    digest = hashlib.sha256(data).hexdigest()
+    relative = f"{directory}/{digest}.{suffix}"
+    path = workspace / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise ValueError(f"Artifact SHA-256 mismatch: {relative}")
+    else:
+        atomic_write(path, data)
+    return digest
+
+
+def store_json(workspace: Path, directory: str, value) -> str:
+    return store_bytes(workspace, directory, "json", json_bytes(value))
+
+
+def read_json(workspace: Path, directory: str, digest):
+    digest = TypeAdapter(Sha256).validate_python(digest)
+    relative = f"{directory}/{digest}.json"
+    data = (workspace / relative).read_bytes()
+    if hashlib.sha256(data).hexdigest() != digest:
+        raise ValueError(f"Artifact SHA-256 mismatch: {relative}")
+    return json.loads(data)
+
+
 def _store_source_snapshot(workspace: Path, snapshot: SourceSnapshot) -> str:
     """Caller holds the writer lock; persist without changing the adopted reference."""
     snapshot = SourceSnapshot.model_validate(snapshot.model_dump(mode="json"))
-    data = snapshot.model_dump_json().encode("utf-8")
-    digest = hashlib.sha256(data).hexdigest()
-    directory = workspace / "snapshots" / "source"
-    directory.mkdir(parents=True, exist_ok=True)
-    artifact = directory / f"{digest}.json"
-    if artifact.exists():
-        load_source_snapshot(workspace, digest)
-    else:
-        _atomic_write(artifact, data)
-    return digest
+    return store_bytes(
+        workspace,
+        "snapshots/source",
+        "json",
+        snapshot.model_dump_json().encode("utf-8"),
+    )
 
 
 def store_source_snapshot(workspace: Path, snapshot: SourceSnapshot) -> str:
@@ -253,7 +286,7 @@ def save_source_snapshot(workspace: Path, snapshot: SourceSnapshot) -> str:
     """Persist first; the atomic adopted reference switch is the commit point."""
     with workspace_lock(workspace):
         digest = _store_source_snapshot(workspace, snapshot)
-        _atomic_write(
+        atomic_write(
             workspace / "source-snapshot.json",
             SnapshotReference(sha256=digest).model_dump_json().encode(),
         )

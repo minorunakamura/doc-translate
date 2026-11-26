@@ -156,13 +156,13 @@ def test_performance_operation_render_recipe_uses_public_save_and_render(
 
 
 def test_performance_operation_observe_delegates_reads_and_atomic_writes(tmp_path):
-    from doc_translate.snapshot import _atomic_write
+    from doc_translate.snapshot import atomic_write
 
     output = tmp_path / "diagnostic.json"
     path = tmp_path / "snapshots/own.json"
     path.parent.mkdir()
     with operation.observe(tmp_path, output):
-        _atomic_write(path, b"abc")
+        atomic_write(path, b"abc")
         assert path.read_bytes() == b"abc"
         assert path.read_bytes() == b"abc"
     diagnostic = json.loads(output.read_bytes())
@@ -171,7 +171,7 @@ def test_performance_operation_observe_delegates_reads_and_atomic_writes(tmp_pat
     assert diagnostic["writes"] == {"snapshots/own.json": 1}
     assert diagnostic["reads"] == {"snapshots/own.json": 2}
     atomic_write = next(
-        row for row in diagnostic["profile"] if row["function"] == "_atomic_write"
+        row for row in diagnostic["profile"] if row["function"] == "atomic_write"
     )
     assert atomic_write["calls"] == atomic_write["primitive_calls"] == 1
     assert 0 <= atomic_write["self_seconds"] <= atomic_write["inclusive_seconds"]
