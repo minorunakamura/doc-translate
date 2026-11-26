@@ -2539,7 +2539,7 @@ def test_pdf_correction_concurrency_stop_drain_and_saved_success_recovery(
         provider="faux",
         model="vision",
         thinking="off",
-        options=GenerationOptions(temperature=0.2),
+        options=GenerationOptions(timeoutMs=600_000),
     )
     timeline = tmp_path / "timeline.jsonl"
     command = helper(

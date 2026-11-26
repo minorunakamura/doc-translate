@@ -7,6 +7,8 @@ from collections.abc import Sequence
 from contextlib import nullcontext
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from doc_translate import ai_runtime
 from doc_translate.auth import authenticate
 from doc_translate.cli_output import (
@@ -25,6 +27,25 @@ from doc_translate.run import (
     resume_document,
     run_document,
 )
+
+OLD_WORKSPACE_GUIDANCE = (
+    "このworkspaceは古い形式で保存されています。"
+    "新しいworkspaceで `run` し直してください。"
+)
+# Generation options removed in #118; saved configs/submitted records still name them.
+_REMOVED_GENERATION_OPTIONS = frozenset(
+    {"temperature", "maxTokens", "transport", "cacheRetention", "thinkingBudgets"}
+)
+
+
+def _saved_before_removed_options(error: Exception) -> bool:
+    """True only if every error is a removed option key in saved options/submitted."""
+    return isinstance(error, ValidationError) and all(
+        item["type"] == "extra_forbidden"
+        and item["loc"][-2:-1] in (("options",), ("submitted",))
+        and item["loc"][-1] in _REMOVED_GENERATION_OPTIONS
+        for item in error.errors()
+    )
 
 
 def _announce(workspace, config, inputs, preflight, metadata=None):
@@ -406,6 +427,8 @@ def main(
             "revise",
             "review",
         } and isinstance(error, (FileNotFoundError, ValueError)):
+            if _saved_before_removed_options(error):
+                parser.error(OLD_WORKSPACE_GUIDANCE)
             parser.error(str(error))
         parser.exit(1, f"doc-translate: {error}\n")
     if args.operation in {"providers", "models"} and not args.json:

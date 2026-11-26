@@ -400,7 +400,7 @@ EPUBから取得したinline構造・リンク・脚注の対応と画像altを�
 - input／output／cache／reasoning等、取得できたusageの生値と意味。
 - 時間、終了状態、retry、参考コストと使用した価格情報。
 - Docling等のローカル処理時間と、補正／準備／翻訳／reviewの段階別時間・全体wall time。
-- helper／pi-ai／依存version、使用manager・lock hash、policy・画像・model・thinking budgets／output budget・transport／timeout／retry等の実効入力と、要求値／確認できた値／不明の区別。
+- helper／pi-ai／依存version、使用manager・lock hash、policy・画像・model・thinking・timeout／retry等の実効入力と、要求値／確認できた値／不明の区別。
 
 providerごとのusageの意味を尊重し、reasoning等を二重加算しない。失敗時にusage不明なら0とせず不明と記録する。
 

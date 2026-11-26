@@ -36,7 +36,7 @@ CONFIG = GenerationConfig(
     provider="faux",
     model="vision",
     thinking="off",
-    options=GenerationOptions(maxTokens=16000, timeoutMs=60000),
+    options=GenerationOptions(timeoutMs=60000),
 )
 
 

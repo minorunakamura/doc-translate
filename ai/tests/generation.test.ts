@@ -289,28 +289,22 @@ it.each<JSONLRecord["payload"]>([
   },
 );
 
-it("retains explicit reasoning, budgets, output and transport options at the public provider", async () => {
+it("retains explicit reasoning and timeout options at the public provider", async () => {
   const result = await exchange("stop", {
     ...config,
     thinking: "high",
-    options: {
-      thinkingBudgets: { high: 64 },
-      maxTokens: 256,
-      temperature: 0,
-      transport: "sse",
-      cacheRetention: "none",
-    },
+    options: { timeoutMs: 123_456 },
   });
   expect(result.status).toBe(0);
-  expect(answer(result.records.at(-1))).toMatchObject({
-    options: {
-      reasoning: "high",
-      thinkingBudgets: { high: 64 },
-      maxTokens: 256,
-      temperature: 0,
-      transport: "sse",
-      maxRetries: 0,
-    },
+  expect(answer(result.records.at(-1))).toEqual(
+    expect.objectContaining({
+      options: { reasoning: "high", maxRetries: 0, timeoutMs: 123_456 },
+    }),
+  );
+  expect(result.records.at(-1)?.payload.submitted).toEqual({
+    reasoning: "high",
+    maxRetries: 0,
+    timeoutMs: 123_456,
   });
   expect(result.records.at(-1)?.payload.provider_confirmed).toEqual({
     thinking: null,
@@ -410,10 +404,7 @@ it("propagates maxRetries:0 to the real HTTP adapter and records positively retr
 });
 
 it("retains policy and explicit off through the built-in HTTP adapter payload", async () => {
-  const result = await exchange("http-stop", {
-    ...config,
-    options: { maxTokens: 256, temperature: 0 },
-  });
+  const result = await exchange("http-stop", config);
   expect(result.status).toBe(0);
   expect(answer(result.records.at(-1))).toMatchObject({
     body: {
@@ -434,8 +425,6 @@ it("retains policy and explicit off through the built-in HTTP adapter payload", 
           ],
         },
       ],
-      max_completion_tokens: 256,
-      temperature: 0,
       reasoning_effort: "none",
     },
     sends: 1,

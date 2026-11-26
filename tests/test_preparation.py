@@ -807,7 +807,7 @@ def test_rejected_evidence_records_usage_and_keeps_old_adoption(tmp_path):
             candidates,
             terms={"new": "新版"},
             config=CONFIG.model_copy(
-                update={"options": GenerationOptions(maxTokens=512)}
+                update={"options": GenerationOptions(timeoutMs=600_000)}
             ),
         )
     assert load_preparation(workspace) == load_preparation(workspace, digest)
@@ -840,7 +840,7 @@ def test_rejected_schema_records_raw_response_and_keeps_old_adoption(tmp_path):
             candidates,
             terms={"new": "新版"},
             config=CONFIG.model_copy(
-                update={"options": GenerationOptions(maxTokens=512)}
+                update={"options": GenerationOptions(timeoutMs=600_000)}
             ),
             answers_override={"collect": {"unexpected": "raw artificial answer"}},
         )
@@ -1498,6 +1498,7 @@ def test_load_preparation_v2_rejects_rehashed_binding_raw_and_version_tampering(
 
 def test_preparation_loads_byte_original_v1_and_only_generates_missing_v2(tmp_path):
     # Captured from ec49420 before v2 existed, not a downgraded v2 fixture.
+    # #118 removed the five null generation options and re-hashed the records.
     fixture = json.loads((ROOT / "tests/fixtures/preparation-v1.json").read_bytes())
     workspace = tmp_path / "workspace"
     for name, data in fixture.items():
@@ -1811,7 +1812,7 @@ def test_preparation_parallel_stop_drains_and_recovers_saved_success(
     answers = id_answers(snapshot)
     old = run(tmp_path, workspace, [], answers_override=answers)
     pointer = (workspace / "preparation-snapshot.json").read_bytes()
-    config = CONFIG.model_copy(update={"options": GenerationOptions(temperature=0.2)})
+    config = CONFIG.model_copy(update={"options": GenerationOptions(timeoutMs=600_000)})
     cancelled = threading.Event()
     answers["observation"] = {
         "delay_ms": [0, 800, 0, 0, 0],
@@ -1920,7 +1921,7 @@ def _preparation_signal_child(directory, concurrency):
         for directory in ("snapshots", "attempts", "preparation")
         for path in (workspace / directory).rglob("*.json")
     }
-    config = CONFIG.model_copy(update={"options": GenerationOptions(temperature=0.2)})
+    config = CONFIG.model_copy(update={"options": GenerationOptions(timeoutMs=600_000)})
     timeline = owned / "timeline.jsonl"
     answers["observation"] = {"delay_ms": 1500, "timeline": str(timeline)}
     # The parallel case also checks run/resume's caller-owned Event and handlers.

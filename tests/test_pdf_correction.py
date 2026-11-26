@@ -858,7 +858,7 @@ def test_previous_chunk_and_raw_attempt_survive_save_failure_and_invalid_respons
                 draft,
                 response,
                 config=CONFIG.model_copy(
-                    update={"options": GenerationOptions(maxTokens=512)}
+                    update={"options": GenerationOptions(timeoutMs=600_000)}
                 ),
             )
     assert path.read_bytes() == old
@@ -878,7 +878,7 @@ def test_previous_chunk_and_raw_attempt_survive_save_failure_and_invalid_respons
             draft,
             response,
             config=CONFIG.model_copy(
-                update={"options": GenerationOptions(maxTokens=1024)}
+                update={"options": GenerationOptions(timeoutMs=900_000)}
             ),
         )
     assert path.read_bytes() == old
@@ -1499,7 +1499,7 @@ def test_correct_pdf_does_not_reuse_changed_actual_inputs(
             "policy": {"policy": "Changed correction policy"},
             "config": {
                 "config": CONFIG.model_copy(
-                    update={"options": GenerationOptions(maxTokens=512)}
+                    update={"options": GenerationOptions(timeoutMs=600_000)}
                 )
             },
             "reference_pages": {"reference_pages": []},
@@ -2020,6 +2020,7 @@ def test_partial_answer_keeps_owned_reading_order_in_translation_units(
 
 def test_saved_correction_uses_only_its_recorded_adoption_rule(tmp_path, draft):
     workspace, digest, _ = draft
+    # Saved by 591086c; #118 removed the five null generation options from the record.
     old = json.loads((ROOT / "tests/fixtures/pdf-correction-591086c.json").read_text())
     record = artifact(
         workspace, "attempts/pdf-correction", "json", old["record"].encode()
@@ -2838,7 +2839,7 @@ def test_unknown_successful_orphan_refuses_only_its_request_before_launch(
             draft,
             answer(digest),
             config=CONFIG.model_copy(
-                update={"options": GenerationOptions(maxTokens=128)}
+                update={"options": GenerationOptions(timeoutMs=300_000)}
             ),
         ),
     ).owned_pages == [1]

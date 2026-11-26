@@ -190,6 +190,22 @@ PY
 
 期待：各renderは未訳のためexit1、statusは全てexit0でfile hash／mtime不変。両言語でcode fence／inline code／literalは原文どおり残り、`render_references`は成功。旧summary（参照失敗）に対し軽量statusは保存当時のprojectionのまま、`--verify --json`は現在のQA・`render_current: false`・`adopted_output_current: true`・旧出力を`previous_artifacts`として返し、保存byte／pointerを書き換えない。再render後は`render_current: true`。証拠は各stdout／stderr・`reference-observations.json`・`reference-cleanup.txt`。本物の重複anchor／存在しない内部target／未認可assetの失敗は直接注入できないため`tests/test_render.py::test_render_references_detect_generated_markup_faults`で補完する。viewer表示・意味品質・実書籍は未確認。
 
+### 旧形式workspaceの停止（Issue #118）
+
+未使用の生成option（`temperature/maxTokens/transport/cacheRetention/thinkingBudgets`）を保存物から削除した後に、それらを保存済み`options`／`submitted`に持つ旧workspaceが案内付きで止まることを確認する。実CLI（EPUBは`tests/fixtures/resume_process.py`、PDFは`scripts/pdf_progress_fixture.py`の自作9ページfixture、どちらも`--helper <json> --`）→実Node `ai/tests/run-process.mjs`→network拒否付き公開faux（`--provider faux --model text --thinking off`、PDFは`--pages 2-7 --correction-model vision`）を空PATHのchildで使う。変更前コードは所有TemporaryDirectoryへ`git archive 4aae54e src ai`（`--base`で変更可）を展開し、`src`をchildの`PYTHONPATH`先頭に置く。旧Pythonは旧helperの`submitted`形を照合するため、旧`ai/src`を既存`ai/node_modules`のsymlinkと`tsc`で所有temp内にbuildし、旧runだけに使う（install・checkout切替・`ai/dist`変更なし）。helperは`scripts/options_old_workspace_stop.py`だけで、`scripts/nested_list_order.py`のRunnerを再利用する。repository rootで非並行に実行する。
+
+```sh
+EVIDENCE=$(mktemp -d "$PWD/work/test-verification-issue118-XXXXXX")
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 .venv/bin/python .pi/skills/verify-project/scripts/options_old_workspace_stop.py --evidence "$EVIDENCE"
+```
+
+期待（不一致はassertで非0終了）：
+
+- (a) 変更前コードで公開`run`したEPUB（`make_epub`）とPDFのworkspaceは、削除したkeyを`options`／`submitted`に持つ（`files_naming_removed_options`>0）。現行の`resume --json`／`render`／`status --verify`はいずれもexit 2、stderrに`doc-translate: error: このworkspaceは古い形式で保存されています。新しいworkspaceで `run` し直してください。`、`validation error`／`extra_forbidden`／`Traceback`なし、送信0件、全fileのbyte・mtime不変。
+- (b) 対照：現行コードで新規`run`した同条件のworkspaceは削除したkeyを持たず、同じ3操作がexit 0・送信0件。
+
+証拠：`revision.txt/dirty.txt/scope.diff/imports.json/observations.json/cleanup.txt`と各操作の`.stdout/.stderr`。所有TemporaryDirectory（旧src・旧helper build・fixture・workspace・人工credential）だけを回収し、childは`subprocess.run`で回収、cleanup後に全証拠を再読する。focused回帰は`tests/test_resume.py::test_saved_workspace_with_removed_generation_options_stops_with_rerun_guidance`（4aae54eの公開runで取得した`tests/fixtures/epub-options-before-118.json`）。実provider・実書籍・既存`work/`workspaceは対象外で、正式チェックとRootの別invocationでの直接確認は代用しない。
+
 ### 想定外の失敗記録（Issue #116）
 
 focused回帰は`tests/test_run.py::test_run_unexpected_stage_exception_leaves_failure_record_without_secrets`、`tests/test_run.py::test_run_expected_inference_failure_writes_no_failure_record`、`tests/test_resume.py::test_resume_unexpected_validation_failure_records_cause_without_book_text`。
@@ -687,7 +703,7 @@ cleanup：所有child group／handleだけをinterrupt・drain・waitし、所�
 
 自作PDF型100 heading＋body／200 units、実prepareと翻訳100 attemptsの整合seedを全byte保存。準備seedは上の共通recipeを使うため、新規headingも`Section groupN`で独立collect100＋organize1を維持する。保持済み旧seedは`--seed`で再生成せず同byteを使う。adopted、翻訳pointerのみ除去したunadopted、独立loadをfresh Python・warm filesystemで各通常3回＋別diagnostic1回。primaryはunadoptedの初回attempt glob→Executor.__enter__までのinclusive pre-job探索proxy。全体wall／CPU／RSS・内部previous load・独立load・snapshot保存数／bytesは別記。期待はcompleted・回答ID／text対応・返却digestと実pointer一致、worker submit0・実追加request0、旧immutable／seed不変。診断はthread-local scopeで探索／public_load／storeを分けてread/hash/parse/request/比較を委譲計数する。
 
-証拠はmanifest／dirty／diff／verification-sources、seed全byte／hash、人工request、command／exit／metrics／diagnostic、raw／median／min/max／探索寄与／保持record数・論理bytes・親RSSとunknown／cleanup。所有childだけwaitし所有一時workspace／人工credentialだけ回収後、保持全fileをreadback。承認後afterは同seed・同script・同境界で比較する。catalogはrequest text／先頭unit IDで候補を取得した後に全configを照合し、等値なsigned zeroをconfig JSON byteキーで分離しない。開始時全元record検証・採用済みmanual優先・辞書順・全実入力/raw/domain検証を維持する。`tests/test_translation.py`のcatalog回帰は通常/repair/失敗/adjusted/分割失敗のatomic保存後別thread取得、候補順、元read各1回、別操作の破損拒否を扱う。`test_translation_recovers_orphan_with_equal_signed_zero_config`は正負両方向のpointer除去後回収・無送信・旧immutable保持・現在config／新旧loadを確認する。異なるconfigの候補は既存の実入力変更回帰で拒否を確認する。70%目標と代表run／resume上限は別比較で、レビュー修正前値を新sourceの測定に読み替えずRootが再計測する。手順成立やbefore取得を成功判定にしない。実provider／実workspace／任意書籍／意味品質／全履歴snapshot常駐は対象外。正式チェック／Root独立操作／Reviewer gateは別途必要。
+証拠はmanifest／dirty／diff／verification-sources、seed全byte／hash、人工request、command／exit／metrics／diagnostic、raw／median／min/max／探索寄与／保持record数・論理bytes・親RSSとunknown／cleanup。所有childだけwaitし所有一時workspace／人工credentialだけ回収後、保持全fileをreadback。承認後afterは同seed・同script・同境界で比較する。catalogはrequest text／先頭unit IDで候補を取得した後に全configを照合する（signed zeroの`temperature`はIssue #118で削除）。開始時全元record検証・採用済みmanual優先・辞書順・全実入力/raw/domain検証を維持する。`tests/test_translation.py`のcatalog回帰は通常/repair/失敗/adjusted/分割失敗のatomic保存後別thread取得、候補順、元read各1回、別操作の破損拒否を扱う。異なるconfigの候補は既存の実入力変更回帰で拒否を確認する。70%目標と代表run／resume上限は別比較で、レビュー修正前値を新sourceの測定に読み替えずRootが再計測する。手順成立やbefore取得を成功判定にしない。実provider／実workspace／任意書籍／意味品質／全履歴snapshot常駐は対象外。正式チェック／Root独立操作／Reviewer gateは別途必要。
 
 ## 準備request内IDと追跡binding（Issue #58）
 
@@ -963,7 +979,7 @@ PY
 
 ```sh
 PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-  .venv/bin/pytest tests/test_translation.py -k 'v2 or byte_original or signed_zero or cancels or actual_input_changes' -q
+  .venv/bin/pytest tests/test_translation.py -k 'v2 or byte_original or cancels or actual_input_changes' -q
 ```
 
 Mapは成功台帳でなく再実行入口。全体性能／新しい準備・PDF並列設定、実provider速度・意味品質、実Docling／OCR、viewer、他OS／remote CIは未確認。正式full core／PDF4／Node checks・Rootの別workspace独立再実行・Reviewer gateは別に行う。
@@ -1019,7 +1035,7 @@ try:
             answers = id_answers(snapshot)
             old = run(owned, workspace, [], answers_override=answers)
             pointer = (workspace / 'preparation-snapshot.json').read_bytes()
-            config = CONFIG.model_copy(update={'options': GenerationOptions(temperature=.2)})
+            config = CONFIG.model_copy(update={'options': GenerationOptions(timeoutMs=600_000)})
             cancel = threading.Event()
             timeline = evidence / (fault + '-timeline.jsonl')
             answers['observation'] = {'delay_ms': [0,800,0,0,0], 'timeline': str(timeline), 'fail_sections': [2] if fault == 'local' else []}
@@ -1142,7 +1158,7 @@ try:
             shutil.copytree(evidence / 'seed', workspace)
             assert resume_document(workspace=workspace, process_command=helper(owned))['processing']['status'] == 'completed'
             pointers = {p:(workspace/p).read_bytes() for p in ('source-snapshot.json','preparation-snapshot.json','translation-snapshot.json','render.json')}
-            config = GenerationConfig(provider='faux', model='vision', thinking='off', options=GenerationOptions(temperature=.2))
+            config = GenerationConfig(provider='faux', model='vision', thinking='off', options=GenerationOptions(timeoutMs=600_000))
             timeline = evidence / (fault + '-timeline.jsonl')
             command = helper(owned, correction_timeline=str(timeline), correction_delays={2:1,7:1000}, **({'correction_fail_page':12} if fault=='local' else {}))
             replace = os.replace
