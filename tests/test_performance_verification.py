@@ -337,12 +337,13 @@ def test_translation_history_separates_initial_unchanged_and_recovery_growth(
     assert initial["jobs"] == initial["requests"] == 2
     assert initial["attempt_added_files"] == initial["chunk_added_files"] == 2
     assert initial["pointer_writes"] == 3
-    assert initial["snapshot_added_files"] == initial["jobs"]
+    assert initial["snapshot_saves"] == initial["jobs"]
     assert unchanged["snapshot_added_files"] == unchanged["snapshot_added_bytes"] == 0
     assert unchanged["pointer_writes"] == 1 and not unchanged["pointer_changed"]
     failed, recovery = rows["failed_initial"], rows["recovery"]
     assert failed["jobs"] == failed["requests"] == 2
     assert failed["chunk_added_files"] == 1
+    assert failed["snapshot_saves"] == 2
     assert recovery["jobs"] == recovery["requests"] == 1
     assert recovery["chunk_added_files"] == 1 and recovery["pointer_changed"]
     assert recovery["snapshot_added_files"] == 1

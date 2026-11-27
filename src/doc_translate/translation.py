@@ -1,5 +1,6 @@
 """Translate saved marker units with fixed preparation; adopt only validated results."""
 
+import hashlib
 import json
 import signal
 import threading
@@ -39,6 +40,7 @@ from doc_translate.snapshot import (
     json_bytes,
     load_source_snapshot,
     read_json,
+    store_bytes,
     store_json,
 )
 from doc_translate.units import (
@@ -779,7 +781,14 @@ def _process(
     return chunks, runs, splits, reused_ids
 
 
-def _adopt(workspace, source_digest, prep_digest, config, chunks, runs, splits):
+def _adopt(
+    workspace, source_digest, prep_digest, config, chunks, runs, splits, superseded
+):
+    """Save and point to a snapshot; return (digest, whether this call created it).
+
+    ``superseded`` is a version this translate call created and no longer needs; it
+    is removed only after the pointer moves, so a forced stop keeps a valid pointer.
+    """
     snapshot = TranslationSnapshot(
         source_snapshot_sha256=source_digest,
         preparation_sha256=prep_digest,
@@ -792,12 +801,18 @@ def _adopt(workspace, source_digest, prep_digest, config, chunks, runs, splits):
             status="failed" if any(c.error for c in chunks) else "completed",
         ),
     )
-    digest = store_json(workspace, "snapshots/translation", snapshot)
+    data = json_bytes(snapshot)
+    digest = hashlib.sha256(data).hexdigest()
+    directory = workspace / "snapshots/translation"
+    created = digest == superseded or not (directory / f"{digest}.json").exists()
+    store_bytes(workspace, "snapshots/translation", "json", data)
     atomic_write(
         workspace / "translation-snapshot.json",
         SnapshotReference(sha256=digest).model_dump_json().encode(),
     )
-    return digest
+    if superseded is not None and superseded != digest:
+        (directory / f"{superseded}.json").unlink(missing_ok=True)
+    return digest, created
 
 
 def translate_document(
@@ -939,6 +954,8 @@ def translate_document(
         jobs = [[chunk] for chunk in chunks]
         pending = iter(index for index, job in enumerate(jobs) if job[0].answer is None)
         previous_handlers = {}
+        # Latest snapshot this call created; files present before the call stay.
+        own = None
 
         def adopted(chunks, job_id=""):
             # Counts come only from the snapshot just adopted, not a second leaf model.
@@ -1013,7 +1030,7 @@ def translate_document(
                             runs.extend(calls)
                             splits.extend(operations)
                             chunks = [chunk for job in jobs for chunk in job]
-                            _adopt(
+                            digest, created = _adopt(
                                 workspace,
                                 source_digest,
                                 prep_digest,
@@ -1021,7 +1038,9 @@ def translate_document(
                                 chunks,
                                 runs,
                                 splits,
+                                own,
                             )
+                            own = digest if created else None
                             reused_ids.update(reused)
                             adopted(chunks, str(index))
                         while len(active) < concurrency and submit():
@@ -1039,8 +1058,15 @@ def translate_document(
                 for chunk in chunks:
                     if chunk.error == "not_processed":
                         chunk.error = "cancelled"
-            digest = _adopt(
-                workspace, source_digest, prep_digest, config, chunks, runs, splits
+            digest, _ = _adopt(
+                workspace,
+                source_digest,
+                prep_digest,
+                config,
+                chunks,
+                runs,
+                splits,
+                own,
             )
             adopted(chunks)
             if cancelled.is_set():

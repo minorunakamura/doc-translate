@@ -1586,6 +1586,8 @@ PY
 
 入口は公開`save_source_snapshot → prepare_document → translate_document → load_translation`です。前提は既存Python／Node、compiled resourceの全hash一致、人工credential、実faux＋no-networkです。手順・条件・結果・判断は[性能referenceの#105節](../../../../docs/reference/performance.md#翻訳snapshot履歴の容量issue-105)にあります。repository rootで`.venv/bin/pytest -q tests/test_performance_verification.py -k translation_history`を実行した後、`.venv/bin/python .pi/skills/verify-project/scripts/translation_history.py --evidence work/issue105-<unique>`（既定10／100 group、各3回、`--size 2`は接続確認）を他benchmarkと非並行で実行します。所有TemporaryDirectoryだけをcleanupし、証拠全fileをreadbackします。実書籍workspace・旧snapshotの削除や保存方式の変更は対象外で、#125で扱います。
 
+#125以降の期待値はscriptのassertと[性能referenceの#125節](../../../../docs/reference/performance.md#翻訳snapshotの途中版削除issue-125)にあります。
+
 ## 保存byteの前後比較（Issue #121）
 
 保存・読込み関数を`snapshot.py`の`atomic_write`／`json_bytes`／`store_bytes`／`store_json`／`read_json`へ集めた後も、保存物のbyteが変更前と同じであることを確かめる。入口は公開CLIで、[#103節](#入れ子リストの順序と旧workspaceの停止issue-103)と同じ実CLI（EPUBは`tests/fixtures/resume_process.py`、PDFは`scripts/pdf_progress_fixture.py`）→実Node `ai/tests/run-process.mjs`→network拒否付き公開faux。childは空PATHで動く。変更前コードは所有TemporaryDirectoryへ`git archive 4065822 src`を展開し、childの`PYTHONPATH`先頭に置く（checkoutは切り替えない）。実際のimport pathは`imports.json`に残す。

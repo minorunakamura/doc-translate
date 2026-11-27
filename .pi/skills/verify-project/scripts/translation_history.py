@@ -1,4 +1,8 @@
-"""Issue #105: translation snapshot history growth per initial / unchanged / recovery run."""
+"""Issues #105/#125: translation snapshot growth per initial / unchanged / recovery run.
+
+#125 removes a translate call's own intermediate snapshots after the pointer moves, so
+saves (snapshot_saves) and files left behind (snapshot_added_files) are counted apart.
+"""
 
 import argparse
 import json
@@ -88,6 +92,8 @@ def measure(owned, workspace, response=None):
     pointer = workspace / POINTER
     old_pointer = digest(pointer) if pointer.exists() else None
     before = inventory(workspace)
+    snapshots = workspace / DIRECTORIES["snapshot"]
+    kept = {p.name: digest(p) for p in snapshots.glob("*.json")}
     started = time.perf_counter()
     with history_measurement(workspace) as metrics:
         result = import_module("test_translation").translate(owned, workspace, response)
@@ -102,6 +108,7 @@ def measure(owned, workspace, response=None):
         "jobs": metrics["jobs"],
         "pointer_writes": metrics["pointer_writes"],
         "pointer_changed": old_pointer != digest(pointer),
+        "snapshot_saves": len(metrics["snapshot_saves"]),
         "snapshot_save_bytes_in_order": metrics["snapshot_saves"],
         "final_snapshot_bytes": after["snapshot"][f"{result}.json"],
         "translate_seconds": elapsed,
@@ -112,7 +119,9 @@ def measure(owned, workspace, response=None):
         row[f"{kind}_added_files"] = len(added)
         row[f"{kind}_added_bytes"] = sum(added)
         row[f"{kind}_added_max_bytes"] = max(added, default=0)
-    assert row["snapshot_added_files"] == len(metrics["snapshot_saves"])
+    # Files present before the call stay byte-identical; only the pointer's is new.
+    assert {name: digest(snapshots / name) for name in kept} == kept
+    assert row["snapshot_added_files"] == (f"{result}.json" not in kept)
     return row
 
 
@@ -139,7 +148,12 @@ def measure_scenarios(owned, seed, size):
     assert unchanged["attempt_added_files"] == unchanged["chunk_added_files"] == 0
     assert not unchanged["pointer_changed"]
     assert rows["recovery"]["jobs"] == 1
-    assert rows["recovery"]["snapshot_added_files"] == 1
+    for scenario in ("initial", "failed_initial", "recovery"):
+        assert rows[scenario]["snapshot_added_files"] == 1
+        assert (
+            rows[scenario]["snapshot_added_bytes"]
+            == rows[scenario]["final_snapshot_bytes"]
+        )
     return rows
 
 
@@ -206,7 +220,7 @@ def main():
         "counting": {
             "files": "directory diff of snapshots/translation, attempts/translation, translations/chunks; logical bytes = file sizes",
             "pointer_writes": "delegated os.replace whose destination is translation-snapshot.json",
-            "snapshot_saves": "delegated os.replace into snapshots/translation (existing digest is not rewritten)",
+            "snapshot_saves": "delegated os.replace into snapshots/translation (existing digest is not rewritten); #125 deletes the call's earlier saves after the pointer moves, so saves can exceed added files",
             "jobs": "delegated translation.ThreadPoolExecutor.submit",
             "requests": "new lines in the faux requests.jsonl",
         },
@@ -261,6 +275,7 @@ def main():
                     ]
                 )
                 for key in (
+                    "snapshot_saves",
                     "snapshot_added_files",
                     "snapshot_added_bytes",
                     "snapshot_added_max_bytes",
@@ -285,7 +300,7 @@ def main():
             path.read_bytes()
     print(
         evidence,
-        "unchanged resume added 0 snapshots; cleanup and all evidence readback matched",
+        "only the final pointer snapshot was added (unchanged 0); cleanup and all evidence readback matched",
     )
 
 

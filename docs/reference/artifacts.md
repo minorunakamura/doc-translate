@@ -398,7 +398,7 @@ splitを含むv2 requestだけは`context.split_inputs`をunit順に追加しま
 ```text
 WORKSPACE/
   translation-snapshot.json             # SnapshotReference、artifact確定後にatomic更新
-  snapshots/translation/<sha256>.json   # TranslationSnapshot、旧版も保持
+  snapshots/translation/<sha256>.json   # TranslationSnapshot、保持範囲は下記（Issue #125）
   translations/chunks/<sha256>.json     # 検証済みrequest/config/answer/run
   attempts/translation/<sha256>.json    # 成功・失敗・縮小の全記録
 ```
@@ -408,6 +408,8 @@ WORKSPACE/
 `runs`は継承した過去記録と今回の記録digest（並列処理では完了順）。実行記録は`stage/status/request/config/error/elapsed_seconds/attempts`を持ち、`status`は`validated/rejected/adjusted`、ローカル分割調整は追加の`adjustment`と空の`attempts`を持ちます。各adapter attemptのraw回答・要求／確認済み設定・terminal／終了code・retry・usage生値を保持します。marker拒否のrecordには`validation_feedback`を追加し、訂正の各回答を実際のrequestとともに別recordで保存します。生成前の拒否やローカル処理ではusageは未観測であり、0として加算しません。失敗でも観測済みusageを失わず、準備のusageとは分離します。
 
 attempt→検証済みchunk artifact→snapshot→採用参照の順でfsync／atomic replaceします。各並列jobが完了するごとに部分snapshotを採用し、別chunkの失敗で正常採用を破棄しません。`translate_document`は部分失敗でもsnapshot digestを返すので、callerは`processing.status`と各chunk.errorを確認してください。保存失敗は例外になり、直前の採用参照と保存済みattemptを保持します。ローカル保存例外でも新規送信を止め、進行中jobの終了と保存を待ってから例外を送出します。採用参照は最後の整合版のままです（Issue #104）。原因解消後のresumeは保存済み成功を無送信で再利用し、欠けた分だけ送信します。参照されない保存途中artifactを自動採用するengineはありません。応答喪失・採用参照確定前のcrashによる再送／exactly-once課金は保証しません。
+
+snapshotの保持範囲（Issue #125）：1回の`translate_document`の中で、その呼び出しが新しく作った途中版は、次の版を保存してpointerをatomic更新した**後**に削除します。強制終了がどの時点で起きても、pointerは保存済みの整合版を指します。保持するのは、呼び出し開始前から存在した版（前回のpointer版・同digestの既存file）、最後にpointerが指す版、`revise`が保存する版、`review`／`revise`／`render`の記録が参照する版です。review／revise／renderはworkspace lockを取るため、translate途中の版を参照しません。過去の実行が残した既存fileは自動で削除しません。各途中版は一度書いてから消すので、書込み総量は減りません。
 
 再利用はloadで検証できた採用済みchunk（manual含む）を優先し、次に辞書順の保存attemptから正常回答を回収します。現在の連続unit・分割対応と、版付き実wire request（aliasまたは旧ID／種別／marker原文／unit context・固定context／glossary／policy・schema等）およびconfig（provider/model/thinking/options）を完全一致で照合します。訂正requestは、現在の入力に処方済みの固定指示と`context.translation_feedback`だけを加えた形と完全一致する場合に限り認め、回答のID／marker・成功code等を再検証します。artifactとrunには同じ実requestを保存し、訂正済み結果も採用後のresumeや採用途中で中断した後に無送信で再利用できます。非splitではsource snapshot hashや保護payload込みsource_hashだけでは無効化せず、codeだけの変更は現在のunit／token／位置へ結び直します。splitでは上記の親source_hash／元範囲も実入力として照合します。準備方式・根拠・usage metadataだけの変更でも本文入力が同じなら再送しません。本文・context・固定入力・schema・実設定が変わったchunkは旧版を残して更新します。曖昧な旧訳を分割・接合して使いません。
 

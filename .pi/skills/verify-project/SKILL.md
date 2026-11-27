@@ -122,7 +122,7 @@ EPUBの`li`で子リストの後に続く親の文の順序、変更前の版で
 
 ## 翻訳snapshot履歴の容量（Issue #105）
 
-翻訳snapshot履歴の増え方を測るときは[Mapの#105節](references/feature-map.md#翻訳snapshot履歴の容量issue-105)と`scripts/translation_history.py --evidence work/issue105-<unique>`を使います。新規初回・無変更resume（増分0をassert）・失敗回復resumeを10／100 groupで各3回測ります。結果と判断は性能referenceの#105節にあります。削減・旧履歴削除はしません。
+翻訳snapshot履歴の増え方を測るときは[Mapの#105節](references/feature-map.md#翻訳snapshot履歴の容量issue-105)と`scripts/translation_history.py --evidence work/issue105-<unique>`を使います。新規初回・無変更resume（増分0をassert）・失敗回復resumeを10／100 groupで各3回測ります。結果と判断は性能referenceの#105節にあります。#105自体は削減・旧履歴削除をしません。#125以降の期待は[性能referenceの#125節](../../../docs/reference/performance.md#翻訳snapshotの途中版削除issue-125)にあります。
 
 ## 保存byteの前後比較（Issue #121）
 
