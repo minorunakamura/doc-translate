@@ -1,6 +1,6 @@
 # doc-translate — PDF・EPUB日本語翻訳CLI
 
-> 状態：設計議論で合意した基本方針と検証結果の整理。PDF／EPUBのrun・resume・revise・review・render・statusまで実装済み。人工入力／実helperによるoffline検査に加え、自作小入力でOpenAI OAuth・実LLM・限定viewer表示を確認済み。意味品質やIssue全体の承認完了とは区別し、実token refreshは未観測。現在の結果・条件・限界は[CONTRIBUTINGのIssue #18記録](../../CONTRIBUTING.md#統合受入れの限定確認issue-18)を参照する。設計上の決定だけを検証済みとは扱わない。
+> 状態：設計議論で合意した基本方針と検証結果の整理。PDF／EPUBのrun・resume・revise・review・render・statusまで実装済み。人工入力／実helperによるoffline検査に加え、自作小入力でOpenAI OAuth・実LLM・限定viewer表示を確認済み。意味品質やIssue全体の承認完了とは区別し、実token refreshは未観測。現在の結果・条件・限界は[CONTRIBUTINGの検証状況と限界](../../CONTRIBUTING.md#検証状況と限界)を参照する。設計上の決定だけを検証済みとは扱わない。
 >
 > 346ページの別書籍は全文初版生成・構造検証・標本レビューまで到達したが、内容品質は未承認。確認済み結果と限界を§18に記録する。本書の更新は実装計画の承認や実装開始を意味しない。
 
@@ -317,7 +317,7 @@ PDF補正は公開`correct_pdf`のworkspace lock wrapperを保持し、同処理
 
 ### 基点付き修正
 
-`revise DIR --source FILE --reason TEXT`は全SourceSnapshot置換、`--translations FILE`は指定unitの訳文patchで、いずれも現在のsource／translation hashを基点とするCASである。古い基点・未知ID・不正schema／構造・根拠・assets・参照を採用前に拒否し、理由・旧版・元回答を保持する。操作自体はオフラインで、Node・認証・PDF model・推論を要求せず、訳文を自動更新しない。後のresumeで準備・unit・翻訳・QA／出力を更新する。訳文patchは現在の原文・準備・設定に対応する訳文に限る。具体的なfieldと保存pathは[artifact契約](../reference/artifacts.md#基点付き修正pdf補正候補採用issue-16)を正本とする。
+`revise DIR --source FILE --reason TEXT`は全SourceSnapshot置換、`--translations FILE`は指定unitの訳文patchで、いずれも現在のsource／translation hashを基点とするCASである。古い基点・未知ID・不正schema／構造・根拠・assets・参照を採用前に拒否し、理由・旧版・元回答を保持する。操作自体はオフラインで、Node・認証・PDF model・推論を要求せず、訳文を自動更新しない。後のresumeで準備・unit・翻訳・QA／出力を更新する。訳文patchは現在の原文・準備・設定に対応する訳文に限る。具体的なfieldと保存pathは[artifact契約](../reference/artifacts.md#基点付き修正pdf補正候補採用)を正本とする。
 
 ### PDF原文修正後の候補比較・明示採用
 
@@ -370,7 +370,7 @@ PDF検証時の初期値は、補正が所有5ページ＋前後各1ページ、
 
 **要確認箇所には`※`だけを付け、説明文は本文に挿入しない。** 目印は該当段落の末尾等へ出力時に付加し、コード・数式の中や保存する原文・訳文そのものには混ぜない。QAレポートに対応する確認理由・元ページまたはresource・原文位置・Markdownの該当箇所を記録する。処理結果のサマリーには要確認件数とQAレポートの場所を表示する。目印の具体的な配置と対応の見やすさは未検証。
 
-出力QAは生成境界で記録したanchor・内部参照・画像assetを検査し、コード例の`id/href/src`等を参照と混同しない。詳細は[render/statusのreference](../reference/artifacts.md#安全markdown対応表qarenderstatusissue-13)を参照する。
+出力QAは生成境界で記録したanchor・内部参照・画像assetを検査し、コード例の`id/href/src`等を参照と混同しない。詳細は[render/statusのreference](../reference/artifacts.md#安全markdown対応表qarenderstatus)を参照する。
 
 EPUBから取得したinline構造・リンク・脚注の対応と画像altを保持する。Markdownへ変換するときは参照先を出力先のanchor・assets等へ対応付け、元のXHTML相対pathをそのまま残してリンク切れにしない。対応不能部分は元の参照情報を残して明示する。
 
@@ -507,7 +507,7 @@ cacheRead／cacheWriteは0。合計参考USDは19.409459で、Piのcatalog換算
 | 図の分類・ページ間の親子関係 | 図所属・ページ接続とlist親子を実装。人工応答の検査と、自作小PDFの実LLM補正後の図内非重複・caption別訳・list 3階層を標本確認 | 任意文書の図分類・ページ間接続品質は未保証。PDFのa／b sublistはbullet表示。§18の既知事例を修正済みとは扱わない |
 | 原文変更・glossary／文体変更後の局所処理 | 基点付きrevise、PDF候補の比較・明示採用、実request一致による旧訳／手修正訳再利用を実装。人工入力で機械的契約を検査 | `tests/test_revise.py`・`test_run.py`・`test_pdf_candidate_acceptance.py`でstale／不正入力、IDずれ・構造変更、code-only、scope／出力鮮度分離を確認する。人の訂正の意味的完全保持や実LLM品質は未保証 |
 | 障害復旧・resume | 保存入力検証・不足工程再開を実装。人工process境界の中断・旧hash保持を検査。自作3入力は失敗後各1回の実resumeでcompleted、画像版は成功済み補正の再送なし | 検査した境界と任意障害への保証を区別する。SIGKILL／disk障害・応答損失時のexactly-once課金は保証しない。§18の55ページ再利用は別の過去実績 |
-| 文書context・glossaryの自動準備 | 候補・用例・出典位置の検証と固定を実装。自作3入力で実準備・公開loadの全evidence対応と本文根拠・日本語訳語を標本確認。attempt／参考価格はCONTRIBUTINGに記録 | 候補網羅性・意味品質・任意文書の時間／費用は未保証。文書間で訳語は完全一致しない。§18の46語一括作成とは別の実証 |
+| 文書context・glossaryの自動準備 | 候補・用例・出典位置の検証と固定を実装。自作3入力で実準備・公開loadの全evidence対応と本文根拠・日本語訳語を標本確認 | 候補網羅性・意味品質・任意文書の時間／費用は未保証。文書間で訳語は完全一致しない。§18の46語一括作成とは別の実証 |
 | 内容確認の方法・範囲 | 明示unit／PDFページの独立reviewと、hash付き指摘・確認者／方法／範囲／usageの保存、QA/status連携を実装。人工入力と実helper／公開faux providerで範囲・画像・保存・旧版非currentを検査 | 実LLMの指摘精度や意味品質・人間の全文査読は未確認。全文の追加LLMレビューは標準では必須にせず、空findingsでも品質承認しない |
 | 複雑な表・数式・要確認の目印 | 自作3文書をPandoc 3.7.0.1＋Chrome 156.0.8078.48で表示し、結合表・図・code・list・`※`とPDF数式のMathML表示を確認 | EPUBの許可属性外MathMLは不活性source data／QAへfallbackし原構造・参照を保持。他viewerは未確認。安全判定は緩めない |
 | テキストEPUB入力 | EPUB 2／3の安全reader・構造取得・inline／unit・CLI出力を実装。自作3 XHTML・34 unitで実翻訳・原資料との標本照合・限定viewer表示まで確認 | 任意EPUB・意味品質は未保証。block単位uncertaintyで広く`※`が付く。PDF用OCR・補正LLMは使わない |

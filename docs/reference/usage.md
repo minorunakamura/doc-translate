@@ -317,7 +317,7 @@ doc-translate resume ./work/book
 
 初めて準備する場合は[READMEのPDF手順](../../README.md#pdfを翻訳する)を使ってください。以下は依存・ファイル構成と既存modelの再利用の詳細です。
 
-PDFのrunには以下のローカル取得準備が必要です。取得だけの公開Python API（[引数・保存契約](artifacts.md#pdf抽出下書きissue-7)）ならNode／provider認証／LLMは不要ですが、runでの補正・準備・翻訳には必要です。抽出下書きは正しい原文や補正済み原文ではありません。EPUBにはこの準備は不要です。
+PDFのrunには以下のローカル取得準備が必要です。取得だけの公開Python API（[引数・保存契約](artifacts.md#pdf抽出下書き)）ならNode／provider認証／LLMは不要ですが、runでの補正・準備・翻訳には必要です。抽出下書きは正しい原文や補正済み原文ではありません。EPUBにはこの準備は不要です。
 
 PDF依存を含むwheelを明示導入します。
 
