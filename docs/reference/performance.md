@@ -413,7 +413,7 @@ Rootの修正後正式チェックはcore-only **929 passed／123 skipped**（Do
 
 ### 測定・再実行・限界
 
-公開`prepare_document(concurrency=1|2|4)`のcollectだけを並列化し、既定1・group／実wire／config／根拠検査を維持します。run／resumeのCLIは`--preparation-concurrency {1,2,4}`、run manifest保存・resume未指定保存値・旧field欠落1です。設定変更だけでは再送しません。[artifact契約](artifacts.md#文書contextglossary準備issue-11)と[利用上の注意](usage.md#文書を翻訳する通常利用)を参照してください。PDF補正並列は別Work Itemです。
+公開`prepare_document(concurrency=1|2|4)`のcollectだけを並列化し、既定1・group／実wire／config／根拠検査を維持します。run／resumeのCLIは`--preparation-concurrency {1,2,4}`、run manifest保存・resume未指定保存値・旧field欠落1です。設定変更だけでは再送しません。[artifact契約](artifacts.md#文書contextglossary準備)と[利用上の注意](usage.md#文書を翻訳する通常利用)を参照してください。PDF補正並列は別Work Itemです。
 
 再実行はrepository root、既存Python／Node／compiled helperと同梱resource全10file hash一致、人工入力・credential・実Node公開faux／no-networkだけを前提とします。不足時は止め、install／sync／build／provider通信をしません。
 
@@ -454,7 +454,7 @@ export PATH="$PWD/.venv/bin:$PATH" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 ### 固定recipe・再実行・観測境界
 
-run／resumeの`--correction-concurrency {1,2,4}`は独立所有jobの上限です。未指定run／旧manifest欠落は1、resume未指定は保存値、明示overrideは保存します。EPUBへの明示指定は1も入力エラーです。公開`correct_pdf`のlock wrapper・回答／chunk schema・所有5ページ／許可隣接参照・長辺1800px・policy／全domain検証・coverage最大3回答／有限transport retryは変えません。[artifact契約](artifacts.md#pdf補正chunkissue-8)／[usage](usage.md#文書を翻訳する通常利用)にAPI・取消／保存失敗時の旧採用保持・成功回収を記載しています。
+run／resumeの`--correction-concurrency {1,2,4}`は独立所有jobの上限です。未指定run／旧manifest欠落は1、resume未指定は保存値、明示overrideは保存します。EPUBへの明示指定は1も入力エラーです。公開`correct_pdf`のlock wrapper・回答／chunk schema・所有5ページ／許可隣接参照・長辺1800px・policy／全domain検証・coverage最大3回答／有限transport retryは変えません。[artifact契約](artifacts.md#pdf補正chunk)／[usage](usage.md#文書を翻訳する通常利用)にAPI・取消／保存失敗時の旧採用保持・成功回収を記載しています。
 
 repository rootの既存PDF extra付きPython／Node、compiled `ai/dist`と同梱resource全10file hash一致を前提に、既存preparation driverの計測／分布／証拠／cleanupを再利用します。install／sync／build・実provider／model取得をせず、不足時は停止します。未作成のignore済みwork直下を指定し、他のbenchmark/testと非並行・foregroundで実行してください。
 

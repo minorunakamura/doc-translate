@@ -151,7 +151,7 @@ generateのrequest lifecycle・retry・非秘密設定／検証済みauthをscop
 - 新規run、部分完了resume、再利用のみのresume、訂正／通信retry、取消・異常終了、送信対象、stdout／stderr、保存・整合性・出力の回帰を保証する範囲と方法を選ぶ。
 - 既存のテスト・検証手順を優先し、必要な文書更新、検証手段の不足と最小補完、TDD採否を対象別に定める。実装後の確認をPlanningで検証済みとしない。
 
-Issue #53の統合確認は[検証Skill](../../.pi/skills/verify-project/SKILL.md)の既存status／EPUB／PDF／review手順と、[開発ガイド](../../CONTRIBUTING.md#進捗表示statusの統合受入れissue-53)の正式チェック・配布検査を使う。本書だけで未実施の実動・性能・配布確認を成功扱いにしない。
+Issue #53の統合確認は[検証Skill](../../.pi/skills/verify-project/SKILL.md)の既存status／EPUB／PDF／review手順と、[開発ガイド](../../CONTRIBUTING.md#進捗表示statusの統合受入れ)の正式チェック・配布検査を使う。本書だけで未実施の実動・性能・配布確認を成功扱いにしない。
 
 合意した利用体験・責務・制約を変える必要が出たら、根拠と影響を示してユーザーと確認する。通常の実装詳細をすべて再承認させることも、未確認の仕様変更を実装詳細として確定することもしない。
 
