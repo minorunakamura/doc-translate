@@ -169,3 +169,7 @@ PDFの例で作った作業フォルダは`work/pdf-book`なので、上のパ�
 詳しいオプションや動作は[CLI詳細リファレンス](docs/reference/usage.md)、開発・build・検証範囲は[開発ガイド](CONTRIBUTING.md)にまとめています。
 
 開発用の自作入力によるPDF／EPUB計測・再実行条件は[offline性能baseline](docs/reference/performance.md)を参照してください（実provider／OCRの速度保証ではありません）。
+
+## ライセンス
+
+doc-translate本体はMITライセンスです（[LICENSE](LICENSE)）。依存ライブラリやmodel重みのlicenseは[開発ガイド](CONTRIBUTING.md#lock依存更新とlicense)を参照してください。

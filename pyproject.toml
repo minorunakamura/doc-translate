@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "doc-translate"
 version = "0.1.0"
 description = "Traceable PDF and EPUB translation workspace"
+license = "MIT"
 requires-python = ">=3.14"
 dependencies = [
     "pydantic>=2.12,<3",
@@ -47,6 +48,7 @@ include = [
     "ai/tsconfig.build.json",
     "pyproject.toml",
     "README.md",
+    "LICENSE",
 ]
 
 [tool.hatch.build.targets.sdist.force-include]

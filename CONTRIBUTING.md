@@ -791,7 +791,9 @@ Pythonは回答JSONを別に解析してcallerのPydantic model（domain validat
 
 Pythonは`pyproject.toml`変更後に`uv lock`、Nodeは`ai/package.json`を変更して`npm --prefix ai install --package-lock-only --ignore-scripts --no-audit --no-fund`でlockを更新します。依存更新はregistry取得の許可範囲内で行います。更新後は上のwheel clean install検査を再実行してください。
 
-現在の主依存：Pydantic／Docling／OCRMac／pi-ai／proper-lockfileはMIT、PillowはMIT-CMU。推移依存にはcertifiのMPL-2.0、Torchの複合license、Node側のMIT／Apache-2.0／BSD等があります。lockは解決versionの記録でありlicense承認の代替ではありません。今回のnative tool確認はmacOS arm64に限定しています。更新時は実際の配布物のlicense／NOTICEとnative条件を再確認します。Apple VisionのOS条件やmodel重みをpackageのMITに含めません。Heron重みはApache-2.0、TableFormer重みはCDLA-Permissive-2.0です。Issue #7の実動検証は承認済みの既存local cacheを使い、新規取得・同梱はしていません。project全体のlicense宣言・releaseは今回の対象外です。
+project本体のlicenseはMITです（[LICENSE](LICENSE)、`pyproject.toml`と`ai/package.json`に記載）。
+
+現在の主依存：Pydantic／Rich／Docling／OCRMac／pi-ai／proper-lockfileはMIT、PillowはMIT-CMU、pypdfium2はBSD-3-Clause／Apache-2.0、defusedxmlはPSFL。推移依存にはcertifiのMPL-2.0、Torchの複合license、Node側のMIT／Apache-2.0／BSD等があります。lockは解決versionの記録でありlicense承認の代替ではありません。今回のnative tool確認はmacOS arm64に限定しています。更新時は実際の配布物のlicense／NOTICEとnative条件を再確認します。Apple VisionのOS条件やmodel重みをpackageのMITに含めません。Heron重みはApache-2.0、TableFormer重みはCDLA-Permissive-2.0です。Issue #7の実動検証は承認済みの既存local cacheを使い、新規取得・同梱はしていません。releaseは対象外です。
 
 ## fixture・CIの境界
 
