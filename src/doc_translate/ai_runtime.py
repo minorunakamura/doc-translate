@@ -252,6 +252,21 @@ def setup() -> dict:
     link = home / f".current-{uuid4().hex}"
     link.symlink_to(runtime.name, target_is_directory=True)
     link.replace(home / "current")
+    # Cleanup failure never fails setup; leftovers are retried on the next success.
+    try:
+        for old in list(home.iterdir()):
+            if old.name != runtime.name and old.name.startswith(
+                ("npm-", "pnpm-", ".current-")
+            ):
+                try:
+                    if old.is_symlink():
+                        old.unlink()
+                    elif old.is_dir() and not old.name.startswith("."):
+                        shutil.rmtree(old)
+                except OSError:
+                    pass
+    except OSError:
+        pass
     return {**record, "runtime": str(runtime)}
 
 

@@ -151,7 +151,7 @@ def test_setup_requires_installed_node_and_npm(runtime_cli, missing):
 
 
 def test_failed_setup_keeps_previous_runtime_usable(runtime_cli):
-    run, _, log, _ = runtime_cli
+    run, _, log, tmp_path = runtime_cli
     first = run("setup-ai")
     assert first.returncode == 0, first.stderr
     failed = run("setup-ai", extra_env={"FAIL_INSTALL": "1"})
@@ -160,6 +160,74 @@ def test_failed_setup_keeps_previous_runtime_usable(runtime_cli):
     assert "Run doc-translate setup-ai." in failed.stderr
     assert run("providers").returncode == 0
     assert len(log.read_text().splitlines()) == 2
+    home = tmp_path / "data/doc-translate/ai"
+    (home / ".current-stale").symlink_to("missing", target_is_directory=True)
+    before = sorted(p.name for p in home.iterdir())
+    assert len([name for name in before if name.startswith("npm-")]) == 2
+    assert run("setup-ai", extra_env={"FAIL_INSTALL": "1"}).returncode == 1
+    after = sorted(p.name for p in home.iterdir())
+    assert set(after) >= set(before)
+    assert run("providers").returncode == 0
+
+
+def test_successful_setup_removes_old_and_failed_runtimes_only(runtime_cli):
+    run, _, _, tmp_path = runtime_cli
+    home = tmp_path / "data/doc-translate/ai"
+    assert run("setup-ai").returncode == 0
+    assert run("setup-ai", extra_env={"FAIL_INSTALL": "1"}).returncode == 1
+    (home / ".current-stale").symlink_to("missing", target_is_directory=True)
+    (home / "pnpm-old").mkdir()
+    (home / "pnpm-old/file").write_text("old")
+    locked = home / "pnpm-old/locked"
+    locked.mkdir()
+    (locked / "file").write_text("old")
+    locked.chmod(0o500)
+    (home / "keep.txt").write_text("keep")
+    (home / "other-dir").mkdir()
+    (home / "other-dir/file").write_text("keep")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "file").write_text("keep outside")
+    (home / "npm-link").symlink_to(outside, target_is_directory=True)
+    neighbor = tmp_path / "data/doc-translate/neighbor"
+    neighbor.mkdir()
+    (neighbor / "npm-keep").mkdir()
+    document = tmp_path / "workspace/original.epub"
+    document.parent.mkdir()
+    document.write_text("keep document")
+    credential = tmp_path / ".config/doc-translate/credentials.json"
+    credential.parent.mkdir(parents=True)
+    credential.write_text("keep credential")
+    assert len([p for p in home.iterdir() if p.name.startswith("npm-")]) == 3
+
+    try:
+        result = run("setup-ai")
+
+        assert result.returncode == 0, result.stderr
+        runtime = Path(json.loads(result.stdout)["runtime"])
+        assert sorted(p.name for p in home.iterdir()) == sorted(
+            ["current", runtime.name, "keep.txt", "other-dir", "pnpm-old"]
+        )
+        assert (home / "current").resolve() == runtime.resolve()
+    finally:
+        locked.chmod(0o700)
+
+    retry = run("setup-ai")
+
+    assert retry.returncode == 0, retry.stderr
+    runtime = Path(json.loads(retry.stdout)["runtime"])
+    assert sorted(p.name for p in home.iterdir()) == sorted(
+        ["current", runtime.name, "keep.txt", "other-dir"]
+    )
+    assert (home / "current").resolve() == runtime.resolve()
+    assert (home / "keep.txt").read_text() == "keep"
+    assert (home / "other-dir/file").read_text() == "keep"
+    assert (outside / "file").read_text() == "keep outside"
+    assert (neighbor / "npm-keep").is_dir()
+    assert document.read_text() == "keep document"
+    assert credential.read_text() == "keep credential"
+    assert (ROOT / "ai/node_modules/@earendil-works/pi-ai/package.json").is_file()
+    assert run("providers").returncode == 0
 
 
 @pytest.mark.parametrize("mismatch", ["record", "helper", "dependency", "lock"])

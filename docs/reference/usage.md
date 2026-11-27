@@ -17,7 +17,7 @@ doc-translate setup-ai
 
 `setup-ai`だけが依存packageをregistryから取得します。Nodeやnpm自体の取得、実行時compile、認証、model重み取得、文書送信は行いません。通常の参照・認証操作にはNodeだけが必要で、npmやPi CLIは不要です。自動installやnpxへのfallbackはありません。
 
-runtimeは文書workspaceではなく、`~/.local/share/doc-translate/ai/`（`XDG_DATA_HOME`指定時はその下の`doc-translate/ai/`）に保存します。setupのたびに固定lock・helperに対応する新しいdirectoryを作り、導入と検査に成功したものだけを次回利用対象にします。既存node_modulesを上書きせず、旧runtime、文書、credentialは削除しません。失敗した導入directoryも残ります。成功時は利用先とnpm version／lock hash／helper・library versionをJSONで表示します。
+runtimeは文書workspaceではなく、`~/.local/share/doc-translate/ai/`（`XDG_DATA_HOME`指定時はその下の`doc-translate/ai/`）に保存します。setupのたびに固定lock・helperに対応する新しいdirectoryを作り、導入と検査に成功したものだけを次回利用対象にします。既存node_modulesは上書きしません。成功時は`current`の差替え後に、旧版と過去に失敗した導入directory（`npm-*`／`pnpm-*`）と取り残された`.current-*`を削除します。文書、credential、他の名前の項目は削除しません。失敗時は何も削除しません。削除に失敗してもsetupは成功し、残った項目は次回の成功時に再び対象になります。実行中の`run`／`resume`／`review`／`login`などがある間に`setup-ai`を実行すると、その実行中のAI要求が1回失敗することがあり、`resume`で再開できます。`setup-ai`は同時に複数実行しないでください。重なると互いの導入を削除して利用できなくなることがありますが、`setup-ai`をもう一度実行すれば戻ります。成功時は利用先とnpm version／lock hash／helper・library versionをJSONで表示します。
 
 Pythonのcore導入にDoclingやOCR modelは不要です。EPUBのrunはcoreだけで使えます。PDFのrunには別extra `pdf`と、後述のローカルmodel準備が必要です。
 

@@ -1608,3 +1608,77 @@ EVIDENCE=$(mktemp -d "$PWD/work/test-verification-issue121-XXXXXX")
 証拠：`work/test-verification-issue121-<unique>/`の`revision.txt/dirty.txt/scope.diff/imports.json/observations.json/cleanup.txt`、全file hashの対応表`file-hashes.json`（flow→工程→old／current→path→sha256）、`epub-mismatches.json`／`pdf-mismatches.json`（成功時は`{}`）、各操作の`.stdout/.stderr`。所有TemporaryDirectory（旧src・case・workspace・人工credential）だけを回収し、childは`subprocess.run`で回収する。cleanup後に全証拠を再読する。
 
 対象外：実provider・実書籍・実Docling／OCR。candidates/source（PDF候補の公開とrevise採用）、`resume`、hash不一致の検出、既存ファイルの再利用経路はこのhelperで通らないので、既存テスト（`tests/test_pdf_candidate_acceptance.py`、`tests/test_resume.py`、`tests/test_source_snapshot.py`、`tests/test_translation.py`、`tests/test_pdf.py`ほか）で補う。正式チェックとRootの別invocationでの直接確認は代用しない。
+
+## setup-ai後の古いruntime削除（Issue #124）
+
+入口は公開`setup-ai`。成功時だけ`current`差替え後にruntime home（`$XDG_DATA_HOME/doc-translate/ai`）直下の`npm-*`／`pnpm-*`と取り残しの`.current-*`のうち新しい`current`以外を削除し、対象外の名前・home外・文書・credential・symlinkのリンク先（repoの`ai/node_modules`を含む）を残すことを確認する。対照は`FAIL_INSTALL`で失敗させたsetupで、全項目が残り前の`current`で`providers`がexit 0。前提は既存`.venv`（`.venv/bin/doc-translate`）・Node・`ai/node_modules`・`ai/dist`。npmは`tests/test_ai_runtime_cli.py`の`runtime_cli`と同じ方式のfake（`node_modules`をrepo `ai/node_modules`へのsymlinkにする）で、registry取得はしない。所有TemporaryDirectoryをHOME／XDG_DATA_HOMEにし、PATHにはnodeとfake npmだけを置く。利用者の実`~/.local/share`は使わない。repository rootで実行する。
+
+```sh
+EVIDENCE=$(mktemp -d "$PWD/work/test-verification-issue124-XXXXXX")
+export EVIDENCE
+.venv/bin/python - <<'PY'
+import json, os, shutil, subprocess, sys, tempfile
+from pathlib import Path
+root, evidence = Path.cwd(), Path(os.environ['EVIDENCE'])
+for name, command in (('revision.txt', ['git', 'rev-parse', 'HEAD']), ('dirty.txt', ['git', 'status', '--short']), ('scope.diff', ['git', 'diff'])):
+    (evidence / name).write_text(subprocess.check_output(command, text=True))
+executable, node = str(root / '.venv/bin/doc-translate'), shutil.which('node')
+observations = []
+def names(path):
+    return sorted(p.name for p in path.iterdir())
+try:
+    with tempfile.TemporaryDirectory(prefix='issue124-owned-') as owned:
+        tmp = Path(owned)
+        binaries = tmp / 'bin'; binaries.mkdir()
+        (binaries / 'node').symlink_to(node)
+        (binaries / 'npm').write_text(
+            f'#!{sys.executable}\nimport os, pathlib, sys\n'
+            "if sys.argv[1:] == ['--version']: print('11.19.0'); sys.exit(0)\n"
+            "if os.environ.get('FAIL_INSTALL'): sys.exit(7)\n"
+            f"pathlib.Path('node_modules').symlink_to({str(root / 'ai/node_modules')!r}, target_is_directory=True)\n")
+        (binaries / 'npm').chmod(0o755)
+        env = {k: v for k, v in os.environ.items() if k not in {'NODE_OPTIONS', 'NODE_PATH'}}
+        env.update(HOME=str(tmp), XDG_DATA_HOME=str(tmp / 'data'), PATH=str(binaries))
+        home = tmp / 'data/doc-translate/ai'
+        def run(case, *arguments, fail=False):
+            result = subprocess.run([executable, *arguments], env={**env, **({'FAIL_INSTALL': '1'} if fail else {})}, capture_output=True, text=True, check=False)
+            observations.append({'case': case, 'command': ['doc-translate', *arguments], 'FAIL_INSTALL': fail, 'exit': result.returncode})
+            return result
+        assert run('old version', 'setup-ai').returncode == 0
+        assert run('failed install dir', 'setup-ai', fail=True).returncode == 1
+        (home / '.current-stale').symlink_to('missing', target_is_directory=True)
+        (home / 'keep.txt').write_text('keep'); (home / 'other-dir').mkdir()
+        outside = tmp / 'outside'; outside.mkdir(); (outside / 'file').write_text('keep')
+        (home / 'npm-link').symlink_to(outside, target_is_directory=True)
+        neighbor = tmp / 'data/doc-translate/neighbor'; neighbor.mkdir(); (neighbor / 'npm-keep').mkdir()
+        (tmp / 'workspace').mkdir(); (tmp / 'workspace/original.epub').write_text('artificial')
+        credential = tmp / '.config/doc-translate/credentials.json'; credential.parent.mkdir(parents=True); credential.write_text('{}')
+        before = names(home)
+        # 対照: 失敗時は何も消えず、前のcurrentで使える。
+        assert run('control: failed setup', 'setup-ai', fail=True).returncode == 1
+        after_failure = names(home)
+        assert set(after_failure) >= set(before) and len([n for n in after_failure if n.startswith('npm-')]) == len([n for n in before if n.startswith('npm-')]) + 1
+        assert run('control: providers', 'providers', '--json').returncode == 0
+        success = run('success', 'setup-ai')
+        assert success.returncode == 0
+        current = Path(json.loads(success.stdout)['runtime']).name
+        after = names(home)
+        assert after == sorted(['current', current, 'keep.txt', 'other-dir']), after
+        outside_kept = {'outside/file': (outside / 'file').exists(), 'neighbor/npm-keep': (neighbor / 'npm-keep').is_dir(),
+                        'workspace/original.epub': (tmp / 'workspace/original.epub').exists(), 'credential': credential.exists(),
+                        'repo ai/node_modules': (root / 'ai/node_modules/@earendil-works/pi-ai/package.json').is_file()}
+        assert all(outside_kept.values()), outside_kept
+        assert run('after success: providers', 'providers', '--json').returncode == 0
+        (evidence / 'names.json').write_text(json.dumps({'before': before, 'after_failure': after_failure, 'after_success': after,
+            'current': current, 'outside_kept': outside_kept}, indent=2))
+finally:
+    (evidence / 'observations.json').write_text(json.dumps(observations, indent=2))
+    (evidence / 'cleanup.txt').write_text('only owned TemporaryDirectory removed; evidence retained\n')
+for file in evidence.rglob('*'):
+    if file.is_file():
+        file.read_bytes()
+print(evidence, 'success and failure control matched; cleanup complete; evidence reread')
+PY
+```
+
+期待：`names.json`の`before`は旧版と失敗dirの`npm-*`2件・`npm-link`・`.current-stale`・`current`・`keep.txt`・`other-dir`。`after_failure`はそれに失敗dir 1件が増えるだけで、`control: providers`はexit 0。`after_success`は`current`・現行版・`keep.txt`・`other-dir`だけ。`outside_kept`はすべてtrue（`npm-link`はlinkだけ消えリンク先は残る）。証拠は名前一覧・command・exitだけで、本文・秘密を保存しない。実行中childが削除で失敗しうる制約は文書化だけで対象外。実npm・registry・利用者の実runtime homeは対象外。正式チェック・Rootの別invocation直接確認は代用しない。
