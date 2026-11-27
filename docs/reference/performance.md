@@ -667,3 +667,45 @@ HEAD `070d80f`、macOS arm64、Python 3.14.9、Node v24.22.1、production差分�
 - **改善の要否**：改善する価値があります。初回1回で、最終版の約job数倍の論理bytesが履歴として残ります。無変更resumeは増えませんが、失敗回復や新規jobのたびに1版ずつ加わります。削減方式（保存頻度、差分化、旧版GC等）は、保存互換・中断耐性（上記の回復情報）を保つ別提案として**Issue #125**で扱います。比較基準は本表の同条件値です（100 group初回19,801,315 bytes／100件、無変更0、回復1版212,661 bytes）。本Issueでは履歴の削除や保存方式の変更はしていません。
 
 未確認：物理I/O、filesystemのblock overhead、実provider、実書籍規模での版サイズ分布、EPUB入力、revise／手動訂正を含む履歴。cleanupは所有TemporaryDirectoryだけを回収し、全証拠をreadbackしました。
+
+## 翻訳snapshotの途中版削除（Issue #125）
+
+#105の計測を基準に、1回の`run`／`resume`で残る翻訳snapshotを減らしました。新しい設定・永続状態・抽象化は足していません。
+
+### 方式
+
+`translation._adopt`は版を保存してpointer（`translation-snapshot.json`）をatomic更新した**後**にだけ、同じ`translate_document`呼び出しが直前に新規作成した版を削除します。新版と同じdigestなら消しません。
+
+- 呼び出し開始前から存在した版（前回のpointer版、同digestの既存file）は「新規作成」に数えないので、消しません。
+- `revise`の保存、review／render記録、`previous_snapshot_sha256`の履歴には触れません。過去の実行が残した既存fileも自動では消しません。
+- 削除はworkspace lockの中で行います。review／revise／renderはlockを取るので、途中版を参照しません。lockを取らない`status`（`saved_status.read_saved_status`と`render.workspace_status`）は、読む前後でpointerを比べます。途中でpointerが変わり、読もうとした版が消えていた場合は、再試行するか更新競合（exit 1）として報告します。
+- 強制終了がどこで起きても、pointerは保存済みの版を指します。中断した実行は、pointer版のほかに最大1件を残します（pointer更新前の停止なら保存済みでpointer未更新の新版、更新後・削除前の停止ならpointerが離れた旧途中版）。次の`resume`からは開始前の版に見えるので残り、自動では掃除しません。
+- **書込み総量は減りません**。各途中版は一度書いてから消します（100 group初回の保存は100回・19,801,315 bytesで、#105と同じです）。減るのは実行後に残る容量です。
+
+### 合格値と結果
+
+合格値（Root決定）：#105と同条件で、10／100 groupの新規初回と失敗付き初回の追加は1件（最終pointer版だけ）、無変更resumeは0件、回復resumeは1件。開始時に存在したsnapshotはすべてbyte不変で残ること。`translation_history.py`がこれらをassertします。
+
+条件は#105と同じです（seed、10／100 group、各3回、faux＋no-network、concurrency 2、max_source_chars 12000）。HEAD `8095f02`＋本変更、macOS arm64、Python 3.14.9、Node v24.22.1。証拠は`work/issue125-worker-20261127114202/`です。時間以外は3回とも同値なので、median [min, max]は1つの値で示します。Rootの再計測`work/issue125-root-20261127115651/`も時間以外は同値です。
+
+| size | 場面 | snapshot追加件数（#105） | snapshot追加論理bytes（#105） | 保存回数 | pointer書込み | 秒（副次） |
+| --- | --- | --- | --- | --- | --- | --- |
+| 10 | 新規初回 | **1**（10） | 21,434（201,189） | 10 | 11 | .689 [.681, .689] |
+| 10 | 無変更resume | 0（0） | 0（0） | 0 | 1 | .035 [.035, .038] |
+| 10 | 失敗付き初回 | **1**（10） | 21,210（200,081） | 10 | 11 | .684 [.679, .689] |
+| 10 | 回復resume | 1（1） | 21,501（21,501） | 1 | 2 | .151 [.149, .153] |
+| 100 | 新規初回 | **1**（100） | 212,594（19,801,315） | 100 | 101 | 6.628 [6.594, 6.643] |
+| 100 | 無変更resume | 0（0） | 0（0） | 0 | 1 | .327 [.318, .330] |
+| 100 | 失敗付き初回 | **1**（100） | 212,367（19,790,112） | 100 | 101 | 6.648 [6.643, 6.656] |
+| 100 | 回復resume | 1（1） | 212,661（212,661） | 1 | 2 | .457 [.445, .457] |
+
+job／request、attempt、chunkの件数とbytesは#105と同じです（attempt bytesの数bytesの揺れを除く）。100 group初回で残る容量は19,801,315→212,594 bytes（約1/93）です。
+
+### 強制終了
+
+既存の`tests/test_resume.py::test_real_cli_signal_at_atomic_boundary_reuses_accepted_stages`は翻訳chunkが1件なので、途中版の削除を通りません。そこで、既存の`tests/fixtures/resume_process.py`のboundary pauseを使うprobe（commitしていません）を所有tmpで実行しました。
+
+- **保存済み証拠（Root）**：`work/issue125-root-probe-20261127115903/`（`probe.py`、`observations.json`）。3 headingのEPUBで`run`を起動し、`translation-snapshot.json`の2回目のreplaceの直前／直後でSIGKILLしました（2通り）。両方で、kill後のsnapshotは2件でした。その後の`resume`はcompleted（追加送信1、追加は最終pointer版だけ、kill後の既存版はbyte不変）、無変更`resume`は送信0・追加0でした。`review`／`revise`／`resume`（review参照版とrevise版を保持）／`render`／`status --verify`（render_current true）はすべてexit 0でした。
+- **証拠未保存（Worker）**：1・2・3回目のreplaceの直前／直後の6通りを一時probeで実行し、すべて成功しました（`resume` completed、`review`・`render`・`status --verify`通過）。probeと出力は保存していません。
+
+未確認：物理I/O、実provider、実書籍、EPUB入力の容量、SIGINT（取消し）経路での途中版削除の直接確認（最後の`_adopt`は通常経路と同じ）。
