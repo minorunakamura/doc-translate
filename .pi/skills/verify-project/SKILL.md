@@ -127,3 +127,7 @@ EPUBの`li`で子リストの後に続く親の文の順序、変更前の版で
 ## 保存byteの前後比較（Issue #121）
 
 保存・読込み関数の整理で保存物のbyteが変わっていないことを確かめるときは[Mapの#121節](references/feature-map.md#保存byteの前後比較issue-121)と`scripts/saved_bytes_compare.py`を使う。EPUBのrun→review→revise→renderとPDFのrunを、実CLI＋実Node fauxで変更前（`git archive 4065822 src`）と現行の両方で動かし、各工程の後にworkspaceの全file hashを照合する。所有tempだけcleanup後に`work/test-verification-issue121-<unique>/`の証拠を再読する。
+
+## setup-ai後の古いruntime削除（Issue #124）
+
+`setup-ai`成功時に旧版・失敗した導入directory・取り残し`.current-*`だけが消え、失敗時は何も消えないことを確認するときは[Mapの#124節](references/feature-map.md#setup-ai後の古いruntime削除issue-124)を選ぶ。所有tempをHOME／XDG_DATA_HOMEにした実CLI＋fake npmで成功と失敗対照を動かし、cleanup後に`work/test-verification-issue124-<unique>/`の証拠を再読する。
