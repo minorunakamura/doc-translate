@@ -124,28 +124,28 @@ def main(
     parser = argparse.ArgumentParser(
         prog="doc-translate",
         description="Traceable PDF and EPUB translation, rendering and status.",
-        epilog="Providers/models show tables; run/resume/review/status show summaries. Use --json on these commands for machine-readable output; --events-json independently selects pre-send notices on run/resume/review stderr. Other commands output JSON. Exit codes: 0 success, 1 partial output/execution failure, 2 input/configuration error. Run/resume/review send explicitly scoped data to selected providers. PDF source candidate adoption is explicit via revise --source; pending resume/render exit 1, successful status exits 0. Saved render/status/revise need no Node, authentication or inference.",
+        epilog="--json: run/resume/review/status/providers/models; others output JSON. Exit 0 ok, 1 partial/failure, 2 input/config error. Details: docs/reference/usage.md",
     )
     commands = parser.add_subparsers(dest="operation", required=True)
     commands.add_parser(
         "setup-ai",
-        help="Explicitly install locked helper dependencies; no login or inference.",
-        description="Install the bundled npm lock in a new application-owned runtime outside document workspaces. Requires installed Node >=24.21.0 and npm. Outputs runtime location and versions as JSON; no login or inference.",
+        help="Install locked helper dependencies; no login or inference.",
+        description="Install the bundled npm lock into a new application-owned runtime. Requires Node >=24.21.0 and npm; outputs JSON; no login or inference.",
     )
     providers = commands.add_parser(
         "providers",
         help="Optional offline built-in provider catalog lookup.",
-        description="Optional lookup: show built-in provider IDs, names and login methods in a table; --json preserves full metadata. Requires setup-ai and Node only; no authentication, refresh or network requests.",
+        description="Show built-in provider IDs, names and login methods. Requires setup-ai and Node; no authentication or network requests.",
     )
     models = commands.add_parser(
         "models",
         help="Optional offline chat model and capability lookup.",
-        description="Optional lookup: show built-in chat model IDs, image-input and thinking capabilities in a table; --json preserves full metadata. Requires setup-ai and Node only; no authentication, refresh or network requests.",
+        description="Show built-in chat models with image-input and thinking capabilities. Requires setup-ai and Node; no authentication or network requests.",
     )
     models.add_argument("--provider", required=True)
     login = commands.add_parser(
         "login",
-        help="Authenticate using the provider's public flow; secrets require a terminal.",
+        help="Authenticate with a provider; secrets require a terminal.",
     )
     login.add_argument("--provider", required=True)
     login.add_argument("--method", choices=("oauth", "api_key"), required=True)
@@ -158,25 +158,27 @@ def main(
             operation,
             help="Regenerate outputs from saved snapshots only."
             if operation == "render"
-            else "Read saved progress records; use --verify for full inspection.",
-            description="No acquisition, correction, preparation, translation, Node, authentication or network access. Uses only adopted source H, never pending candidate C. Render exits 1 for partial output or pending adoption; status exits 0 when reading succeeds. Status reads saved records only by default; artifacts and liveness are unverified. --verify or --json performs full inspection, including source_adoption H/B/C paths, inputs, envelope and next_operation. No automatic adoption. Update conflicts exit 1; input/hash errors exit 2.",
+            else "Read saved progress records; --verify for full inspection.",
+            description="Offline; uses adopted source H only. Partial output or pending adoption exits 1; input/hash errors exit 2."
+            if operation == "render"
+            else "Offline; uses adopted source H, never pending candidate C. Reading exits 0 even if partial; input/hash errors exit 2.",
         )
         command.add_argument("workspace", type=Path)
         if operation == "status":
             command.add_argument(
                 "--json",
                 action="store_true",
-                help="Perform full verification and output the existing complete summary JSON.",
+                help="Verify fully and output the complete summary JSON.",
             )
             command.add_argument(
                 "--verify",
                 action="store_true",
-                help="Perform full saved-input and output verification with readable results.",
+                help="Verify saved inputs and outputs fully; readable results.",
             )
     revise = commands.add_parser(
         "revise",
         help="Adopt validated JSON revisions without Node or inference.",
-        description="Offline source replacement or translation patch with current snapshot hashes (CAS) and a reason. PDF candidate adoption uses the copied source envelope with candidate_sha256; compare H/B/C and optionally edit source before adoption. No automatic merge, translation overwrite, Node, authentication, PDF models or inference. Old snapshots, reasons and raw answers are retained. Run resume afterward to update affected stages, or render after a translation-only patch. Stale bases/candidates and invalid inputs exit 2.",
+        description="Offline source replacement or translation patch checked against current snapshot hashes (CAS); no inference. Stale or invalid inputs exit 2.",
     )
     revise.add_argument("workspace", type=Path)
     revisions = revise.add_mutually_exclusive_group(required=True)
@@ -186,7 +188,7 @@ def main(
     revisions.add_argument(
         "--source",
         type=Path,
-        help="SourceReplacement JSON; whole snapshot, optional candidate_sha256 for explicit adoption. FILE is relative to the current directory, not the workspace.",
+        help="SourceReplacement JSON (whole snapshot); candidate_sha256 adopts a PDF candidate.",
     )
     revise.add_argument(
         "--reason",
@@ -195,14 +197,14 @@ def main(
     )
     review = commands.add_parser(
         "review",
-        help="Independently review explicit saved units or PDF pages; never rewrite text.",
-        description="Send only comma-separated explicit unit IDs (--units unit-1,unit-2), or PDF pages A-B with selected page images. Requires current saved translations. Records findings, reviewer, scope and usage; empty findings never approve quality. Uses explicit provider/model/thinking over saved translation (units) or correction (pages) settings, never ambient DOC_TRANSLATE_* environment. Does not modify saved stage settings or snapshots. Progress on stderr; readable saved result on stdout (--json for full result, --events-json for pre-send notices only). Exit 0 accepted review, 1 inference/save failure, 2 invalid scope/inputs.",
+        help="AI-review explicit saved units or PDF pages; never rewrites text.",
+        description="Send only the explicit units or PDF pages and record findings. Exit 0 accepted review, 1 inference/save failure, 2 invalid scope/inputs.",
     )
     review.add_argument("workspace", type=Path)
     scope = review.add_mutually_exclusive_group(required=True)
     scope.add_argument(
         "--units",
-        help="Comma-separated explicit unit IDs; no ranges or implicit expansion.",
+        help="Comma-separated explicit unit IDs; no ranges or expansion.",
     )
     scope.add_argument(
         "--pages",
@@ -214,14 +216,14 @@ def main(
     run = commands.add_parser(
         "run",
         help="Translate a local PDF/EPUB in a new workspace.",
-        description="First use: setup-ai once, then login if needed. providers/models are optional lookups. Regular use: run with stage or shared provider/model/thinking (or DOC_TRANSLATE_PROVIDER/DOC_TRANSLATE_MODEL/DOC_TRANSLATE_THINKING environment; PI_* is never read). Creates a new workspace; existing paths including empty directories/symlinks are refused. Shows progress on stderr (--events-json selects pre-send JSON notices); summary/artifact paths on stdout. Exit 0 includes needs-attention, 1 partial/failure, 2 input/configuration error.",
+        description="Create a new workspace and translate. Exit 0 (even with needs-attention), 1 partial output or failure, 2 input/configuration error.",
     )
     run.add_argument("input", type=Path)
     run.add_argument("--workspace", type=Path, required=True)
     resume = commands.add_parser(
         "resume",
-        help="Verify saved inputs and continue only unfinished or explicitly changed stages.",
-        description="Saved settings are defaults; ambient DOC_TRANSLATE_* environment never changes them. Explicit glossary/style policy/provider/model/thinking overrides are persisted. Glossary/style changes do not repeat PDF correction; changed correction inputs may require new calls, not unnecessary acquisition. Transmission scope cannot expand. Changed PDF machine content after source revision is saved as a candidate: stop before preparation/translation, compare H/B/C, then revise --source --reason and resume; no automatic merge. Pending adoption exits 1; input/configuration errors exit 2. Lost responses may have unknown usage and resending may duplicate charges. Completed saved results need no Node/authentication.",
+        help="Continue only unfinished or explicitly changed stages.",
+        description="Continue unfinished/changed stages; a new PDF candidate stops before preparation/translation. Pending adoption exits 1; input/config errors exit 2.",
     )
     resume.add_argument("workspace", type=Path)
     resume.add_argument(
@@ -234,18 +236,18 @@ def main(
             "--correction-concurrency",
             type=int,
             choices=(1, 2, 4),
-            help="Maximum parallel PDF correction jobs (run: 1; resume: saved value); not for EPUB.",
+            help="Parallel PDF correction jobs (run: 1; resume: saved); not EPUB.",
         )
         command.add_argument(
             "--preparation-concurrency",
             type=int,
             choices=(1, 2, 4),
-            help="Maximum parallel preparation collects (run: 1; resume: saved value).",
+            help="Parallel preparation collects (run: 1; resume: saved).",
         )
         command.add_argument(
             "--events-json",
             action="store_true",
-            help="Emit only pre-send JSON notices on stderr, not a full event stream.",
+            help="Emit only pre-send JSON notices on stderr.",
         )
         for prefix in ("", "correction-", "translation-"):
             for field in ("provider", "model", "thinking"):
@@ -253,23 +255,23 @@ def main(
         command.add_argument(
             "--artifacts-path",
             type=Path,
-            help="Prepared local PDF models; needed only for acquisition, never downloaded.",
+            help="Prepared local PDF models; never downloaded.",
         )
         command.add_argument(
             "--glossary",
             type=Path,
-            help="Glossary JSON (version/book/style/terms); import preferred terms only.",
+            help="Glossary JSON; imports preferred terms only.",
         )
     run.add_argument("--pages", type=_page_range, help="PDF ownership A-B (inclusive).")
     run.add_argument(
         "--reference-pages",
         type=_page_range,
-        help="Explicit PDF reference-only transmission permission A-B.",
+        help="PDF reference-only pages A-B (inclusive).",
     )
     review.add_argument(
         "--events-json",
         action="store_true",
-        help="Use pre-send JSON notices only on stderr instead of progress.",
+        help="Emit only pre-send JSON notices on stderr.",
     )
     for command in (providers, models, run, resume, review):
         command.add_argument(
